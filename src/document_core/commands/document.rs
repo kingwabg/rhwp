@@ -153,7 +153,7 @@ impl DocumentCore {
             overflow_links_cache: RefCell::new(HashMap::new()),
             snapshot_store: Vec::new(),
             next_snapshot_id: 0,
-            hidden_header_footer: std::collections::HashSet::new(),
+            hidden_header_footer: std::collections::HashMap::new(),
             file_name: String::new(),
             active_field: None,
             para_offset: Vec::new(),
@@ -1487,6 +1487,13 @@ impl DocumentCore {
             .ok_or_else(|| HwpError::RenderError(format!("스냅샷 {} 없음", id)))?;
         let (_, doc) = self.snapshot_store[idx].clone();
         self.document = doc;
+        // [render-history/복원이 이벤트 로그도 되돌림] 스냅샷은 문서 통짜 복사라 되돌리기
+        // 자체는 정상이지만, 되돌린 편집이 event_log 에는 그대로 남아 있었다. 로그를 재생해
+        // 화면을 갱신하는 쪽(그리고 batch 중 복원 시 endBatch 반환)이 취소된 편집을 다시
+        // 적용해 지운 글자가 되살아났다. 복원은 문서를 통째로 스냅샷 시점으로 되돌리는
+        // 조작이므로, 그 이후 화면 갱신은 이벤트 재생이 아닌 전량 재렌더여야 한다 —
+        // 누적 이벤트 로그를 비워 취소된 편집이 로그에 남지 않게 한다.
+        self.event_log.clear();
         // 캐시 전체 재구성
         self.styles = resolve_styles(&self.document.doc_info, self.dpi);
         self.composed = self

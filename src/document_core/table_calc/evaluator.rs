@@ -85,6 +85,18 @@ fn resolve_cell_ref(col: char, row: u32, ctx: &TableContext) -> Result<(usize, u
             .checked_sub(1)
             .ok_or_else(|| "행은 1부터 시작".to_string())?
     };
+    // [table-structure/수식] 표에 없는 셀 참조(예: 2×2 표의 Z열·A9행)는 조용히 0으로
+    // 취급하지 말고 거부한다. 기존에는 get_cell이 None→0.0으로 폴백해 오타 참조가 result=0
+    // 으로 성공한 것처럼 보였다. 와일드카드(?/0행)는 위에서 현재 셀로 해석되므로 항상 범위 안.
+    if c >= ctx.col_count || r >= ctx.row_count {
+        return Err(format!(
+            "셀 참조 범위 초과 ({}열 {}행) — 표는 {}열 {}행",
+            c + 1,
+            r + 1,
+            ctx.col_count,
+            ctx.row_count
+        ));
+    }
     Ok((c, r))
 }
 

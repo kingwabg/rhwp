@@ -2710,6 +2710,17 @@ impl DocumentCore {
         let row_count = table.row_count as usize;
         let col_count = table.col_count as usize;
 
+        // [table-structure/수식] 기록 대상(target_row,target_col)이 표 범위 밖이면 거부한다.
+        // 기존에는 write=true여도 아래 기록 블록의 `get_mut`가 조용히 None이 되어, 아무 데도
+        // 기록되지 않았는데 ok:true를 돌려줬다(예: 2×2 표에 (9,9) 대상). 존재하지 않는 셀에
+        // 결과를 "쓴다"는 요청은 조용히 삼키지 말고 명시적으로 거부해야 호출부가 안다.
+        if write_result && (target_row >= row_count || target_col >= col_count) {
+            return Err(HwpError::RenderError(format!(
+                "기록 대상 셀 ({},{})이 표 범위를 벗어납니다 (총 {}행 {}열)",
+                target_row, target_col, row_count, col_count
+            )));
+        }
+
         // 셀 값 조회 함수: 셀의 첫 문단 텍스트를 숫자로 파싱
         let cells = &table.cells;
         let get_cell = |col: usize, row: usize| -> Option<f64> {

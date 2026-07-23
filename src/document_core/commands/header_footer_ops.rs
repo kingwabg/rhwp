@@ -706,13 +706,13 @@ impl DocumentCore {
             )));
         }
         let key = (page_num, is_header);
-        let hidden = if self.hidden_header_footer.contains(&key) {
-            self.hidden_header_footer.remove(&key);
-            false
-        } else {
-            self.hidden_header_footer.insert(key);
-            true
-        };
+        // [page-section/결함4·5] override 는 자기 이전 값(초기 false=표시)만 뒤집는다.
+        // 모델(PageHide/section_def)을 읽지 않으므로, setPageHide 로 감춘 상태에서 처음
+        // 토글하면 hidden=true 로 '재확인', 다시 토글하면 hidden=false 로 강제 표시가 되어
+        // 응답과 실제 렌더가 항상 일치한다. 값은 getPageHide 로도 되읽힌다.
+        let prev = self.hidden_header_footer.get(&key).copied().unwrap_or(false);
+        let hidden = !prev;
+        self.hidden_header_footer.insert(key, hidden);
         // 렌더 트리 캐시 무효화
         let mut cache = self.page_tree_cache.borrow_mut();
         if let Some(slot) = cache.get_mut(page_num as usize) {
@@ -723,7 +723,10 @@ impl DocumentCore {
 
     /// 특정 페이지의 머리말/꼬리말이 감추기 상태인지 확인한다.
     pub fn is_header_footer_hidden(&self, page_num: u32, is_header: bool) -> bool {
-        self.hidden_header_footer.contains(&(page_num, is_header))
+        self.hidden_header_footer
+            .get(&(page_num, is_header))
+            .copied()
+            .unwrap_or(false)
     }
 
     /// 머리말/꼬리말 문단 리플로우

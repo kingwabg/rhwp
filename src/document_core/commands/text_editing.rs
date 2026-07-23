@@ -173,13 +173,6 @@ fn inactive_field_end_insertions(
     cell_path: Option<&[(usize, usize, usize)]>,
     char_offset: usize,
 ) -> Vec<FieldEndInsertion> {
-    // [P0-5 ②] 명시적으로 편집 중인 필드(active_field)가 없으면 — 직접 API 편집이나 폼 셀
-    // 타이핑 — 경계 입력을 필드가 흡수하게 둔다. getFieldInfoAt이 inField:true라 답한 경계에
-    // 친 글자가 필드 밖으로 새어 지면="95"·값="5"로 갈리던 문제. push-out은 다른 필드를 편집
-    // 중일 때(active_field 지정) 인접 필드로 번지지 않게 하는 용도로만 남긴다.
-    if active_field.is_none() {
-        return Vec::new();
-    }
     para.field_ranges
         .iter()
         .filter_map(|fr| {
@@ -366,10 +359,6 @@ fn inactive_field_start_insertions(
     cell_path: Option<&[(usize, usize, usize)]>,
     char_offset: usize,
 ) -> Vec<FieldStartInsertion> {
-    // [P0-5 ②] active_field가 없으면 경계 입력을 필드가 흡수(위 inactive_field_end_insertions 참고).
-    if active_field.is_none() {
-        return Vec::new();
-    }
     para.field_ranges
         .iter()
         .filter_map(|fr| {

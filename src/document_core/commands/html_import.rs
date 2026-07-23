@@ -131,6 +131,15 @@ impl DocumentCore {
                     .insert(insert_idx, right_half);
                 last_para_idx = insert_idx;
                 merge_point = 0;
+            } else if !right_half.controls.is_empty() {
+                // [paste-import/중복삽입] 오른쪽 반이 텍스트 없이 컨트롤(표 등)만 가지는
+                // 경우 — 표만 든 빈 캐럿 문단에 split_at(0) 하면 여기로 온다. 예전엔 아래
+                // else 로 떨어져 오른쪽 반이 통째로 버려져(먼저 붙인 표가 사라짐) 데이터가
+                // 유실됐다. 마지막 삽입 문단에 컨트롤을 병합해 두 표를 같은 문단의 두
+                // 컨트롤로 보존한다(merge_from 이 control_mask·char_count·ctrl_data 정합).
+                last_para_idx = insert_idx - 1;
+                merge_point = self.document.sections[section_idx].paragraphs[last_para_idx]
+                    .merge_from(&right_half);
             } else {
                 last_para_idx = insert_idx - 1;
                 // 마지막 문단이 컨트롤 문단이면 그 뒤 위치
@@ -179,6 +188,17 @@ impl DocumentCore {
         let right_half =
             self.document.sections[section_idx].paragraphs[para_idx].split_at(char_offset);
 
+        // [paste-import/첫문단서식] 첫 문단은 캐럿 문단에 병합되는데, merge_from은 텍스트·
+        // 글자서식만 옮기고 문단 서식(정렬 등 para_shape_id)은 캐럿 것(기본 justify)을
+        // 유지해 첫 문단의 정렬이 유실됐다(둘째부터는 새 문단이라 정상). 캐럿 문단이
+        // 비어 있으면 첫 파싱 문단의 문단 서식을 물려받아 정렬을 보존한다.
+        if self.document.sections[section_idx].paragraphs[para_idx]
+            .text
+            .is_empty()
+        {
+            self.document.sections[section_idx].paragraphs[para_idx].para_shape_id =
+                parsed_paras[0].para_shape_id;
+        }
         self.document.sections[section_idx].paragraphs[para_idx].merge_from(&parsed_paras[0]);
 
         let mut insert_idx = para_idx + 1;
@@ -464,6 +484,10 @@ impl DocumentCore {
             }
         };
 
+        // [paste-import/script·style] script/style 블록을 파싱 전에 통째로 제거한다 —
+        // 그 안의 JS/CSS 소스가 셀·본문 텍스트로 새는 것을 막는다.
+        let content = strip_script_style(content);
+
         // 최상위 태그 파싱
         let mut pos = 0;
         let chars: Vec<char> = content.chars().collect();
@@ -503,6 +527,107 @@ impl DocumentCore {
 
                     self.parse_img_html(&mut paragraphs, &tag_str);
                     pos = tag_end + 1;
+                    continue;
+                } else if tag_lower.starts_with("<pre") {
+                    // [paste-import/pre] <pre>의 개행을 문단 분리로 바꾼다.
+                    // 예전엔 "<p" 접두 분기가 <pre>를 삼켜 raw LF(U+000A)가 한 문단
+                    // 텍스트에 그대로 박혔다(저장 왕복 후에도 잔존). flush_text_to_paragraphs
+                    // 가 '\n' 기준으로 문단을 가르므로 태그만 제거해 넘긴다.
+                    if !pending_text.trim().is_empty() {
+                        self.flush_text_to_paragraphs(&mut paragraphs, &pending_text);
+                    }
+                    pending_text.clear();
+
+                    let inner_start = tag_end + 1;
+                    let pre_end = find_closing_tag_chars(&chars, pos, "pre");
+                    let inner: String = chars[inner_start..pre_end.min(len)].iter().collect();
+                    let inner = if let Some(idx) = inner.rfind("</pre>") {
+                        &inner[..idx]
+                    } else {
+                        &inner
+                    };
+                    let text = html_strip_tags(inner);
+                    self.flush_text_to_paragraphs(&mut paragraphs, &text);
+                    pos = pre_end;
+                    continue;
+                } else if tag_lower.starts_with("<ul")
+                    || tag_lower.starts_with("<ol")
+                    || tag_lower.starts_with("<blockquote")
+                {
+                    // [paste-import/블록요소] 리스트/인용 컨테이너 → 내부(<li> 등)를 재귀
+                    // 파싱해 각 항목을 독립 문단으로 만든다. 예전엔 무시 태그라 항목들이
+                    // 한 문단에 '하나둘'처럼 붙었다.
+                    if !pending_text.trim().is_empty() {
+                        self.flush_text_to_paragraphs(&mut paragraphs, &pending_text);
+                    }
+                    pending_text.clear();
+
+                    let name = if tag_lower.starts_with("<ul") {
+                        "ul"
+                    } else if tag_lower.starts_with("<ol") {
+                        "ol"
+                    } else {
+                        "blockquote"
+                    };
+                    let inner_start = tag_end + 1;
+                    let block_end = find_closing_tag_chars(&chars, pos, name);
+                    let inner: String = chars[inner_start..block_end.min(len)].iter().collect();
+                    let close = format!("</{}>", name);
+                    let inner = if let Some(idx) = inner.rfind(&close) {
+                        &inner[..idx]
+                    } else {
+                        &inner
+                    };
+                    let sub_paras = self.parse_html_to_paragraphs(inner);
+                    paragraphs.extend(sub_paras);
+                    pos = block_end;
+                    continue;
+                } else if tag_lower.starts_with("<li")
+                    || tag_lower.starts_with("<h1")
+                    || tag_lower.starts_with("<h2")
+                    || tag_lower.starts_with("<h3")
+                    || tag_lower.starts_with("<h4")
+                    || tag_lower.starts_with("<h5")
+                    || tag_lower.starts_with("<h6")
+                {
+                    // [paste-import/블록요소] li·제목(h1~h6)은 문단 경계를 만드는 리프 블록 →
+                    // 하나의 독립 문단으로. 인라인 서식은 parse_inline_content로 보존한다.
+                    if !pending_text.trim().is_empty() {
+                        self.flush_text_to_paragraphs(&mut paragraphs, &pending_text);
+                    }
+                    pending_text.clear();
+
+                    let name: String = tag_str
+                        .chars()
+                        .skip(1)
+                        .take_while(|c| c.is_ascii_alphanumeric())
+                        .collect::<String>()
+                        .to_lowercase();
+                    let inner_start = tag_end + 1;
+                    let block_end = find_closing_tag_chars(&chars, pos, &name);
+                    let inner: String = chars[inner_start..block_end.min(len)].iter().collect();
+                    let close = format!("</{}>", name);
+                    let inner = if let Some(idx) = inner.rfind(&close) {
+                        &inner[..idx]
+                    } else {
+                        &inner
+                    };
+
+                    // <li> 내부에 <table>이 있으면 재귀 처리 (컨트롤 문단 보존)
+                    if inner.to_lowercase().contains("<table") {
+                        let sub_paras = self.parse_html_to_paragraphs(inner);
+                        paragraphs.extend(sub_paras);
+                    } else {
+                        let para_style = parse_inline_style(&tag_str);
+                        let para_shape_id = self.css_to_para_shape_id(&para_style);
+                        let mut para = Paragraph::default();
+                        para.para_shape_id = para_shape_id;
+                        self.parse_inline_content(&mut para, inner);
+                        if !para.text.trim().is_empty() {
+                            paragraphs.push(para);
+                        }
+                    }
+                    pos = block_end;
                     continue;
                 } else if tag_lower.starts_with("<p") {
                     // 보류 중인 텍스트 처리

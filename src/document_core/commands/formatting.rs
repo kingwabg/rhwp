@@ -2,7 +2,7 @@
 
 use super::super::helpers::{
     border_line_type_to_u8_val, build_tab_def_from_json, color_ref_to_css, json_has_border_keys,
-    json_has_tab_keys, parse_char_shape_mods, parse_json_i16_array, parse_para_shape_mods,
+    json_has_tab_keys, json_str, parse_char_shape_mods, parse_json_i16_array, parse_para_shape_mods,
 };
 use crate::document_core::DocumentCore;
 use crate::error::HwpError;
@@ -962,6 +962,52 @@ impl DocumentCore {
         new_id as i32
     }
 
+    /// [text-format/글꼴 이름] applyCharFormat의 fontName·fontFamily를 fontId로 해석한다.
+    ///
+    /// 종전엔 파서가 fontId만 읽어 fontName/fontFamily를 조용히 무시했다(ok:true인데 글꼴 그대로).
+    /// 되읽기 키(fontFamily)와 문서 표기(fontName) 둘 다 받아, 명시적 fontId가 없을 때만
+    /// findOrCreateFontId 경유로 font_id를 채운다(앱이 쓰던 우회로를 엔진이 흡수).
+    fn resolve_font_id_from_name(&mut self, props_json: &str, mods_font_id: Option<u16>) -> Option<u16> {
+        if mods_font_id.is_some() {
+            return mods_font_id; // 명시적 fontId가 우선
+        }
+        let name = json_str(props_json, "fontName")
+            .or_else(|| json_str(props_json, "fontFamily"))?;
+        if name.is_empty() {
+            return None;
+        }
+        let id = self.find_or_create_font_id_native(&name);
+        if id >= 0 {
+            Some(id as u16)
+        } else {
+            None
+        }
+    }
+
+    /// [text-format/문단서식 단위붕괴] 조회(build_para_properties_json)는 저장 HWPUNIT을
+    /// dialog px로 돌려준다(margin/indent는 2× 스케일이라 ÷2 후 px, spacing은 1× px).
+    /// 그런데 설정 파서는 들어온 값을 그대로 저장해, 왕복마다 단위가 150배씩 붕괴했다.
+    /// 조회와 대칭이 되도록 들어온 px 값을 저장 표현으로 역변환한다(margin/indent ×2 스케일 복원).
+    fn px_para_mods_to_stored(&self, mods: &mut crate::model::style::ParaShapeMods) {
+        use crate::renderer::px_to_hwpunit;
+        let dpi = self.dpi;
+        if let Some(v) = mods.margin_left {
+            mods.margin_left = Some(px_to_hwpunit(v as f64, dpi) * 2);
+        }
+        if let Some(v) = mods.margin_right {
+            mods.margin_right = Some(px_to_hwpunit(v as f64, dpi) * 2);
+        }
+        if let Some(v) = mods.indent {
+            mods.indent = Some(px_to_hwpunit(v as f64, dpi) * 2);
+        }
+        if let Some(v) = mods.spacing_before {
+            mods.spacing_before = Some(px_to_hwpunit(v as f64, dpi));
+        }
+        if let Some(v) = mods.spacing_after {
+            mods.spacing_after = Some(px_to_hwpunit(v as f64, dpi));
+        }
+    }
+
     /// 글자 서식 적용 (네이티브) — 본문 문단
     pub fn apply_char_format_native(
         &mut self,
@@ -997,6 +1043,8 @@ impl DocumentCore {
         }
 
         let mut mods = parse_char_shape_mods(props_json);
+        // 글꼴 이름(fontName/fontFamily)을 fontId로 해석 — fontId만 먹던 결함.
+        mods.font_id = self.resolve_font_id_from_name(props_json, mods.font_id);
         // 글자 크기 0·음수는 무효 — 조용히 저장하지 않고 거부한다.
         if let Some(sz) = mods.base_size {
             if sz <= 0 {
@@ -1132,6 +1180,8 @@ impl DocumentCore {
         props_json: &str,
     ) -> Result<String, HwpError> {
         let mut mods = parse_char_shape_mods(props_json);
+        // 글꼴 이름(fontName/fontFamily) 해석 — 본문과 같은 뿌리.
+        mods.font_id = self.resolve_font_id_from_name(props_json, mods.font_id);
         if json_has_border_keys(props_json) {
             let bf_id = self.create_border_fill_from_json(props_json);
             mods.border_fill_id = Some(bf_id);
@@ -1286,6 +1336,8 @@ impl DocumentCore {
         }
 
         let mut mods = parse_para_shape_mods(props_json);
+        // 여백·들여쓰기·문단간격은 조회가 돌려주는 px 단위로 들어온다 → 저장 단위로 역변환(왕복 단위 일치).
+        self.px_para_mods_to_stored(&mut mods);
         // 입력 방어: 없는 번호 정의 id·범위 밖 문단 수준을 조용히 삼키지 않는다(번호가 소리 없이 사라짐).
         if let Some(nid) = mods.numbering_id {
             let count = self.document.doc_info.numberings.len();
@@ -1441,6 +1493,8 @@ impl DocumentCore {
         props_json: &str,
     ) -> Result<String, HwpError> {
         let mut mods = parse_para_shape_mods(props_json);
+        // 셀 문단도 본문과 같은 뿌리 — px 여백/들여쓰기/간격을 저장 단위로 역변환.
+        self.px_para_mods_to_stored(&mut mods);
         // 입력 방어: 없는 번호 정의 id·범위 밖 문단 수준을 조용히 삼키지 않는다(번호가 소리 없이 사라짐).
         if let Some(nid) = mods.numbering_id {
             let count = self.document.doc_info.numberings.len();
@@ -2134,6 +2188,23 @@ impl DocumentCore {
                     "{{\"ok\":true,\"exists\":true,\"hideHeader\":{},\"hideFooter\":{},\"hideMasterPage\":{},\"hideBorder\":{},\"hideFill\":{},\"hidePageNum\":{}}}",
                     ph.hide_header, ph.hide_footer, ph.hide_master_page,
                     ph.hide_border, ph.hide_fill, ph.hide_page_num
+                ));
+            }
+        }
+
+        // [page-section/결함4] toggleHideHeaderFooter 로 건 감춤 override 도 되읽을 수 있게 한다.
+        // Control::PageHide 가 없어도, 이 문단이 놓인 쪽에 감춤 override(true)가 있으면 보고한다.
+        if let Ok(pages) = self.find_pages_for_paragraph(section_idx, para_idx) {
+            let hide_header = pages
+                .iter()
+                .any(|p| matches!(self.hidden_header_footer.get(&(*p, true)), Some(true)));
+            let hide_footer = pages
+                .iter()
+                .any(|p| matches!(self.hidden_header_footer.get(&(*p, false)), Some(true)));
+            if hide_header || hide_footer {
+                return Ok(format!(
+                    "{{\"ok\":true,\"exists\":true,\"hideHeader\":{},\"hideFooter\":{},\"hideMasterPage\":false,\"hideBorder\":false,\"hideFill\":false,\"hidePageNum\":false}}",
+                    hide_header, hide_footer
                 ));
             }
         }

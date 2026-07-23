@@ -1496,19 +1496,15 @@ impl DocumentCore {
         {
             let paragraph = &mut self.document.sections[section_idx].paragraphs[para_idx];
 
-            // 컨트롤 삽입 위치 결정 (char_offset 기준)
-            let insert_idx = {
-                let positions =
-                    crate::document_core::helpers::find_control_text_positions(paragraph);
-                let mut idx = paragraph.controls.len();
-                for (i, &pos) in positions.iter().enumerate() {
-                    if pos > char_offset {
-                        idx = i;
-                        break;
-                    }
-                }
-                idx
-            };
+            // [image-shape/도형 핸들 안정화] 새 도형은 문단 컨트롤 배열의 맨 뒤에 붙인다
+            // (그림 insert_picture_native 와 동일 정책 — controls.push).
+            //
+            // 예전엔 char_offset 을 find_control_text_positions 의 "text 위치"와 비교해
+            // 삽입 지점을 정했는데, 이미 삽입된 floating 도형들은 이 위치 공간에서 0,1,2… 순번을
+            // 갖는다. 그래서 char_offset=0 으로 셋째 도형을 넣으면 "pos>0 인 첫 컨트롤"=둘째 도형
+            // 앞에 끼어들어, 앞서 반환했던 둘째 도형의 controlIdx 가 셋째를 가리키게 뒤틀렸다.
+            // 항상 뒤에 붙이면 앞서 넘긴 인덱스가 절대 밀리지 않는다.
+            let insert_idx = paragraph.controls.len();
 
             // 컨트롤 추가
             paragraph

@@ -2374,11 +2374,64 @@ impl DocumentCore {
             return Ok(format_hit(same_line_runs[idx], offset, page_num));
         }
 
+        // [render-history/표 좌우·표사이 여백] 최종 근접-run 폴백은 셀 run 도 후보로
+        // 삼는다. 그 탓에 표 좌·우 쪽 여백(본문 영역 밖)이나 표와 표 사이 여백을 눌러도
+        // 세로로 가장 가까운 셀 run 에 캐럿이 빨려들어가 cellPath 가 붙었다(= "표 안").
+        // 표 밖 클릭을 두 갈래로 걸러 셀 run 을 폴백 후보에서 제외한다:
+        //   A. 클릭 x 가 본문 영역(body_area) 좌우 밴드 밖 = 쪽 여백 → 셀 배제.
+        //   B. 클릭 y 가 그 표의 세로 범위 밖 = 표 위/아래·표와 표 사이 여백 → 그 표 셀 배제.
+        // 반대로 본문 x 밴드 안이면서 표의 세로 범위 안인 클릭(다단 사이 여백 등)은 그대로
+        // 셀로 스냅한다 — leading-gap/#717/#850/vpos 회귀 없음. B 가 x 를 안 보므로 표 오른쪽
+        // 여백(같은 줄) 클릭도 해당 표로 유지된다. 표 외곽은 셀 union 이 아니라 표 RenderNode
+        // 의 bbox(셀 사이 여백·표 패딩까지 포함) 세로 범위를 정본으로 쓴다.
+        fn collect_table_y_bounds(
+            node: &RenderNode,
+            map: &mut std::collections::HashMap<u32, (f64, f64)>,
+        ) {
+            if matches!(node.node_type, RenderNodeType::Table(_)) {
+                let b = &node.bbox;
+                map.insert(node.id, (b.y, b.y + b.height));
+            }
+            for child in &node.children {
+                collect_table_y_bounds(child, map);
+            }
+        }
+        let mut table_y_bounds: std::collections::HashMap<u32, (f64, f64)> =
+            std::collections::HashMap::new();
+        collect_table_y_bounds(&tree.root, &mut table_y_bounds);
+        // 본문 영역 x 밴드(쪽 좌우 여백 판정용). 못 구하면 배제 안 함(보수적).
+        let body_x_band: Option<(f64, f64)> = self.find_page(page_num).ok().map(|(pc, _, _)| {
+            (
+                pc.layout.body_area.x,
+                pc.layout.body_area.x + pc.layout.body_area.width,
+            )
+        });
+        // 표 세로 경계의 미세 오차 흡수(첫 줄 leading-gap 보호). 표 사이 여백 절반(수 px)보다
+        // 작게 둬 표와 표 사이 클릭은 확실히 배제되게 한다.
+        const TABLE_Y_TOL: f64 = 2.0;
+        let cell_run_in_bounds = |r: &RunInfo| -> bool {
+            if r.cell_context.is_none() {
+                return true; // 본문 run 은 항상 후보
+            }
+            // A. 쪽 좌우 여백 클릭이면 어떤 표 셀도 후보에서 제외
+            if let Some((lo, hi)) = body_x_band {
+                if x < lo || x > hi {
+                    return false;
+                }
+            }
+            // B. 그 표의 세로 범위 밖(위/아래·표 사이 여백)이면 제외
+            match r.table_id.and_then(|tid| table_y_bounds.get(&tid)) {
+                Some(&(miny, maxy)) => y >= miny - TABLE_Y_TOL && y <= maxy + TABLE_Y_TOL,
+                None => true, // 표 경계를 못 구하면 기존대로 (보수적)
+            }
+        };
+
         // 3. 가장 가까운 줄 찾기 (y 거리 기준)
         // 다단: 클릭 칼럼의 run을 우선 후보로 사용
         let column_runs: Vec<&RunInfo> = runs
             .iter()
             .filter(|r| text_run_hit_allowed_by_textbox_bbox(r, &textbox_bboxes, x, y))
+            .filter(|r| cell_run_in_bounds(r))
             .filter(|r| {
                 click_column.is_none() || r.column_index.is_none() || r.column_index == click_column
             })
@@ -2386,6 +2439,7 @@ impl DocumentCore {
         let all_allowed_runs: Vec<&RunInfo> = runs
             .iter()
             .filter(|r| text_run_hit_allowed_by_textbox_bbox(r, &textbox_bboxes, x, y))
+            .filter(|r| cell_run_in_bounds(r))
             .collect();
         let candidate_runs = if column_runs.is_empty() {
             &all_allowed_runs
@@ -4026,6 +4080,20 @@ impl DocumentCore {
             Some(n) => n,
             None => return Ok("{\"hit\":false}".to_string()),
         };
+
+        // [render-history/hitTestInHeaderFooter y좌표] 이전 구현은 좌표를 전혀 안 보고
+        // 마지막 폴백(가장 가까운 줄)이 항상 hit:true 를 돌려줬다 — 본문 한가운데도,
+        // 쪽 밖도, 머리말이 아예 없는 문서(빈 머리말 노드)도 모두 hit. 그래서 이 API 로는
+        // "머리말을 눌렀는지"를 판별할 수 없었다. hf_node.bbox 는 layout.header_area/
+        // footer_area(= hitTestHeaderFooter 가 쓰는 판정 밴드)와 동일하므로, 클릭이 그
+        // 밴드 밖이면 여기서 hit:false 로 걸러 두 API 의 판정을 일치시킨다.
+        {
+            let b = &hf_node.bbox;
+            let inside = x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height;
+            if !inside {
+                return Ok("{\"hit\":false}".to_string());
+            }
+        }
 
         // TextRun 정보 수집
         struct HfRunInfo {

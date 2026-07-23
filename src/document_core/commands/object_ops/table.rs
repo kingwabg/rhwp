@@ -1193,6 +1193,27 @@ impl DocumentCore {
     ) -> Result<String, HwpError> {
         use crate::renderer::render_tree::{RenderNode, RenderNodeType};
 
+        // [table-structure/조회 일관성] 형제 API(getTableDimensions·getTableProperties)는
+        // 표 아닌 컨트롤(또는 범위 밖 control_idx)을 물으면 "지정된 컨트롤이 표가 아닙니다"로
+        // 던지는데, 여기만 렌더 트리에서 못 찾아 조용히 []를 돌려주면 호출부가 "셀 0개"와
+        // "표 아님"을 구분하지 못한다. 렌더 트리 탐색 전에 컨트롤이 실제 표인지 먼저 검증해
+        // 세 API가 같은 방식으로 거부하도록 맞춘다.
+        let para = self
+            .document
+            .sections
+            .get(section_idx)
+            .ok_or_else(|| HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx)))?
+            .paragraphs
+            .get(parent_para_idx)
+            .ok_or_else(|| {
+                HwpError::RenderError(format!("문단 인덱스 {} 범위 초과", parent_para_idx))
+            })?;
+        if !matches!(para.controls.get(control_idx), Some(Control::Table(_))) {
+            return Err(HwpError::RenderError(
+                "지정된 컨트롤이 표가 아닙니다".to_string(),
+            ));
+        }
+
         // 렌더 트리에서 해당 표 노드를 찾아 셀 bbox를 수집
         fn find_table_cells(
             node: &RenderNode,

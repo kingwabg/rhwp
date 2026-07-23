@@ -1251,8 +1251,9 @@ pub struct LayoutEngine {
     show_transparent_borders: std::cell::Cell<bool>,
     /// 잘림 보기: false이면 Body/셀 클립 해제
     clip_enabled: std::cell::Cell<bool>,
-    /// 머리말/꼬리말 감추기 세트: (global_page_index, is_header)
-    hidden_header_footer: std::cell::RefCell<std::collections::HashSet<(u32, bool)>>,
+    /// 머리말/꼬리말 감추기 override: (global_page_index, is_header) → 감춤 여부.
+    /// [page-section/결함4·5] 존재하면 모델 기본값보다 우선(true=감춤, false=강제표시).
+    hidden_header_footer: std::cell::RefCell<std::collections::HashMap<(u32, bool), bool>>,
     /// 총 쪽수 (머리말/꼬리말 필드 치환용)
     total_pages: std::cell::Cell<u32>,
     /// 현재 페이지 번호 (바탕쪽 글상자 쪽번호 치환용)
@@ -1395,7 +1396,7 @@ impl LayoutEngine {
             numbering_state: std::cell::RefCell::new(NumberingState::default()),
             show_transparent_borders: std::cell::Cell::new(false),
             clip_enabled: std::cell::Cell::new(true),
-            hidden_header_footer: std::cell::RefCell::new(std::collections::HashSet::new()),
+            hidden_header_footer: std::cell::RefCell::new(std::collections::HashMap::new()),
             total_pages: std::cell::Cell::new(0),
             current_page_number: std::cell::Cell::new(0),
             current_page_is_section_first: std::cell::Cell::new(true),
@@ -1804,8 +1805,8 @@ impl LayoutEngine {
         self.show_transparent_borders.set(enabled);
     }
 
-    /// 머리말/꼬리말 감추기 세트를 설정한다.
-    pub fn set_hidden_header_footer(&self, hidden: &std::collections::HashSet<(u32, bool)>) {
+    /// 머리말/꼬리말 감추기 override 맵을 설정한다.
+    pub fn set_hidden_header_footer(&self, hidden: &std::collections::HashMap<(u32, bool), bool>) {
         *self.hidden_header_footer.borrow_mut() = hidden.clone();
     }
 
@@ -1918,11 +1919,19 @@ impl LayoutEngine {
         }
 
         // 머리말 (감추기 설정 시 건너뜀)
-        let hide_header = page_content
-            .page_hide
-            .as_ref()
-            .map(|ph| ph.hide_header)
-            .unwrap_or(false);
+        // [page-section/결함4·5] override(toggle/강제표시)가 있으면 모델 PageHide 보다 우선.
+        let hide_header = self
+            .hidden_header_footer
+            .borrow()
+            .get(&(page_content.page_index, true))
+            .copied()
+            .unwrap_or_else(|| {
+                page_content
+                    .page_hide
+                    .as_ref()
+                    .map(|ph| ph.hide_header)
+                    .unwrap_or(false)
+            });
         if !hide_header {
             self.build_header(
                 &mut tree,
@@ -2033,11 +2042,19 @@ impl LayoutEngine {
         );
 
         // 꼬리말 + 쪽 번호 (감추기 설정 시 건너뜀)
-        let hide_footer = page_content
-            .page_hide
-            .as_ref()
-            .map(|ph| ph.hide_footer)
-            .unwrap_or(false);
+        // [page-section/결함4·5] override(toggle/강제표시)가 있으면 모델 PageHide 보다 우선.
+        let hide_footer = self
+            .hidden_header_footer
+            .borrow()
+            .get(&(page_content.page_index, false))
+            .copied()
+            .unwrap_or_else(|| {
+                page_content
+                    .page_hide
+                    .as_ref()
+                    .map(|ph| ph.hide_footer)
+                    .unwrap_or(false)
+            });
         let mut footer_node = if !hide_footer {
             self.build_footer(
                 &mut tree,
@@ -3087,11 +3104,14 @@ impl LayoutEngine {
             RenderNodeType::Header,
             layout_rect_to_bbox(&layout.header_area),
         );
-        // 감추기 플래그가 설정된 페이지는 머리말 내용을 렌더링하지 않음
-        let hidden = self
-            .hidden_header_footer
-            .borrow()
-            .contains(&(page_content.page_index, true));
+        // 감추기 override 가 명시적으로 true 인 페이지만 머리말 내용을 건너뛴다
+        // (build_page 에서 이미 PageHide 병합 판정을 했으므로 여기선 override 만 확인).
+        let hidden = matches!(
+            self.hidden_header_footer
+                .borrow()
+                .get(&(page_content.page_index, true)),
+            Some(true)
+        );
         if !hidden {
             if let Some(hf_ref) = &page_content.active_header {
                 if let Some(para) = paragraphs.get(hf_ref.para_index) {
@@ -3222,11 +3242,14 @@ impl LayoutEngine {
             RenderNodeType::Footer,
             layout_rect_to_bbox(&layout.footer_area),
         );
-        // 감추기 플래그가 설정된 페이지는 꼬리말 내용을 렌더링하지 않음
-        let hidden = self
-            .hidden_header_footer
-            .borrow()
-            .contains(&(page_content.page_index, false));
+        // 감추기 override 가 명시적으로 true 인 페이지만 꼬리말 내용을 건너뛴다
+        // (build_page 에서 이미 PageHide 병합 판정을 했으므로 여기선 override 만 확인).
+        let hidden = matches!(
+            self.hidden_header_footer
+                .borrow()
+                .get(&(page_content.page_index, false)),
+            Some(true)
+        );
         if !hidden {
             if let Some(hf_ref) = &page_content.active_footer {
                 if let Some(para) = paragraphs.get(hf_ref.para_index) {

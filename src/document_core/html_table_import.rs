@@ -476,11 +476,19 @@ impl DocumentCore {
             let mut raw_list_extra = vec![0u8; 13];
             raw_list_extra[0..4].copy_from_slice(&cell_width.to_le_bytes());
 
+            // [paste-import/rowspan] rowspan이 실제 행 수를 넘으면 표 밖을 가리키는
+            // 병합 정보가 저장돼 규격을 벗어난다. 저장값을 남은 행 수로 클램프한다
+            // (레이아웃 계산에 쓰인 occupied 그리드는 그대로 두고 저장/조회값만 보정).
+            let clamped_row_span = cp
+                .row_span
+                .min(row_count.saturating_sub(cp.row))
+                .max(1);
+
             cells.push(Cell {
                 col: cp.col,
                 row: cp.row,
                 col_span: cp.col_span,
-                row_span: cp.row_span,
+                row_span: clamped_row_span,
                 width: cell_width,
                 height: cell_height,
                 padding,
@@ -783,29 +791,11 @@ impl DocumentCore {
     /// JSON에서 border/fill 속성을 파싱하여 BorderFill을 생성/재사용한다.
     /// 프론트엔드 글자 테두리/배경 대화상자에서 호출된다.
     pub(crate) fn create_border_fill_from_json(&mut self, json: &str) -> u16 {
-        use crate::model::style::{
-            BorderFill, BorderLine, CenterLine, DiagonalLine, Fill, FillType, SolidFill,
-        };
+        use crate::model::style::{BorderFill, BorderLine, CenterLine, DiagonalLine, Fill};
 
-        fn json_diag_bits(json: &str, key: &str) -> Option<u16> {
-            json_i32(json, key)
-                .map(|v| (v as u16) & 0x07)
-                .or_else(|| json_bool(json, key).map(|v| if v { 0b010 } else { 0 }))
-        }
-
-        fn json_center_line(json: &str) -> Option<CenterLine> {
-            json_str(json, "centerLine").map(|value| {
-                let normalized = value.trim().to_ascii_uppercase();
-                match normalized.as_str() {
-                    "VERTICAL" | "HORIZONTAL_BAR" => CenterLine::Vertical,
-                    "HORIZONTAL" | "VERTICAL_BAR" => CenterLine::Horizontal,
-                    "CROSS" => CenterLine::Cross,
-                    _ => CenterLine::None,
-                }
-            })
-        }
-
-        let mut bf = json_u32(json, "borderFillId")
+        // 기본 base: borderFillId 가 있으면 그 BorderFill 을 복제, 없으면 전 방향 실선(Solid)
+        // 기본값(표 등 기존 호출부 동작 보존).
+        let base = json_u32(json, "borderFillId")
             .and_then(|id| {
                 if id == 0 {
                     None
@@ -825,6 +815,37 @@ impl DocumentCore {
                 center_line: CenterLine::None,
                 fill: Fill::default(),
             });
+        self.create_border_fill_from_json_based(json, base)
+    }
+
+    /// create_border_fill_from_json 의 base 지정 변형.
+    /// [page-section/결함6] 쪽 테두리는 지정 안 한 방향까지 실선 기본값으로 덮이면 안 되므로,
+    /// 호출부가 '현재 테두리' 또는 '선없음' base 를 넘겨 지정한 키만 병합되게 한다.
+    pub(crate) fn create_border_fill_from_json_based(
+        &mut self,
+        json: &str,
+        mut bf: crate::model::style::BorderFill,
+    ) -> u16 {
+        use crate::model::style::{CenterLine, Fill, FillType, SolidFill};
+
+        fn json_diag_bits(json: &str, key: &str) -> Option<u16> {
+            json_i32(json, key)
+                .map(|v| (v as u16) & 0x07)
+                .or_else(|| json_bool(json, key).map(|v| if v { 0b010 } else { 0 }))
+        }
+
+        fn json_center_line(json: &str) -> Option<CenterLine> {
+            json_str(json, "centerLine").map(|value| {
+                let normalized = value.trim().to_ascii_uppercase();
+                match normalized.as_str() {
+                    "VERTICAL" | "HORIZONTAL_BAR" => CenterLine::Vertical,
+                    "HORIZONTAL" | "VERTICAL_BAR" => CenterLine::Horizontal,
+                    "CROSS" => CenterLine::Cross,
+                    _ => CenterLine::None,
+                }
+            })
+        }
+
         bf.raw_data = None;
 
         // 4방향 테두리 파싱

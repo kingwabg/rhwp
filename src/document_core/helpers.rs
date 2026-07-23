@@ -340,12 +340,16 @@ pub(crate) fn parse_char_shape_mods(json: &str) -> crate::model::style::CharShap
         mods.shade_color = Some(v);
     }
     // 확장 속성
+    // [text-format/밑줄] underlineType은 밑줄 "위치"(Bottom/Top/None)다. 모양값(Solid/Dash 등)을
+    // 잘못 넣기 쉬운데, 종전엔 미지원 값을 None으로 강제 매핑해 함께 준 underline:true까지
+    // 통째로 꺼버렸다(에러 없이). 미지원 값은 아예 설정하지 않아(Option 비움) underline bool이 이긴다.
     if let Some(v) = json_str(json, "underlineType") {
-        mods.underline_type = Some(match v.as_str() {
-            "Bottom" => UnderlineType::Bottom,
-            "Top" => UnderlineType::Top,
-            _ => UnderlineType::None,
-        });
+        mods.underline_type = match v.as_str() {
+            "Bottom" => Some(UnderlineType::Bottom),
+            "Top" => Some(UnderlineType::Top),
+            "None" => Some(UnderlineType::None),
+            _ => None,
+        };
     }
     if let Some(v) = json_color(json, "underlineColor") {
         mods.underline_color = Some(v);
@@ -761,15 +765,34 @@ pub(crate) fn json_str(json: &str, key: &str) -> Option<String> {
     Some(result)
 }
 
-/// CSS hex (#rrggbb) → HWP BGR (0x00BBGGRR) 변환
+/// CSS hex → HWP BGR (0x00BBGGRR) 변환.
+///
+/// [text-format/색 표기] 종전엔 정확히 `#rrggbb`(7자)만 받고 나머지는 조용히 무시해
+/// 색이 '직전 값 그대로' 남았다(응답은 ok:true). 실사용 입력을 넓게 수용한다:
+/// - `#` 접두사는 선택(있으면 벗기고 없어도 hex로 취급) — "ff0000"
+/// - 3자리 축약(`#rgb`)은 각 자리를 배로 펼침 — "#00F" → 0000ff
 pub(crate) fn css_color_to_bgr(css: &str) -> Option<u32> {
-    let hex = css.strip_prefix('#')?;
-    if hex.len() != 6 {
-        return None;
-    }
-    let r = u32::from_str_radix(&hex[0..2], 16).ok()?;
-    let g = u32::from_str_radix(&hex[2..4], 16).ok()?;
-    let b = u32::from_str_radix(&hex[4..6], 16).ok()?;
+    let hex = css.strip_prefix('#').unwrap_or(css).trim();
+    let (r, g, b) = match hex.len() {
+        6 => (
+            u32::from_str_radix(&hex[0..2], 16).ok()?,
+            u32::from_str_radix(&hex[2..4], 16).ok()?,
+            u32::from_str_radix(&hex[4..6], 16).ok()?,
+        ),
+        // #rgb 축약: 각 nibble을 두 번 반복(f → ff)해 8비트로 확장한다.
+        3 => {
+            let expand = |c: &str| -> Option<u32> {
+                let v = u32::from_str_radix(c, 16).ok()?;
+                Some(v * 17) // 0x_v_v = v*16 + v = v*17
+            };
+            (
+                expand(&hex[0..1])?,
+                expand(&hex[1..2])?,
+                expand(&hex[2..3])?,
+            )
+        }
+        _ => return None,
+    };
     Some(r | (g << 8) | (b << 16))
 }
 
@@ -1075,16 +1098,144 @@ pub(crate) fn css_color_to_hwp_bgr(css: &str) -> Option<u32> {
 }
 
 /// HTML 엔티티를 디코딩한다.
+///
+/// [paste-import/엔티티] 예전에는 이름 있는 몇 개(amp/lt/gt/quot/apos/nbsp)와 &#160;/&#xA0;
+/// 만 문자열 치환으로 풀어, &#039;·&copy;·&#12345;·&#x2014; 같은 흔한 참조가 리터럴로 남았다.
+/// 이제 '&'…';' 구간을 일반적으로 파싱해 (1)이름 있는 엔티티 (2)10진 문자참조(&#039;)
+/// (3)16진 문자참조(&#x2014;)를 전부 디코딩한다.
+/// [paste-import/nbsp] &nbsp;는 일반 공백(U+0020)이 아니라 고정폭 공백(U+00A0)으로 —
+/// 줄바꿈 방지 의도를 보존한다.
 pub(crate) fn decode_html_entities(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'")
-        .replace("&nbsp;", " ")
-        .replace("&#160;", " ")
-        .replace("&#xA0;", " ")
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    let mut result = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < len {
+        if chars[i] == '&' {
+            // 엔티티는 짧다 — 최대 32자 내에서 ';' 를 찾는다. 도중에 엔티티에 올 수 없는
+            // 문자('&', 공백, '<', '>')를 만나면 엔티티가 아니라고 보고 중단한다.
+            let mut semi = None;
+            let limit = (i + 32).min(len);
+            let mut j = i + 1;
+            while j < limit {
+                let c = chars[j];
+                if c == ';' {
+                    semi = Some(j);
+                    break;
+                }
+                if c == '&' || c == '<' || c == '>' || c.is_whitespace() {
+                    break;
+                }
+                j += 1;
+            }
+            if let Some(semi) = semi {
+                let entity: String = chars[i + 1..semi].iter().collect();
+                if let Some(decoded) = decode_single_entity(&entity) {
+                    result.push_str(&decoded);
+                    i = semi + 1;
+                    continue;
+                }
+            }
+            // 알 수 없는 엔티티 → '&' 그대로 두고 진행
+            result.push('&');
+            i += 1;
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+    result
+}
+
+/// 단일 엔티티 본문(앞뒤 '&' ';' 제외)을 유니코드 문자열로 변환한다.
+fn decode_single_entity(entity: &str) -> Option<String> {
+    // 숫자 문자 참조: &#039;(10진) / &#x2014;(16진)
+    if let Some(rest) = entity.strip_prefix('#') {
+        let code = if let Some(hex) = rest.strip_prefix('x').or_else(|| rest.strip_prefix('X')) {
+            u32::from_str_radix(hex, 16).ok()?
+        } else {
+            rest.parse::<u32>().ok()?
+        };
+        return char::from_u32(code).map(|c| c.to_string());
+    }
+    // 이름 있는 엔티티 (실무에서 흔한 것 위주)
+    let ch = match entity {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "nbsp" => '\u{00A0}', // 고정폭 공백 — U+0020 아님
+        "ensp" => '\u{2002}',
+        "emsp" => '\u{2003}',
+        "thinsp" => '\u{2009}',
+        "copy" => '\u{00A9}',
+        "reg" => '\u{00AE}',
+        "trade" => '\u{2122}',
+        "mdash" => '\u{2014}',
+        "ndash" => '\u{2013}',
+        "hellip" => '\u{2026}',
+        "lsquo" => '\u{2018}',
+        "rsquo" => '\u{2019}',
+        "ldquo" => '\u{201C}',
+        "rdquo" => '\u{201D}',
+        "laquo" => '\u{00AB}',
+        "raquo" => '\u{00BB}',
+        "middot" => '\u{00B7}',
+        "bull" => '\u{2022}',
+        "deg" => '\u{00B0}',
+        "euro" => '\u{20AC}',
+        "pound" => '\u{00A3}',
+        "yen" => '\u{00A5}',
+        "cent" => '\u{00A2}',
+        "sect" => '\u{00A7}',
+        "para" => '\u{00B6}',
+        "times" => '\u{00D7}',
+        "divide" => '\u{00F7}',
+        "plusmn" => '\u{00B1}',
+        "frac12" => '\u{00BD}',
+        "frac14" => '\u{00BC}',
+        "frac34" => '\u{00BE}',
+        _ => return None,
+    };
+    Some(ch.to_string())
+}
+
+/// [paste-import/script·style] <script>·<style> 블록을 내용째로 걷어낸다.
+/// 예전에는 여는/닫는 태그만 무시돼 그 안의 JS 코드·CSS 소스가 셀/본문 텍스트로 샜다.
+/// 파싱 이전 단계에서 통째로 제거해 표 셀 안 script, 본문 앞 style 양쪽을 막는다.
+pub(crate) fn strip_script_style(html: &str) -> String {
+    if !html.contains('<') {
+        return html.to_string();
+    }
+    let chars: Vec<char> = html.chars().collect();
+    let len = chars.len();
+    let mut result = String::with_capacity(html.len());
+    let mut i = 0;
+    while i < len {
+        if chars[i] == '<' {
+            let head: String = chars[i..(i + 7).min(len)].iter().collect::<String>().to_lowercase();
+            let name = if head.starts_with("<script") {
+                Some("script")
+            } else if head.starts_with("<style") {
+                Some("style")
+            } else {
+                None
+            };
+            if let Some(name) = name {
+                // 닫는 태그(</script>/</style>) 뒤로 건너뛴다. 닫는 태그가 없으면
+                // find_closing_tag_chars 가 len 을 돌려주어 나머지를 전부 버린다.
+                i = find_closing_tag_chars(&chars, i, name);
+                continue;
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+    result
 }
 
 /// HTML 태그를 제거하고 텍스트만 추출한다.

@@ -121,8 +121,10 @@ pub struct DocumentCore {
     pub(crate) snapshot_store: Vec<(u32, Document)>,
     /// 다음 스냅샷 ID
     pub(crate) next_snapshot_id: u32,
-    /// 머리말/꼬리말 감추기: (global_page_index, is_header) 조합
-    pub(crate) hidden_header_footer: std::collections::HashSet<(u32, bool)>,
+    /// 머리말/꼬리말 감추기 명시 override: (global_page_index, is_header) → 감춤 여부.
+    /// [page-section/결함4·5] 존재하면 모델(PageHide/section_def) 기본값보다 우선한다.
+    /// 값 true=감춤, false=강제 표시(예: setPageHide 로 감춘 걸 toggle 로 되살림).
+    pub(crate) hidden_header_footer: std::collections::HashMap<(u32, bool), bool>,
     /// 파일 이름 (머리말/꼬리말 필드 치환용)
     pub(crate) file_name: String,
     /// 현재 활성 필드 위치 (커서가 진입한 누름틀 — 안내문 렌더링 스킵용)
@@ -244,6 +246,20 @@ impl DocumentCore {
             dpi,
             self.document.is_hwp3_variant,
         );
+        // [render-history/setDpi 즉시 재조판] paginate()는 증분 측정 — dirty 가 아닌
+        // 구역은 옛 dpi 로 측정한 measured_sections 캐시를 그대로 재사용하고, 앞선 조판
+        // 뒤 dirty_sections 는 전부 false 인 상태다. 그래서 self.dpi 만 바뀌고 레이아웃·셀
+        // bbox·히트테스트 좌표는 다음 편집(구역을 dirty 로 만드는)까지 옛 배율에 머물렀다.
+        // 그 사이 클릭이 엉뚱한 셀에 떨어지고, 나중 복원이 밀린 dpi 를 대신 적용해 쪽 크기가
+        // 한 번에 2배로 튀었다. dpi 는 모든 px 측정의 뿌리이므로, 측정 캐시를 전부 버리고
+        // 모든 구역을 dirty 로 표시해 즉시 전량 재측정·재조판한다.
+        self.mark_all_sections_dirty();
+        self.measured_tables.clear();
+        self.measured_sections.clear();
+        self.dirty_paragraphs.clear();
+        self.para_column_map.clear();
+        self.page_tree_cache.borrow_mut().clear();
+        self.overflow_links_cache.borrow_mut().clear();
         self.paginate();
     }
 
@@ -279,7 +295,7 @@ impl DocumentCore {
             overflow_links_cache: RefCell::new(HashMap::new()),
             snapshot_store: Vec::new(),
             next_snapshot_id: 0,
-            hidden_header_footer: std::collections::HashSet::new(),
+            hidden_header_footer: std::collections::HashMap::new(),
             file_name: String::new(),
             active_field: None,
             para_offset: Vec::new(),

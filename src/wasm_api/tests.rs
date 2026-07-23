@@ -4873,7 +4873,12 @@ fn test_table_utility_functions() {
 fn test_html_utility_functions() {
     // decode_html_entities
     assert_eq!(super::decode_html_entities("&amp;&lt;&gt;"), "&<>");
-    assert_eq!(super::decode_html_entities("&nbsp;"), " ");
+    // [paste-import/nbsp] &nbsp;는 고정폭 공백(U+00A0) — 일반 공백(U+0020) 아님
+    assert_eq!(super::decode_html_entities("&nbsp;"), "\u{00A0}");
+    // [paste-import/엔티티] 숫자/16진 문자참조 + 이름 있는 엔티티 전반 디코딩
+    assert_eq!(super::decode_html_entities("&#039;&copy;&#x2014;"), "'\u{00A9}\u{2014}");
+    // 알 수 없는 엔티티는 '&' 그대로 보존
+    assert_eq!(super::decode_html_entities("a & b"), "a & b");
 
     // html_strip_tags
     assert_eq!(super::html_strip_tags("<b>bold</b>"), "bold");

@@ -73,6 +73,11 @@ impl DocumentCore {
         name: &str,
         editable: bool,
     ) -> Result<String, HwpError> {
+        // [필드/빈 이름] 이름 없는 누름틀은 getFieldList엔 뜨지만 getFieldValueByName으론
+        // 조회가 불가능해 "목록과 조회가 서로 다른 문서를 보는" 유령 필드가 된다 — 삽입을 거부한다.
+        if name.trim().is_empty() {
+            return Ok(r#"{"ok":false,"error":"필드 이름을 입력하세요."}"#.to_string());
+        }
         let field_id = self.next_click_here_field_id();
         let inserted_offset = {
             let section = self
@@ -141,6 +146,10 @@ impl DocumentCore {
         name: &str,
         editable: bool,
     ) -> Result<String, HwpError> {
+        // [필드/빈 이름] 셀 경로에서도 이름 없는 유령 누름틀을 거부한다(본문과 동일 계약).
+        if name.trim().is_empty() {
+            return Ok(r#"{"ok":false,"error":"필드 이름을 입력하세요."}"#.to_string());
+        }
         let field_id = self.next_click_here_field_id();
         let inserted_offset = {
             let para = self.get_cell_paragraph_mut(
@@ -203,6 +212,10 @@ impl DocumentCore {
         if path.is_empty() {
             return Err(HwpError::InvalidField("cellPath가 비어 있음".into()));
         }
+        // [필드/빈 이름] path 변형에서도 이름 없는 유령 누름틀을 거부한다.
+        if name.trim().is_empty() {
+            return Ok(r#"{"ok":false,"error":"필드 이름을 입력하세요."}"#.to_string());
+        }
         let field_id = self.next_click_here_field_id();
         let inserted_offset = {
             let para = self.get_cell_paragraph_mut_by_path(section_idx, parent_para_idx, path)?;
@@ -249,10 +262,18 @@ impl DocumentCore {
                 let location_json = field_location_json(&fi.location);
                 let (start_char_idx, end_char_idx) = field_range_bounds(self, fi)
                     .unwrap_or((0, fi.value.chars().count()));
+                // [셀 필드/타입 구분] 셀 속성 fieldName으로 만든 가상 필드(ctrl_id==0)는 누름틀과
+                // 저장소가 다른데 같은 "clickhere"로 나가 호출부가 fieldId 크기로만 구분해야 했다.
+                // 별도 "cell" 타입으로 내보내 종류를 계약으로 구분 가능하게 한다.
+                let field_type = if fi.field.ctrl_id == 0 {
+                    "cell"
+                } else {
+                    fi.field.field_type_str()
+                };
                 format!(
                     "{{\"fieldId\":{},\"fieldType\":\"{}\",\"name\":{},\"guide\":{},\"command\":{},\"value\":{},\"location\":{},\"startCharIdx\":{},\"endCharIdx\":{},\"editableInForm\":{}}}",
                     fi.field.field_id,
-                    fi.field.field_type_str(),
+                    field_type,
                     json_escape(name),
                     json_escape(guide),
                     json_escape(&fi.field.command),
@@ -328,34 +349,55 @@ impl DocumentCore {
     }
 
     /// setFieldValueByName: 필드 이름으로 값 설정
+    ///
+    /// [필드/같은 이름 전부 갱신] 같은 이름 필드가 여러 곳(다른 문단·셀)에 있으면 첫 번째만
+    /// 갱신해 이름 기반 연동이 반만 반영되던 문제 — 같은 이름을 **모두** 갱신한다. (누름틀은
+    /// 책갈피와 달리 중복 이름을 허용하므로 — 같은 위치 두 필드 계약(P0-5 ③) — 거부가 아니라
+    /// 전부 갱신이 옳다.)
     pub fn set_field_value_by_name(&mut self, name: &str, value: &str) -> Result<String, HwpError> {
-        let fields = self.collect_all_fields();
-        let fi = fields
-            .iter()
-            .find(|f| f.field.field_name().map(|n| n == name).unwrap_or(false))
-            .ok_or_else(|| HwpError::InvalidField(format!("필드 이름 '{}' 없음", name)))?;
+        // 대상 필드들의 위치를 한 번에 캡처한다. 문단 내 여러 필드도 field_range 인덱스(fri)는
+        // 편집 후에도 불변이라, 캡처한 (location, fri)로 순차 교체해도 형제 범위는 set_field_text_at
+        // 의 스냅샷 시프트가 보정한다(겹치지 않는 정상 배치 기준).
+        let (field_id, old_value, targets) = {
+            let fields = self.collect_all_fields();
+            let matched: Vec<&FieldInfo> = fields
+                .iter()
+                .filter(|f| f.field.field_name().map(|n| n == name).unwrap_or(false))
+                .collect();
+            if matched.is_empty() {
+                return Err(HwpError::InvalidField(format!("필드 이름 '{}' 없음", name)));
+            }
+            let field_id = matched[0].field.field_id;
+            let old_value = matched[0].value.clone();
+            // (location, field_range_index, is_cell_field)
+            let targets: Vec<(FieldLocation, usize, bool)> = matched
+                .iter()
+                .map(|f| (f.location.clone(), f.field_range_index, f.field.ctrl_id == 0))
+                .collect();
+            (field_id, old_value, targets)
+        };
 
-        let field_id = fi.field.field_id;
-        let location = fi.location.clone();
-        let fri = fi.field_range_index;
-        let old_value = fi.value.clone();
-        let is_cell_field = fi.field.ctrl_id == 0; // 가상 셀 필드
-
-        let section_index = location.section_index;
-
-        if is_cell_field {
-            // 셀 필드: 셀의 첫 문단 텍스트를 직접 교체
-            self.set_cell_field_text(&location, value)?;
-        } else {
-            // ClickHere 필드: field_ranges 기반 교체
-            self.set_field_text_at(&location, fri, value)?;
+        let mut touched: Vec<usize> = Vec::new();
+        for (location, fri, is_cell_field) in &targets {
+            let section_index = location.section_index;
+            if *is_cell_field {
+                // 셀 필드: 셀의 첫 문단 텍스트를 직접 교체
+                self.set_cell_field_text(location, value)?;
+            } else {
+                // ClickHere 필드: field_ranges 기반 교체
+                self.set_field_text_at(location, *fri, value)?;
+            }
+            // raw_stream 무효화
+            if let Some(sec) = self.document.sections.get_mut(section_index) {
+                sec.raw_stream = None;
+            }
+            if !touched.contains(&section_index) {
+                touched.push(section_index);
+            }
         }
-
-        // raw_stream 무효화
-        if let Some(sec) = self.document.sections.get_mut(section_index) {
-            sec.raw_stream = None;
+        for section_index in touched {
+            self.recompose_section(section_index);
         }
-        self.recompose_section(section_index);
 
         Ok(format!(
             "{{\"ok\":true,\"fieldId\":{},\"oldValue\":{},\"newValue\":{}}}",
@@ -1275,17 +1317,6 @@ fn insert_click_here_field_in_para(
         .position(|&pos| pos > start)
         .unwrap_or(para.controls.len());
 
-    // [P0-5 ①] 값이 든 칸/문단에 누름틀을 심으면 삽입 지점의 기존 글자를 필드가 흡수한다.
-    // 흡수하지 않으면 range=[start,start]인 빈 필드가 되어 기존 글자가 범위 밖에 남고,
-    // 이후 setFieldValue가 그 옆에 값을 써 공문에 "70"이 찍힌다(패널은 "7"). 삽입 지점부터
-    // 다음 컨트롤(또는 텍스트 끝)까지를 범위로 잡아 셀=한 값 모델에서 필드가 값을 소유하게 한다.
-    // 빈 위치 삽입(text 없음)이면 next control이 없거나 start==text_len이라 흡수 없음(기존 동작 보존).
-    let absorb_end = positions
-        .iter()
-        .copied()
-        .find(|&pos| pos > start)
-        .unwrap_or(text_len);
-
     for range in &mut para.field_ranges {
         if range.control_idx >= insert_idx {
             range.control_idx += 1;
@@ -1319,7 +1350,7 @@ fn insert_click_here_field_in_para(
 
     let new_range = FieldRange {
         start_char_idx: start,
-        end_char_idx: absorb_end,
+        end_char_idx: start,
         control_idx: insert_idx,
     };
     let range_idx = para

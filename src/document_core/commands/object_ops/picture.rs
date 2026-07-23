@@ -953,12 +953,14 @@ impl DocumentCore {
                 _ => pic.common.text_wrap,
             };
         }
+        // [image-shape/restrictInPage+allowOverlap 독립] 쪽 영역 제한(flow_with_text, bit13)과
+        // 겹침 허용(allow_overlap, bit14)은 한컴에서 서로 독립 플래그다. 예전엔 restrictInPage=true
+        // 가 allow_overlap 을 강제로 끄고, 아래쪽 post-hoc 블록이 flow_with_text 면 다시 꺼버려서
+        // 같은 set 호출로 allowOverlap:true 를 줘도 조용히 false 가 됐다. 각 키를 독립 반영한다.
         if let Some(v) = json_bool(props_json, "restrictInPage") {
             pic.common.flow_with_text = v;
             if v {
                 pic.common.attr |= 1 << 13;
-                pic.common.allow_overlap = false;
-                pic.common.attr &= !(1 << 14);
             } else {
                 pic.common.attr &= !(1 << 13);
             }
@@ -978,10 +980,6 @@ impl DocumentCore {
             } else {
                 pic.common.attr &= !(1 << 20);
             }
-        }
-        if pic.common.flow_with_text {
-            pic.common.allow_overlap = false;
-            pic.common.attr &= !(1 << 14);
         }
         if let Some(v) = json_i32(props_json, "vertOffset") {
             pic.common.vertical_offset = v as u32;
@@ -1454,6 +1452,15 @@ impl DocumentCore {
         if image_data.is_empty() {
             return Err(HwpError::RenderError(
                 "이미지 데이터가 비어 있습니다".to_string(),
+            ));
+        }
+        // [image-shape/쓰레기 바이트] 이미지가 아닌 바이트를 그대로 embed 하면
+        // getControlImageMime 이 application/octet-stream 을 돌려주고 렌더러가 브라우저가
+        // 못 그리는 data URI 를 뱉는다. 매직 바이트로 형식을 검증해 삽입 단계에서 거부한다.
+        if !crate::renderer::image_resolver::is_supported_image_format(image_data) {
+            return Err(HwpError::InvalidField(
+                "이미지 형식을 인식할 수 없습니다 (PNG/JPG/GIF/BMP/TIFF/PCX/WMF/EMF/SVG 아님)"
+                    .to_string(),
             ));
         }
         // 입력 방어: 음수(u32 래핑)·과대 크기를 뒤집힘으로 삼키지 않고 거부한다(0은 한컴 호환 유지).
