@@ -2299,7 +2299,15 @@ impl LayoutEngine {
                     None, // 머리말/꼬리말 컨텍스트 — wrap zone 무관
                 );
             }
-            if y_offset >= area.y + area.height {
+            // [render-position/머리말 문단 좌표 되감김 결함] 예전엔 y_offset 이 머리말 띠
+            // (area) 하단을 넘으면 즉시 break 해서, 띠를 넘긴 4번째 이후 문단이 render tree 에
+            // 아예 실리지 않았다. 그러면 getCursorRectInHeaderFooter 가 그 문단을 못 찾고
+            // 폴백으로 머리말 영역 top(y≈75.6)을 돌려줘, 좌표가 첫 줄 위로 되감겨 서로 겹쳐
+            // 보였다(page-section QA "머리말 문단을 늘리면 좌표가 아래로 쌓이는가"). 한컴도
+            // 머리말 내용이 띠를 넘으면 본문 위로 흘러 겹치므로, 넘친 문단도 계속 배치해
+            // 좌표를 단조 증가시킨다. 물리 쪽(paper) 밖으로까지 나가면 그때만 멈춘다(런어웨이
+            // 방지). 띠 안에 들어오는 정상 머리말은 이 지점에 도달하지 않아 렌더 무변동.
+            if y_offset >= paper_area.y + paper_area.height {
                 break;
             }
         }

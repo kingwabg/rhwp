@@ -2601,6 +2601,76 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// [table-width-fit] 표가 현재 본문 폭을 넘치는지 **읽기 전용**으로 조회한다.
+    ///
+    /// 왜: 표는 절대 열폭을 저장해 용지·여백·단 변경에 자동으로 안 따라온다(HWP 원본
+    /// 동작). 그동안 넘침을 알릴 신호가 없어 인쇄물이 종이 밖으로 나가도 UI가 몰랐다.
+    /// 이 질의는 좌표를 건드리지 않고 넘침 여부만 돌려준다 — 앱이 경고하거나
+    /// `fitTableToPage` 호출 여부를 결정할 수 있다.
+    /// 반환: JSON `{"ok":true,"tableWidth":..,"pageContentWidth":..,"fits":bool,"overflow":..}`
+    #[wasm_bindgen(js_name = getTableFit)]
+    pub fn get_table_fit(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+    ) -> Result<String, JsValue> {
+        self.get_table_fit_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// [table-width-fit] 표를 현재 본문 폭에 맞춰 비례 축소한다(축소 전용).
+    ///
+    /// 왜: 이제껏 이 보정 로직(`fit_table_to_page_native`)이 코어에만 있고 wasm으로
+    /// 노출되지 않아 앱/스튜디오가 넘치는 표를 고칠 방법이 실제로 없었다. 여백 확대·
+    /// 용지 축소·다단 전환 후 이 메서드를 호출하면 표가 종이 안으로 들어온다.
+    /// 이미 본문 폭 이하이면 변경하지 않는다(`changed:false`).
+    /// 반환: JSON `{"ok":true,"colCount":..,"tableWidth":..,"pageContentWidth":..,"changed":bool}`
+    #[wasm_bindgen(js_name = fitTableToPage)]
+    pub fn fit_table_to_page(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+    ) -> Result<String, JsValue> {
+        self.fit_table_to_page_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// [table-width-fit] 표의 열별 폭(HWPUNIT)을 절대값으로 설정한다.
+    ///
+    /// 왜: `resizeTableCells`의 델타는 "경계선 끌기" 의미라 표 총폭이 늘어난다(업스트림
+    /// 델타 모델·issue_1481). 다단/사용자 지정 폭처럼 총폭을 정확히 지정해야 하는 경우를
+    /// 위해 절대폭 설정 경로를 노출한다. `widths.len()`은 표의 열 수와 같아야 한다.
+    /// json: `[20000, 5000, 5000]` (열 수만큼의 HWPUNIT 폭 배열)
+    /// 반환: JSON `{"ok":true,"colCount":..,"tableWidth":..}`
+    #[wasm_bindgen(js_name = setTableColumnWidths)]
+    pub fn set_table_column_widths(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+        widths_json: &str,
+    ) -> Result<String, JsValue> {
+        let widths: Vec<u32> = serde_json::from_str(widths_json)
+            .map_err(|e| JsValue::from_str(&format!("열 폭 JSON 파싱 실패: {}", e)))?;
+        self.set_table_column_widths_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+            widths,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// 표 속성을 조회한다.
     ///
     /// 반환: JSON `{cellSpacing, paddingLeft, paddingRight, paddingTop, paddingBottom, pageBreak, repeatHeader}`

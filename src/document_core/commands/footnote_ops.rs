@@ -434,12 +434,16 @@ impl DocumentCore {
         match ctrl {
             Control::Footnote(f) => {
                 let para_count = f.paragraphs.len();
-                let texts: Vec<String> = f
-                    .paragraphs
+                // [각주/빈 각주 2자] 각주 첫 문단은 번호 마커(AutoNumber)를 위한 placeholder
+                // 공백 2칸을 늘 품는다 — 이를 텍스트로 세면 빈 각주도 "  "(2자)로 온다.
+                // 실제 사용자 글자만 보이도록 마커 placeholder를 제외한다.
+                let visible: Vec<String> =
+                    f.paragraphs.iter().map(footnote_visible_text).collect();
+                let texts: Vec<String> = visible
                     .iter()
-                    .map(|p| p.text.replace('\\', "\\\\").replace('"', "\\\""))
+                    .map(|t| t.replace('\\', "\\\\").replace('"', "\\\""))
                     .collect();
-                let total_len: usize = f.paragraphs.iter().map(|p| p.text.chars().count()).sum();
+                let total_len: usize = visible.iter().map(|t| t.chars().count()).sum();
                 Ok(format!(
                     "{{\"ok\":true,\"paraCount\":{},\"totalTextLen\":{},\"number\":{},\"texts\":[{}]}}",
                     para_count,
@@ -450,12 +454,13 @@ impl DocumentCore {
             }
             Control::Endnote(e) => {
                 let para_count = e.paragraphs.len();
-                let texts: Vec<String> = e
-                    .paragraphs
+                let visible: Vec<String> =
+                    e.paragraphs.iter().map(footnote_visible_text).collect();
+                let texts: Vec<String> = visible
                     .iter()
-                    .map(|p| p.text.replace('\\', "\\\\").replace('"', "\\\""))
+                    .map(|t| t.replace('\\', "\\\\").replace('"', "\\\""))
                     .collect();
-                let total_len: usize = e.paragraphs.iter().map(|p| p.text.chars().count()).sum();
+                let total_len: usize = visible.iter().map(|t| t.chars().count()).sum();
                 Ok(format!(
                     "{{\"ok\":true,\"paraCount\":{},\"totalTextLen\":{},\"number\":{},\"texts\":[{}]}}",
                     para_count,
@@ -686,5 +691,44 @@ impl DocumentCore {
             "\"fnParaIndex\":{},\"charOffset\":{}",
             prev_idx, merge_offset
         )))
+    }
+}
+
+/// 각주/미주 문단에서 번호 마커(AutoNumber) placeholder를 제외한 실제 글자만 반환한다.
+///
+/// 각주 첫 문단은 생성 시 마커 자리로 placeholder 공백 2칸("  ")을 품는다(note.rs
+/// 삽입 계약). char_offsets 갭이 8 이상인 공백 = 마커가 점유한 자리다. 사용자 글자는
+/// 이 자리 앞/뒤에 붙으므로, placeholder 2칸(마커 폭)을 도려내 실제 텍스트만 남긴다.
+/// AutoNumber가 없는 문단(둘째 문단 등)은 그대로 돌려준다.
+fn footnote_visible_text(para: &Paragraph) -> String {
+    let has_marker = para
+        .controls
+        .iter()
+        .any(|c| matches!(c, Control::AutoNumber(_)));
+    if !has_marker {
+        return para.text.clone();
+    }
+    let chars: Vec<char> = para.text.chars().collect();
+    // 마커 placeholder 시작 위치: 공백이면서 다음 char_offset까지 갭이 8cu 이상인 지점.
+    let marker_start = (0..chars.len()).find(|&i| {
+        if !chars[i].is_whitespace() {
+            return false;
+        }
+        let cur = para.char_offsets.get(i).copied().unwrap_or(0);
+        let next = para
+            .char_offsets
+            .get(i + 1)
+            .copied()
+            .unwrap_or_else(|| para.char_count.saturating_sub(1));
+        next.saturating_sub(cur) >= 8
+    });
+    match marker_start {
+        // 마커는 placeholder 공백 2칸 폭 — 실제 글자에서 제외.
+        Some(p) => {
+            let mut out: String = chars[..p].iter().collect();
+            out.extend(chars.get(p + 2..).unwrap_or(&[]).iter());
+            out
+        }
+        None => para.text.clone(),
     }
 }

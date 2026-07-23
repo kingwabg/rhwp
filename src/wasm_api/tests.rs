@@ -4493,7 +4493,11 @@ fn test_paste_html_table_as_control() {
         assert!(cell_texts.iter().any(|t| t.contains("셀4")), "셀4 포함");
 
         // 정상 파일 패턴과 일치하는 속성값 검증
-        assert_eq!(tbl.attr, 0x082A2311, "table.attr = 0x082A2311");
+        // [pagination-overflow/paste-import #2] table.attr(=CommonObjAttr)에서 bit0(글자처럼
+        // 취급)·bit13(쪽영역제한)을 껐다(0x082A2311 & !0x2001 = 0x082A0310). 종전값은 조판기
+        // is_effective_tac_table 을 발동시켜 쪽 넘는 표가 안 갈라지게 만들었다. 비-TAC 블록 표로
+        // 잡혀 행 단위 분할된다. attr==common.attr 정합은 아래 4540 단언이 계속 지킨다.
+        assert_eq!(tbl.attr, 0x082A0310, "table.attr = 비-TAC 블록 표(bit0·bit13 off)");
         assert_eq!(
             tbl.raw_table_record_attr, 0x04000006,
             "raw_table_record_attr (DIFF-5: 셀분리금지 항상 설정)"
@@ -4569,6 +4573,37 @@ fn test_paste_html_table_as_control() {
     } else {
         panic!("첫 번째 컨트롤이 Table이어야 함");
     }
+}
+
+/// [pagination-overflow/paste-import #2] pasteHtml 로 붙인, 한 쪽을 넘는 표(200행)는
+/// 행 단위로 페이지 분할되어야 한다. 종전엔 종이 절대배치(vert=Paper)+글자처럼취급 오판으로
+/// 200행이 한 쪽에 겹쳐 쌓여 pageCount=1 이었다(createTableEx 는 정상 분할). 저장·재로드
+/// 왕복 후에도 분할이 보존되는지(attr==common.attr 정합)까지 확인한다.
+#[test]
+fn paste_html_tall_table_paginates_across_pages() {
+    let mut doc = HwpDocument::create_empty();
+    let mut html = String::from("<table>");
+    for r in 0..200 {
+        html.push_str("<tr><td>r");
+        html.push_str(&r.to_string());
+        html.push_str("</td><td>x</td></tr>");
+    }
+    html.push_str("</table>");
+    doc.paste_html(0, 0, 0, &html).expect("paste ok");
+    let pages = doc.page_count();
+    assert!(
+        pages > 1,
+        "쪽 넘는 붙여넣기 표는 갈라져야 한다 — pageCount={pages}"
+    );
+
+    // 저장→재로드 왕복 후에도 분할 보존
+    let bytes = doc.export_hwp().expect("export ok");
+    let reopened = HwpDocument::from_bytes(&bytes).expect("open ok");
+    let pages2 = reopened.page_count();
+    assert!(
+        pages2 > 1,
+        "저장·재로드 뒤에도 분할이 유지돼야 한다 — pageCount={pages2}"
+    );
 }
 
 /// DIFF-1 검증: &nbsp; 만 있는 빈 셀이 char_count=1, has_para_text=false 인지 확인
@@ -17533,9 +17568,13 @@ fn test_parse_table_html_save() {
         table_para.line_segs[0].line_height > 0,
         "DIFF-8: line_height > 0"
     );
-    assert!(
-        table_para.line_segs[0].segment_width > 0,
-        "DIFF-8: seg_width > 0"
+    // [pagination-overflow/paste-import #2] 표 host 문단 LINE_SEG 의 segment_width 는
+    // 한컴 표준대로 0 이어야 한다(createTableEx 동일). 종전엔 표 전체 폭을 실어(seg_w>0)
+    // 표가 "쪼갤 수 없는 한 줄"로 굳어 쪽 분할이 막혔다 — 이 단언이 그 버그를 고정하고
+    // 있었으므로 표준값(0)으로 갱신한다.
+    assert_eq!(
+        table_para.line_segs[0].segment_width, 0,
+        "DIFF-8: seg_width == 0 (한컴 표준 표 문단)"
     );
     assert_eq!(
         table_para.line_segs[0].tag,

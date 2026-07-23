@@ -70,6 +70,14 @@ impl DocumentCore {
             .get_mut(para)
             .ok_or_else(|| HwpError::RenderError("문단 범위 초과".into()))?;
 
+        // [책갈피/범위 검증] 문단 길이를 넘는(음수=u32 래핑 포함) 위치를 조용히 끝에 붙이지 않는다.
+        let text_len = paragraph.text.chars().count();
+        if char_offset > text_len {
+            return Ok(
+                r#"{"ok":false,"error":"책갈피 위치가 문단 범위를 벗어났습니다."}"#.to_string(),
+            );
+        }
+
         // char_offset에 해당하는 컨트롤 삽입 위치 결정
         let insert_idx = find_control_insert_index(paragraph, char_offset);
 
@@ -82,17 +90,20 @@ impl DocumentCore {
 
         // CTRL_DATA 레코드 생성 (ParameterSet: 책갈피 이름)
         let ctrl_data = build_bookmark_ctrl_data(name);
-        if paragraph.ctrl_data_records.len() >= insert_idx {
-            paragraph
-                .ctrl_data_records
-                .insert(insert_idx, Some(ctrl_data));
-        }
+        let cd_idx = insert_idx.min(paragraph.ctrl_data_records.len());
+        paragraph.ctrl_data_records.insert(cd_idx, Some(ctrl_data));
 
-        // char_offsets에 컨트롤 위치 정보 추가
+        // [책갈피/위치 반영·핸들 안정] char_offset 이후 글자 오프셋을 8cu 밀어 컨트롤 갭을
+        // 만든다(각주 삽입과 동일 계약). 구식 insert는 char_offsets 길이 불변식(=텍스트 글자수)을
+        // 깨 위치가 문단 끝으로 붕괴했고, 그 탓에 새 책갈피가 앞자리를 차지해 기존 ctrlIdx 핸들이
+        // 다른 책갈피를 가리키던 근본 원인이었다 — 갭 방식으로 요청 위치를 그대로 보존한다.
         if !paragraph.char_offsets.is_empty() {
-            let raw_offset = char_offset_to_raw(paragraph, char_offset, insert_idx);
-            paragraph.char_offsets.insert(insert_idx, raw_offset);
+            let safe_offset = char_offset.min(paragraph.char_offsets.len());
+            for co in paragraph.char_offsets[safe_offset..].iter_mut() {
+                *co += 8;
+            }
         }
+        paragraph.char_count += 8;
 
         self.recompose_section(sec);
 
@@ -125,12 +136,21 @@ impl DocumentCore {
             return Ok(r#"{"ok":false,"error":"해당 컨트롤이 책갈피가 아닙니다."}"#.to_string());
         }
 
+        // 삭제 전 책갈피의 본문 위치 파악 (char_offsets 되돌리기용 — 각주 삭제와 동일 패턴).
+        let marker_pos = find_control_text_positions(paragraph)
+            .get(ctrl_idx)
+            .copied();
+
         paragraph.controls.remove(ctrl_idx);
         if ctrl_idx < paragraph.ctrl_data_records.len() {
             paragraph.ctrl_data_records.remove(ctrl_idx);
         }
-        if ctrl_idx < paragraph.char_offsets.len() {
-            paragraph.char_offsets.remove(ctrl_idx);
+        // char_offsets: add 시 만든 8cu 갭을 되돌린다(엔트리 제거가 아니라 되밀기 — 길이 불변식 유지).
+        if let Some(pos) = marker_pos {
+            for co in paragraph.char_offsets.iter_mut().skip(pos) {
+                *co = co.saturating_sub(8);
+            }
+            paragraph.char_count = paragraph.char_count.saturating_sub(8);
         }
 
         self.recompose_section(sec);
@@ -296,30 +316,6 @@ fn find_control_insert_index(
         }
     }
     para.controls.len()
-}
-
-/// char_offset을 raw char_offset (파서 원본 기준)으로 변환
-fn char_offset_to_raw(
-    para: &crate::model::paragraph::Paragraph,
-    char_offset: usize,
-    insert_idx: usize,
-) -> u32 {
-    // 기존 char_offsets에서 삽입 위치 주변의 raw offset을 참조
-    if insert_idx > 0 && insert_idx <= para.char_offsets.len() {
-        // 이전 컨트롤의 raw offset + 8 (컨트롤 문자 크기)
-        para.char_offsets[insert_idx - 1] + 8
-    } else if !para.char_offsets.is_empty() {
-        // 첫 위치에 삽입: 기존 첫 번째보다 작은 값
-        let first = para.char_offsets[0];
-        if first >= 8 {
-            first - 8
-        } else {
-            0
-        }
-    } else {
-        // char_offsets가 비어있으면 char_offset * 2 (UTF-16 추정)
-        (char_offset * 2) as u32
-    }
 }
 
 /// 책갈피 CTRL_DATA 바이너리 생성 (ParameterSet 형식)

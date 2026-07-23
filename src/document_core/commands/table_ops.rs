@@ -1654,6 +1654,55 @@ impl DocumentCore {
         )))
     }
 
+    /// [table-width-fit/결함(page-section: 용지 줄이면 넘침 신호 없음)] 표가 현재 본문
+    /// 폭을 넘치는지 **읽기 전용**으로 검사한다. 좌표·모델을 전혀 건드리지 않는다.
+    ///
+    /// 왜: 표는 절대 열폭을 저장하고 용지·여백·단 변경에 자동으로 안 따라온다(HWP 원본
+    /// 동작·골든 회귀 방지 — 자동 refit은 하지 않는다). 그 결과 여백을 키우거나 용지를
+    /// 줄이면 표가 종이 밖으로 삐져나가는데 그동안 이를 알릴 신호가 어디에도 없었다.
+    /// 이 질의로 앱/스튜디오가 넘침을 감지해 사용자에게 경고하거나 `fit_table_to_page`
+    /// 를 호출할지 판단할 수 있다(감지와 보정을 분리 — 무단 축소를 강요하지 않음).
+    pub fn get_table_fit_native(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+    ) -> Result<String, HwpError> {
+        let table = self
+            .document
+            .sections
+            .get(section_idx)
+            .and_then(|s| s.paragraphs.get(parent_para_idx))
+            .and_then(|p| p.controls.get(control_idx))
+            .and_then(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                HwpError::RenderError(format!(
+                    "지정된 컨트롤이 표가 아닙니다 (sec={}, ppi={}, ci={})",
+                    section_idx, parent_para_idx, control_idx
+                ))
+            })?;
+
+        let outer = (table.outer_margin_left as i64 + table.outer_margin_right as i64).max(0) as u32;
+        let total: u32 = table.get_column_widths().iter().sum();
+
+        let page_def = &self.document.sections[section_idx].section_def.page_def;
+        let body = crate::model::page::PageAreas::from_page_def(page_def).body_area;
+        let body_w = (body.right - body.left).max(0) as u32;
+        let target = body_w.saturating_sub(outer);
+
+        let overflow = total.saturating_sub(target);
+        Ok(super::super::helpers::json_ok_with(&format!(
+            "\"tableWidth\":{},\"pageContentWidth\":{},\"fits\":{},\"overflow\":{}",
+            total,
+            target,
+            overflow == 0,
+            overflow
+        )))
+    }
+
     /// 표를 본문(페이지 텍스트) 폭에 맞춰 비례 축소한다 (네이티브).
     ///
     /// 표의 열 폭 합이 본문 폭(페이지 본문 영역 폭 − 표 바깥 좌우 여백)을 넘으면

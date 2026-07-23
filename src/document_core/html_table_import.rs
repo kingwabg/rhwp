@@ -634,11 +634,16 @@ impl DocumentCore {
         let total_width: u32 = col_widths.iter().sum();
         let total_height: u32 = row_heights.iter().sum();
 
-        // table.attr: 기존 문서의 표와 동일한 패턴 사용
-        // 0x082A2311 = treat_as_char | vert_rel_to=Para | horz_rel_to=Column |
-        //              allow_overlap | width_criterion | various layout flags
-        // 정상 HWP 파일의 모든 표에서 사용되는 표준값
-        let table_attr: u32 = 0x082A2311;
+        // table.attr = CommonObjAttr 플래그(파서: table.attr = common.attr).
+        // [pagination-overflow/paste-import #2] 종전값 0x082A2311 은 bit0(글자처럼취급)·
+        // bit13(쪽영역제한/restrictInPage)이 켜져 있었다. 조판기 is_effective_tac_table
+        // (=`table.attr & 0x01`)이 이 표를 인라인 개체로 오판해 통째 배치 경로로 빠지고,
+        // 쪽을 넘는 표(200행)가 안 갈라졌다(pageCount=1, 종이 위 겹침). bit0·bit13 을 꺼
+        // "자리차지(TopAndBottom)·vert=Para·비-TAC 블록 표"로 만들면 조판기가 행 단위 분할
+        // 경로(typeset_block_table)를 타 정상 분할된다. bit0 을 raw_ctrl_data 에도 함께 꺼
+        // attr==common.attr 정합을 유지 → 저장·재로드 왕복 후에도 분할이 보존된다.
+        // (0x082A2311 & !0x2001 = 0x082A0310)
+        let table_attr: u32 = 0x082A2311 & !0x2001;
 
         // raw_ctrl_data: CommonObjAttr 전체 (attr 포함, parse_common_obj_attr 정합)
         // [0..4] attr, [4..8] vertical_offset, [8..12] horizontal_offset,
@@ -727,7 +732,14 @@ impl DocumentCore {
         let tbl_rec_attr: u32 = 0x04000006; // bit 1(셀분리금지) + bit 2 + bit 26
 
         let outer_margin: i16 = 283; // 바깥 여백 기본값 ~1mm
+        // [pagination-overflow/paste-import #2] in-memory `common` 을 raw_ctrl_data 에서
+        // 파싱해 채운다(종전엔 Default 라 vert=Paper=종이 절대배치로 200행이 겹쳐 쌓였다).
+        // 위 table_attr(bit0/bit13 off)에 따라 common 은 비-TAC·자리차지·vert=Para 로 잡혀
+        // 흐름에 참여하고, in-memory==재로드 정합이 보장된다.
+        let parsed_common =
+            crate::parser::control::parse_common_obj_attr(&raw_ctrl_data);
         let mut table = Table {
+            // attr == common.attr (파서 규약 유지) — 위 table_attr 에서 bit0/bit13 을 껐다.
             attr: table_attr,
             row_count,
             col_count,
@@ -738,10 +750,12 @@ impl DocumentCore {
             zones: Vec::new(),
             cells,
             cell_grid: Vec::new(),
-            page_break: TablePageBreak::None,
+            // 인라인 표는 행 경계 분할 허용(createTableEx 와 동일). None 이면 한 덩어리로
+            // 남아 쪽을 넘겨도 안 갈라진다.
+            page_break: TablePageBreak::RowBreak,
             repeat_header: has_header_row,
             caption: None,
-            common: Default::default(),
+            common: parsed_common,
             outer_margin_left: outer_margin,
             outer_margin_right: outer_margin,
             outer_margin_top: outer_margin,
@@ -808,13 +822,19 @@ impl DocumentCore {
                 start_pos: 0,
                 char_shape_id: default_char_shape_id,
             }],
+            // [pagination-overflow/paste-import #2] 표 host 문단의 LINE_SEG는 한컴 표준을 따른다:
+            // line_height=1000(placeholder)·segment_width=0. 종전엔 여기에 표 전체 높이/폭을
+            // 통째로 실어(line_height=total_height, segment_width=total_width) 표가 "쪼갤 수 없는
+            // 한 줄"로 굳어졌다 — 실제 표 높이는 HeightMeasurer가 셀에서 재므로 이 값이 크면
+            // 인라인 페이지네이션이 행 단위로 못 가르고 한 쪽에 뭉친다. createTableEx 와 동일하게
+            // 표준 placeholder 로 맞춰 행 분할 경로를 살린다.
             line_segs: vec![crate::model::paragraph::LineSeg {
                 text_start: 0,
-                line_height: total_height.min(i32::MAX as u32) as i32,
-                text_height: total_height.min(i32::MAX as u32) as i32,
-                baseline_distance: (total_height as f64 * 0.85).min(i32::MAX as f64) as i32,
+                line_height: 1000,
+                text_height: 1000,
+                baseline_distance: 850,
                 line_spacing: 600,
-                segment_width: total_width.min(i32::MAX as u32) as i32,
+                segment_width: 0,
                 tag: crate::model::paragraph::LineSeg::TAG_SINGLE_SEGMENT_LINE,
                 ..Default::default()
             }],
