@@ -527,7 +527,19 @@ impl DocumentCore {
             .clone();
 
         let start_idx = fr.start_char_idx;
-        let count = fr.end_char_idx.saturating_sub(start_idx);
+        let orig_end = fr.end_char_idx;
+        let count = orig_end.saturating_sub(start_idx);
+        let target_control = fr.control_idx;
+
+        // [P0-5 ③] 편집 전 모든 field_range를 스냅샷한다. delete/insert의 generic 시프트는
+        // 같은 offset에 두 번 심긴 누름틀(빈 형제)의 end만 늘려(start>offset은 거짓, end>=offset은
+        // 참) 두 필드가 글자 범위를 공유하게 만든다 — 1번에 쓰면 2번 값이 따라 바뀌는 조용한 오염.
+        // 편집 뒤 스냅샷 기준으로 전 범위를 결정론적으로 재계산해, 대상만 값을 갖고 형제는 순수 이동.
+        let snapshot: Vec<(usize, usize, usize)> = para
+            .field_ranges
+            .iter()
+            .map(|r| (r.start_char_idx, r.end_char_idx, r.control_idx))
+            .collect();
 
         // 기존 텍스트 삭제 (char_shapes, line_segs, range_tags 등 자동 시프트)
         if count > 0 {
@@ -539,14 +551,32 @@ impl DocumentCore {
             para.insert_text_at(start_idx, value);
         }
 
-        // field_ranges 갱신: start와 end를 명시적으로 재설정
-        let new_end = start_idx + value.chars().count();
-        let current_fr = para
-            .field_ranges
-            .get_mut(field_range_index)
-            .ok_or_else(|| HwpError::InvalidField("field_range 인덱스 초과".into()))?;
-        current_fr.start_char_idx = start_idx;
-        current_fr.end_char_idx = new_end;
+        // field_ranges 재계산: 대상은 [start, start+len]. 형제는 편집 영역([start,orig_end]) 뒤면
+        // net만큼 이동, 앞이면 그대로. 같은 offset의 빈 형제는 control_idx(문서 순서)로 앞/뒤를 가른다.
+        let value_len = value.chars().count();
+        let net = value_len as isize - count as isize;
+        for (i, r) in para.field_ranges.iter_mut().enumerate() {
+            let Some(&(s, e, oc)) = snapshot.get(i) else {
+                continue;
+            };
+            if i == field_range_index {
+                r.start_char_idx = start_idx;
+                r.end_char_idx = start_idx + value_len;
+            } else {
+                // 편집 영역 뒤에 있으면 net만큼 이동. s가 orig_end와 정확히 겹칠 때:
+                // 대상이 비어있지 않으면(start<orig_end) 인접 뒤 필드라 이동, 비어있으면
+                // 같은 offset의 형제이므로 control_idx(문서 순서)로 앞/뒤를 가른다.
+                let after = s > orig_end
+                    || (s == orig_end && (start_idx < orig_end || oc > target_control));
+                if after {
+                    r.start_char_idx = (s as isize + net).max(0) as usize;
+                    r.end_char_idx = (e as isize + net).max(0) as usize;
+                } else {
+                    r.start_char_idx = s;
+                    r.end_char_idx = e;
+                }
+            }
+        }
 
         // char_offsets 재생성: FIELD_BEGIN/END 갭, 탭 폭, UTF-16 code unit 크기 반영
         rebuild_char_offsets(para);
