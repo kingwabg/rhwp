@@ -1245,6 +1245,17 @@ fn insert_click_here_field_in_para(
         .position(|&pos| pos > start)
         .unwrap_or(para.controls.len());
 
+    // [P0-5 ①] 값이 든 칸/문단에 누름틀을 심으면 삽입 지점의 기존 글자를 필드가 흡수한다.
+    // 흡수하지 않으면 range=[start,start]인 빈 필드가 되어 기존 글자가 범위 밖에 남고,
+    // 이후 setFieldValue가 그 옆에 값을 써 공문에 "70"이 찍힌다(패널은 "7"). 삽입 지점부터
+    // 다음 컨트롤(또는 텍스트 끝)까지를 범위로 잡아 셀=한 값 모델에서 필드가 값을 소유하게 한다.
+    // 빈 위치 삽입(text 없음)이면 next control이 없거나 start==text_len이라 흡수 없음(기존 동작 보존).
+    let absorb_end = positions
+        .iter()
+        .copied()
+        .find(|&pos| pos > start)
+        .unwrap_or(text_len);
+
     for range in &mut para.field_ranges {
         if range.control_idx >= insert_idx {
             range.control_idx += 1;
@@ -1278,7 +1289,7 @@ fn insert_click_here_field_in_para(
 
     let new_range = FieldRange {
         start_char_idx: start,
-        end_char_idx: start,
+        end_char_idx: absorb_end,
         control_idx: insert_idx,
     };
     let range_idx = para
