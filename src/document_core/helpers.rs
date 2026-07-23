@@ -1289,6 +1289,27 @@ pub(crate) fn parse_html_attr_u16(tag: &str, attr: &str) -> Option<u16> {
     parse_html_attr_f64(tag, attr).map(|v| v as u16)
 }
 
+/// HTML 태그에서 문자열 속성값을 추출한다 (bgcolor="#f00", align="center" 등).
+/// [paste-import/html4] style= 이 아닌 HTML4 표현 속성을 읽기 위한 헬퍼 —
+/// 외부(옛 워드/한글 웹복사)에서 온 표는 서식을 이 속성들로만 지정한다.
+pub(crate) fn parse_html_attr_str(tag: &str, attr: &str) -> Option<String> {
+    let patterns = [format!("{}=\"", attr), format!("{}='", attr)];
+    let tag_lower = tag.to_lowercase();
+    for pat in &patterns {
+        if let Some(start) = tag_lower.find(&pat.to_lowercase()) {
+            let after = &tag[start + pat.len()..];
+            let delim = if pat.ends_with('"') { '"' } else { '\'' };
+            if let Some(end) = after.find(delim) {
+                let val = after[..end].trim().to_string();
+                if !val.is_empty() {
+                    return Some(val);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// CSS dimension 값을 pt로 파싱한다 (width, height 등).
 /// "38.50pt" → 38.5, "100px" → 75.0, "2cm" → 56.69
 pub(crate) fn parse_css_dimension_pt(css: &str, property: &str) -> f64 {

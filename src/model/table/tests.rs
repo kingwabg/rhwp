@@ -559,6 +559,35 @@ fn test_delete_row_merged_cell_anchor() {
         .find(|c| c.col == 0 && c.row == 0)
         .unwrap();
     assert_eq!(merged.row_span, 2);
+    // [table-layout/삭제-세로병합] 3행치 높이(3000)를 물던 병합 셀은 앵커 행 하나가
+    // 사라지면 2행치(2000)로 줄어야 표 높이가 실제 행 수에 비례한다.
+    assert_eq!(merged.height, 2000);
+}
+
+#[test]
+fn test_delete_row_merged_shrinks_table_height() {
+    // 세로 병합(row_span=2)이 걸친 행을 지우면 표 전체 높이가 한 행만큼 줄어야 한다.
+    // (병합 셀이 2행치 height를 그대로 물고 있으면 행은 줄었는데 표 높이는 그대로인 결함.)
+    let mut table = make_table(3, 3);
+    // (0,0)~(1,0) 세로 병합
+    table.merge_cells(0, 0, 1, 0).unwrap();
+    let merged_before = table.cell_at(0, 0).unwrap();
+    assert_eq!(merged_before.row_span, 2);
+    assert_eq!(merged_before.height, 2000); // 1000 * 2행
+    let height_before: HwpUnit = table.get_row_heights().iter().sum();
+    assert_eq!(height_before, 3000); // 3행 * 1000
+
+    table.delete_row(0).unwrap();
+
+    assert_eq!(table.row_count, 2);
+    // 남은 병합 셀은 이제 단일 행 높이(1000)를 가져야 한다.
+    let merged_after = table.cell_at(0, 0).unwrap();
+    assert_eq!(merged_after.row_span, 1);
+    assert_eq!(merged_after.height, 1000);
+    // 행 높이는 [1000, 1000], 표 높이는 2000으로 한 행만큼 줄어야 한다.
+    assert_eq!(table.get_row_heights(), vec![1000, 1000]);
+    let height_after: HwpUnit = table.get_row_heights().iter().sum();
+    assert_eq!(height_after, 2000);
 }
 
 #[test]

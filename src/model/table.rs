@@ -1069,10 +1069,24 @@ impl Table {
             .and_then(|heights| heights.get(row_idx as usize).copied());
         let original_height = self.common.height;
 
-        // 삭제 행을 걸치는 병합 셀: row_span 축소
+        // [table-layout/삭제-세로병합] 삭제 행의 단일-행 높이(형제 row_span==1 셀 기준)를
+        // 미리 잡아 둔다. 세로 병합 셀은 걸친 행 수만큼 height 를 합산해 갖고 있는데,
+        // 걸친 행이 사라져 row_span 이 줄면 그만큼 height 도 줄여야 남은 행 높이가 실제
+        // 행 수에 비례한다. 안 줄이면 병합 셀이 2행치 높이를 그대로 물고 있어 행은
+        // 줄었는데 표 전체 높이(=행 높이 합)는 삭제 전과 같아지는 결함이 난다.
+        let deleted_row_height = self
+            .get_raw_row_heights()
+            .get(row_idx as usize)
+            .copied()
+            .unwrap_or(0);
+
+        // 삭제 행을 걸치는 병합 셀: row_span 축소 + 걸친 행 높이만큼 height 축소
         for cell in &mut self.cells {
             if cell.row < row_idx && cell.row + cell.row_span > row_idx {
                 cell.row_span -= 1;
+                if cell.height >= deleted_row_height {
+                    cell.height -= deleted_row_height;
+                }
             }
         }
 
@@ -1081,9 +1095,13 @@ impl Table {
             .retain(|cell| !(cell.row == row_idx && cell.row_span == 1));
 
         // 삭제 행에 앵커가 있지만 row_span > 1인 병합 셀: 다음 행으로 이동, row_span 축소
+        // 앵커 행이 사라지므로 그 행 높이만큼 병합 셀 height 도 함께 줄인다.
         for cell in &mut self.cells {
             if cell.row == row_idx && cell.row_span > 1 {
                 cell.row_span -= 1;
+                if cell.height >= deleted_row_height {
+                    cell.height -= deleted_row_height;
+                }
             }
         }
 

@@ -867,6 +867,13 @@ impl DocumentCore {
                     full_text.push('\n');
                     pos = tag_end + 1;
                     continue;
+                } else if tag_lower.starts_with("<img") {
+                    // [paste-import/img] <p>/<li> 안의 <img>는 조용히 버려져 호출부가
+                    // 그림 손실을 알 수 없었다. 자리표시 텍스트를 넣어 유실을 드러낸다
+                    // (외부 URL 이미지 처리와 동일한 "[이미지]" 표기).
+                    full_text.push_str("[이미지]");
+                    pos = tag_end + 1;
+                    continue;
                 } else {
                     // 기타 태그 무시
                     pos = tag_end + 1;
