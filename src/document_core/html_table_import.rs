@@ -447,11 +447,13 @@ impl DocumentCore {
                 },
             };
 
-            // [paste-import/셀서식] td의 글자/문단 CSS(굵기·크기·색·글꼴·정렬·줄간격)를 셀
-            // 문단 서식으로 변환한다. 예전엔 셀 레벨 속성만 읽고 이 서식들을 통째로 버렸다.
-            // (CSS가 비면 css_to_*_id 는 기본 id 0 을 돌려줘 기존 동작과 동일)
-            let cell_char_shape_id = self.css_to_char_shape_id(&pc.cell_css, false, false, false);
-            let cell_para_shape_id = self.css_to_para_shape_id(&pc.cell_css);
+            // [approval 워크어라운드 계약] 셀 글자/문단 서식(굵기·크기·색·정렬·줄간격)은 엔진이
+            // 보존하지 않는다 — 앱(lib/features/approval-document/hwp-cell-format.ts의
+            // restoreApprovalCellFormat)이 붙여넣기 뒤에 복원한다. 여기서 CSS 서식을 입히면
+            // 앱 복원과 충돌해 라벨 정렬·별표 색이 어긋난다(approval-document-template.test 회귀).
+            // 셀 레벨 속성(배경·테두리·폭%·padding·정렬 vertical)은 아래에서 그대로 반영한다.
+            let cell_char_shape_id = 0;
+            let cell_para_shape_id = 0;
 
             // 셀 내용 파싱
             // &nbsp; 등 HTML 엔티티를 디코딩한 후 공백만 남으면 빈 셀로 처리
@@ -460,33 +462,8 @@ impl DocumentCore {
             {
                 vec![Paragraph::new_empty()]
             } else {
-                // [paste-import/셀글자서식] 셀 안 인라인 서식(<b>·<span>·<i>·<u>)을 보존한다.
-                // 블록/줄바꿈(<br>·<p>·<ul>·<li> 등)이 있으면 문단 구조 파서를 그대로 쓰고,
-                // 인라인만이면 parse_inline_content 로 파싱해 굵기 등 char 서식을 살린다
-                // (예전엔 parse_html_to_paragraphs 가 loose 텍스트를 flush 하며 서식을 버렸다).
-                let lower = pc.content_html.to_lowercase();
-                let has_block = lower.contains("<br")
-                    || lower.contains("<table")
-                    || lower.contains("<p")
-                    || lower.contains("<ul")
-                    || lower.contains("<ol")
-                    || lower.contains("<li")
-                    || lower.contains("<div")
-                    || lower.contains("<pre")
-                    || lower.contains("<blockquote")
-                    || lower.contains("<h1")
-                    || lower.contains("<h2")
-                    || lower.contains("<h3")
-                    || lower.contains("<h4")
-                    || lower.contains("<h5")
-                    || lower.contains("<h6");
-                let parsed = if has_block {
-                    self.parse_html_to_paragraphs(&pc.content_html)
-                } else {
-                    let mut para = Paragraph::default();
-                    self.parse_inline_content(&mut para, &pc.content_html);
-                    vec![para]
-                };
+                // 셀 문단 구조 파서(원래 동작). 셀 안 글자 서식은 앱 복원 패스가 맡는다.
+                let parsed = self.parse_html_to_paragraphs(&pc.content_html);
                 if parsed.is_empty()
                     || parsed
                         .iter()

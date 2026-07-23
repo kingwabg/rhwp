@@ -39,31 +39,8 @@ fn dims(doc: &HwpDocument) -> Value {
     serde_json::from_str(&s).unwrap()
 }
 
-#[test]
-fn cell_inline_char_style_and_bold_tag_survive() {
-    let doc = paste_table(
-        r#"<table><tr><td style="font-weight:700;font-size:24pt;color:#dc2626">스타일</td><td><b>태그굵게</b></td></tr></table>"#,
-    );
-    let style = char_props(&doc, 0);
-    assert_eq!(style["bold"], Value::Bool(true), "인라인 font-weight 굵기");
-    assert_eq!(style["fontSize"], serde_json::json!(2400), "font-size 24pt");
-    assert_eq!(style["textColor"], serde_json::json!("#dc2626"), "color");
-    let tag = char_props(&doc, 1);
-    assert_eq!(tag["bold"], Value::Bool(true), "<b> 태그 굵기");
-
-    let page = doc.render_page_html(0).unwrap_or_else(|e| panic!("render: {e:?}"));
-    let bold_count = page.matches("font-weight:bold").count()
-        + page.matches("font-weight: bold").count();
-    assert!(bold_count >= 2, "렌더 HTML 굵은 run >=2, 실제 {bold_count}");
-}
-
-#[test]
-fn cell_text_align_and_line_height_survive() {
-    let doc = paste_table(
-        r#"<table><tr><td style="text-align:center">가</td><td>나</td></tr></table>"#,
-    );
-    assert_eq!(para_props(&doc, 0)["alignment"], serde_json::json!("center"));
-}
+// 주: 셀 글자/문단 서식 보존(cell_inline_char_style·text_align)은 앱 결재 양식 워크어라운드
+// (restoreApprovalCellFormat)와 충돌해 되돌렸다 — 해당 회귀 테스트 2건 제거. 구조 수정만 검증.
 
 #[test]
 fn percent_width_is_honored() {
@@ -113,7 +90,7 @@ fn html4_presentational_attrs() {
     );
     let p = props(&doc, 0);
     assert_eq!(p["fillType"], serde_json::json!("solid"), "bgcolor 반영");
-    assert_eq!(para_props(&doc, 0)["alignment"], serde_json::json!("center"), "align 반영");
+    // 주: align="center"(문단 정렬)는 앱 복원 패스가 맡으므로 여기선 검증하지 않는다(셀 서식 보존 되돌림).
     let w = p["width"].as_u64().unwrap();
     assert!(w > 6000 && w < 9000, "width=100(px) ≒ 7500, 실제 {w}");
 }
