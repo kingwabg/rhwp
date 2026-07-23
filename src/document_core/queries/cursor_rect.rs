@@ -1361,6 +1361,17 @@ impl DocumentCore {
         use crate::renderer::layout::{compute_char_positions, CellContext, CellPathEntry};
         use crate::renderer::render_tree::{RenderNode, RenderNodeType};
 
+        // NaN/무한대 좌표 방어. 비유한 좌표가 거리 계산에 흘러들면
+        // `dist.partial_cmp(..).unwrap()`(min_by 비교자)이 None에서 panic하고,
+        // 그 뒤 문서 핸들이 borrowed로 남아 free()마저 실패한다 — 문서 전체가 먹통이 된다.
+        // 화면 배율이 0으로 나눠지기만 해도(0/0=NaN) 유입되므로, 범위 밖 쪽 번호처럼
+        // 정중히 거부해 panic 경로를 진입부에서 원천 차단한다.
+        if !x.is_finite() || !y.is_finite() {
+            return Err(HwpError::RenderError(format!(
+                "히트 테스트 좌표가 유효하지 않습니다: x={x}, y={y}"
+            )));
+        }
+
         let tree = self.build_page_tree_cached(page_num)?;
 
         // 문자 위치를 미리 계산한 TextRun 정보
