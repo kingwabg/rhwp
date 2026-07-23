@@ -513,25 +513,35 @@ pub(crate) fn parse_para_shape_mods(json: &str) -> crate::model::style::ParaShap
     let mut mods = ParaShapeMods::default();
 
     if let Some(v) = json_str(json, "alignment") {
-        mods.alignment = Some(match v.as_str() {
-            "left" => Alignment::Left,
-            "right" => Alignment::Right,
-            "center" => Alignment::Center,
-            "justify" => Alignment::Justify,
-            "distribute" => Alignment::Distribute,
-            _ => Alignment::Justify,
-        });
+        // 미지원 값은 기본값(Justify)으로 강제하지 않고 기존 정렬을 보존한다 —
+        // 오타 하나로 문단 정렬이 조용히 지워지던 결함(fields-marks/text-format QA).
+        let a = match v.as_str() {
+            "left" => Some(Alignment::Left),
+            "right" => Some(Alignment::Right),
+            "center" => Some(Alignment::Center),
+            "justify" => Some(Alignment::Justify),
+            "distribute" => Some(Alignment::Distribute),
+            _ => None,
+        };
+        if a.is_some() {
+            mods.alignment = a;
+        }
     }
     if let Some(v) = json_i32(json, "lineSpacing") {
         mods.line_spacing = Some(v);
     }
     if let Some(v) = json_str(json, "lineSpacingType") {
-        mods.line_spacing_type = Some(match v.as_str() {
-            "Fixed" => LineSpacingType::Fixed,
-            "SpaceOnly" => LineSpacingType::SpaceOnly,
-            "Minimum" => LineSpacingType::Minimum,
-            _ => LineSpacingType::Percent,
-        });
+        // 미지원 값은 Percent로 강제하지 않고 기존 줄간격 종류를 보존한다(위 정렬과 같은 이유).
+        let t = match v.as_str() {
+            "Fixed" => Some(LineSpacingType::Fixed),
+            "SpaceOnly" => Some(LineSpacingType::SpaceOnly),
+            "Minimum" => Some(LineSpacingType::Minimum),
+            "Percent" => Some(LineSpacingType::Percent),
+            _ => None,
+        };
+        if t.is_some() {
+            mods.line_spacing_type = t;
+        }
     }
     if let Some(v) = json_i32(json, "indent") {
         mods.indent = Some(v);

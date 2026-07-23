@@ -980,8 +980,32 @@ impl DocumentCore {
                 para_idx
             )));
         }
+        // 입력 방어: 역순 범위와 깨진 props JSON을 삼키지 않고 거부한다(빈 범위 [n,n)는 no-op 허용).
+        if start_offset > end_offset {
+            return Err(HwpError::RenderError(format!(
+                "글자 서식 범위가 역순입니다: [{}, {})",
+                start_offset, end_offset
+            )));
+        }
+        if serde_json::from_str::<serde_json::Value>(props_json)
+            .map(|v| !v.is_object())
+            .unwrap_or(true)
+        {
+            return Err(HwpError::InvalidField(
+                "글자 서식 props가 유효한 JSON 객체가 아닙니다".into(),
+            ));
+        }
 
         let mut mods = parse_char_shape_mods(props_json);
+        // 글자 크기 0·음수는 무효 — 조용히 저장하지 않고 거부한다.
+        if let Some(sz) = mods.base_size {
+            if sz <= 0 {
+                return Err(HwpError::InvalidField(format!(
+                    "글자 크기 {} 유효하지 않음(0 이하)",
+                    sz
+                )));
+            }
+        }
         // border/fill JSON이 있으면 BorderFill 생성/재사용하여 border_fill_id 설정
         if json_has_border_keys(props_json) {
             let bf_id = self.create_border_fill_from_json(props_json);

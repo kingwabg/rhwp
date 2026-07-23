@@ -460,6 +460,20 @@ impl DocumentCore {
             )));
         }
 
+        // char_offset 상한 방어: 문단 길이를 넘는 오프셋에 삽입하면 insert_text_at가 끝으로
+        // 클램프하지만 반환 charOffset은 원본값이라 거짓이 된다(다음 편집이 엉뚱한 곳으로 감).
+        // 음수 오프셋은 wasm u32 래핑으로 거대값이 되어 함께 걸린다. 후행 인라인 컨트롤 위치까지
+        // 포함한 논리 길이 초과만 거부한다(getTextRange와 같은 어법).
+        let max_offset = crate::document_core::helpers::logical_paragraph_length(
+            &self.document.sections[section_idx].paragraphs[para_idx],
+        );
+        if char_offset > max_offset {
+            return Err(HwpError::RenderError(format!(
+                "char_offset {} 범위 초과 (문단 길이 {})",
+                char_offset, max_offset
+            )));
+        }
+
         // 편집 시 raw 스트림 무효화 (재직렬화 유도)
         self.document.sections[section_idx].raw_stream = None;
 
@@ -612,6 +626,19 @@ impl DocumentCore {
                 "문단 인덱스 {} 범위 초과 (총 {}개)",
                 para_idx,
                 section.paragraphs.len()
+            )));
+        }
+
+        // char_offset 상한 방어: 문단 길이를 넘는 오프셋 삭제는 조용히 끝으로 클램프됐다 —
+        // 범위 밖 오프셋은 정중히 거부한다(offset==len 끝 캐럿은 허용, count 클램프는 그대로).
+        let del_len = self.document.sections[section_idx].paragraphs[para_idx]
+            .text
+            .chars()
+            .count();
+        if char_offset > del_len {
+            return Err(HwpError::RenderError(format!(
+                "char_offset {} 범위 초과 (문단 길이 {})",
+                char_offset, del_len
             )));
         }
 
