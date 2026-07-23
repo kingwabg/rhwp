@@ -31,9 +31,13 @@ fn find_in_text(text: &str, query: &str, case_sensitive: bool) -> Vec<usize> {
         if chars.len() < qlen {
             return results;
         }
-        for i in 0..=chars.len() - qlen {
+        let mut i = 0;
+        while i + qlen <= chars.len() {
             if chars[i..i + qlen] == qchars[..] {
                 results.push(i);
+                i += qlen; // 겹치는 매치는 세지 않는다(한컴/Word 표준 = non-overlapping)
+            } else {
+                i += 1;
             }
         }
     } else {
@@ -45,9 +49,13 @@ fn find_in_text(text: &str, query: &str, case_sensitive: bool) -> Vec<usize> {
         if chars.len() < qlen {
             return results;
         }
-        for i in 0..=chars.len() - qlen {
+        let mut i = 0;
+        while i + qlen <= chars.len() {
             if chars[i..i + qlen] == qchars[..] {
                 results.push(i);
+                i += qlen; // 겹치는 매치는 세지 않는다(한컴/Word 표준 = non-overlapping)
+            } else {
+                i += 1;
             }
         }
     }

@@ -1341,9 +1341,9 @@ fn remove_field_in_para(para: &mut Paragraph, char_offset: usize) -> Result<(), 
             let end = para.field_ranges[i].end_char_idx;
             let removed_control_idx = para.field_ranges[i].control_idx;
             para.field_ranges.remove(i);
-            if end > start {
-                para.delete_text_at(start, end - start);
-            }
+            // 필드 범위 안의 본문 글자는 보존한다 — 컨트롤·범위만 떼면 되고, 안의 글자까지
+            // 지우면 사용자가 입력한 값이 되돌릴 수 없이 사라진다(실사고).
+            let _ = (start, end);
             if removed_control_idx < para.controls.len() {
                 para.controls.remove(removed_control_idx);
             }

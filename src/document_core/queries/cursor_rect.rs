@@ -3262,6 +3262,17 @@ impl DocumentCore {
     ) -> Result<String, HwpError> {
         let path = Self::parse_cell_path(path_json)?;
         let table = self.resolve_table_by_path(section_idx, parent_para_idx, &path)?;
+        // 입력 방어: resolve는 경로 마지막 세그먼트의 cellIndex를 검증하지 않아, 범위 밖
+        // cellIndex(예: 99)를 줘도 바깥 표를 답한다. 마지막 cellIndex를 검증해 거부한다.
+        if let Some(&(_, cell_idx, _)) = path.last() {
+            if cell_idx >= table.cells.len() {
+                return Err(HwpError::RenderError(format!(
+                    "셀 인덱스 {} 범위 초과 (총 {}셀)",
+                    cell_idx,
+                    table.cells.len()
+                )));
+            }
+        }
 
         Ok(format!(
             "{{\"rowCount\":{},\"colCount\":{},\"cellCount\":{}}}",
