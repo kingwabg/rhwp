@@ -458,6 +458,15 @@ impl DocumentCore {
         control_idx: usize,
         props_json: &str,
     ) -> Result<String, HwpError> {
+        // 입력 방어: 깨진/비객체 JSON은 삼키지 않고 거부한다.
+        if serde_json::from_str::<serde_json::Value>(props_json)
+            .map(|v| !v.is_object())
+            .unwrap_or(true)
+        {
+            return Err(HwpError::InvalidField(
+                "그림 속성 props가 유효한 JSON 객체가 아닙니다".into(),
+            ));
+        }
         // JSON 파싱 (serde_json 사용 대신 수동 파싱 — 기존 패턴)
         // [Task #825] 픽쳐 속성 mutation 은 helper 로 분리 (머리말/꼬리말 path 와 공유).
         let (
@@ -1446,6 +1455,14 @@ impl DocumentCore {
             return Err(HwpError::RenderError(
                 "이미지 데이터가 비어 있습니다".to_string(),
             ));
+        }
+        // 입력 방어: 음수(u32 래핑)·과대 크기를 뒤집힘으로 삼키지 않고 거부한다(0은 한컴 호환 유지).
+        const MAX_PIC_HU: u32 = 4_000_000; // ≈140cm
+        if width > MAX_PIC_HU || height > MAX_PIC_HU {
+            return Err(HwpError::InvalidField(format!(
+                "그림 크기 범위 밖: {}x{}",
+                width, height
+            )));
         }
         // cell_path 가 있으면 경로가 유효한지 사전 검증한다.
         //

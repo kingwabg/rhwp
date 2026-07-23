@@ -823,6 +823,22 @@ impl DocumentCore {
             (pd.width as i32 - pd.margin_left as i32 - pd.margin_right as i32 - outer_margin_lr)
                 .max(7200) as u32;
 
+        // 입력 방어: colWidths가 열 수와 다르거나 0/최소폭 미만이면 균등 폴백으로 삼키지 않고 거부한다.
+        if let Some(widths) = col_widths_hu {
+            if widths.len() != col_count as usize {
+                return Err(HwpError::InvalidField(format!(
+                    "colWidths 길이 {}가 열 수 {}와 다릅니다",
+                    widths.len(),
+                    col_count
+                )));
+            }
+            if widths.iter().any(|&w| w < 200) {
+                return Err(HwpError::InvalidField(
+                    "colWidths에 0 또는 최소폭(200HU) 미만 값이 있습니다".into(),
+                ));
+            }
+        }
+
         // 열 폭 결정
         let col_ws: Vec<u32> = if let Some(widths) = col_widths_hu {
             if widths.len() == col_count as usize {

@@ -1423,6 +1423,14 @@ impl DocumentCore {
 
         // 셀 업데이트 적용
         let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+        // 입력 방어: 범위 밖 cellIdx를 조용히 건너뛰지 않고 거부한다.
+        let cell_count = table.cells.len();
+        if let Some(bad) = updates.iter().find(|u| u.cell_idx >= cell_count) {
+            return Err(HwpError::InvalidField(format!(
+                "셀 인덱스 {} 범위 초과 (총 {}셀)",
+                bad.cell_idx, cell_count
+            )));
+        }
         let original_width = table.common.width;
         let original_height = table.common.height;
         let original_row_height_sum: u32 = table.get_row_heights().iter().sum();
