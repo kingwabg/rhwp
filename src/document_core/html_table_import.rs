@@ -45,6 +45,13 @@ impl DocumentCore {
             // <td>와 <th>를 출현 순서대로 처리
             let mut td_pos = 0;
             loop {
+                // 불완전 HTML 방어: </td>/</th>를 못 찾으면 td_pos가 문자열 길이를 넘어
+                // tr_inner_lower[td_pos..] 슬라이싱이 panic(unreachable trap)한다 — 안 닫힌
+                // <td>/<table>·중첩 표 같은 외부 클립보드 입력에서 실측. panic 대신 지금까지
+                // 수집한 셀로 degrade한다(NaN hitTest 가드와 같은 철학: 위험 연산 직전 방어).
+                if td_pos >= tr_inner_lower.len() {
+                    break;
+                }
                 let td_match = tr_inner_lower[td_pos..].find("<td");
                 let th_match = tr_inner_lower[td_pos..].find("<th");
 
@@ -148,7 +155,8 @@ impl DocumentCore {
                         vertical_align,
                     });
 
-                    td_pos = content_end + close_tag.len();
+                    // close 태그를 못 찾은 폴백(content_end=len)에서 len을 넘어서지 않도록 클램프.
+                    td_pos = (content_end + close_tag.len()).min(tr_inner_lower.len());
                 } else {
                     break;
                 }

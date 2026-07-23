@@ -155,9 +155,12 @@ impl DocumentCore {
                 self.document.is_hwp3_variant,
             );
 
-            // 선택적 재구성: 원본 문단 재구성 + 삽입 문단 composed 추가
+            // 선택적 재구성: 원본 문단 재구성 + 삽입 문단 composed 추가.
+            // 정순으로 삽입해야 한다 — composed가 삽입마다 자라 인덱스가 항상 len 이하가 되어
+            // insert(idx, ..) panic을 막는다. 역순(.rev())이면 표+문단 3개↑ 입력에서 idx>len으로
+            // panic했다(실측: insertion index 2 <= 1). 아래 텍스트-only 분기와 같은 정순.
             self.recompose_paragraph(section_idx, para_idx);
-            for i in (para_idx + 1..=last_para_idx).rev() {
+            for i in para_idx + 1..=last_para_idx {
                 self.insert_composed_paragraph(section_idx, i);
             }
             self.paginate_if_needed();
