@@ -299,6 +299,17 @@ impl DocumentCore {
                 para_idx
             )));
         }
+        // 입력 방어: 문단 길이 밖(음수=u32 래핑) char_offset을 조용히 끝에 붙이지 않는다.
+        let footnote_text_len = self.document.sections[section_idx].paragraphs[para_idx]
+            .text
+            .chars()
+            .count();
+        if char_offset > footnote_text_len {
+            return Err(HwpError::InvalidField(format!(
+                "각주 오프셋 {} 범위 초과 (문단 길이 {})",
+                char_offset, footnote_text_len
+            )));
+        }
 
         // 각주 번호: 삽입 위치 이전의 모든 각주 수 + 1
         // 본문 문단 + 표 셀 + 글상자 내부의 각주를 모두 포함
@@ -609,6 +620,17 @@ impl DocumentCore {
             return Err(HwpError::RenderError(format!(
                 "문단 인덱스 {} 범위 초과",
                 para_idx
+            )));
+        }
+        // 입력 방어: 문단 길이 밖(음수=u32 래핑) char_offset을 조용히 끝에 붙이지 않는다.
+        let endnote_text_len = self.document.sections[section_idx].paragraphs[para_idx]
+            .text
+            .chars()
+            .count();
+        if char_offset > endnote_text_len {
+            return Err(HwpError::InvalidField(format!(
+                "미주 오프셋 {} 범위 초과 (문단 길이 {})",
+                char_offset, endnote_text_len
             )));
         }
 

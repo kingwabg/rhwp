@@ -1286,6 +1286,24 @@ impl DocumentCore {
         }
 
         let mut mods = parse_para_shape_mods(props_json);
+        // 입력 방어: 없는 번호 정의 id·범위 밖 문단 수준을 조용히 삼키지 않는다(번호가 소리 없이 사라짐).
+        if let Some(nid) = mods.numbering_id {
+            let count = self.document.doc_info.numberings.len();
+            if nid != 0 && nid as usize > count {
+                return Err(HwpError::InvalidField(format!(
+                    "번호 정의 {} 없음 (총 {}개)",
+                    nid, count
+                )));
+            }
+        }
+        if let Some(lvl) = mods.para_level {
+            if lvl > 6 {
+                return Err(HwpError::InvalidField(format!(
+                    "문단 수준 {} 범위 초과 (0~6)",
+                    lvl
+                )));
+            }
+        }
 
         // 탭 설정 변경 처리: TabDef 생성 → tab_def_id 세팅
         if json_has_tab_keys(props_json) {
@@ -1423,6 +1441,24 @@ impl DocumentCore {
         props_json: &str,
     ) -> Result<String, HwpError> {
         let mut mods = parse_para_shape_mods(props_json);
+        // 입력 방어: 없는 번호 정의 id·범위 밖 문단 수준을 조용히 삼키지 않는다(번호가 소리 없이 사라짐).
+        if let Some(nid) = mods.numbering_id {
+            let count = self.document.doc_info.numberings.len();
+            if nid != 0 && nid as usize > count {
+                return Err(HwpError::InvalidField(format!(
+                    "번호 정의 {} 없음 (총 {}개)",
+                    nid, count
+                )));
+            }
+        }
+        if let Some(lvl) = mods.para_level {
+            if lvl > 6 {
+                return Err(HwpError::InvalidField(format!(
+                    "문단 수준 {} 범위 초과 (0~6)",
+                    lvl
+                )));
+            }
+        }
 
         // 탭 설정 변경 처리: TabDef 생성 → tab_def_id 세팅
         if json_has_tab_keys(props_json) {

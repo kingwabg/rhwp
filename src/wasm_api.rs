@@ -5792,7 +5792,17 @@ impl HwpDocument {
         use crate::document_core::helpers::{json_i32, json_str};
         use crate::model::style::Style;
 
+        // 입력 방어: 이름 없는/깨진 JSON 스타일은 만들지 않는다(-1 = 실패 계약).
+        if serde_json::from_str::<serde_json::Value>(json)
+            .map(|v| !v.is_object())
+            .unwrap_or(true)
+        {
+            return -1;
+        }
         let name = json_str(json, "name").unwrap_or_default();
+        if name.trim().is_empty() {
+            return -1;
+        }
         let english_name = json_str(json, "englishName").unwrap_or_default();
         let style_type = json_i32(json, "type").unwrap_or(0) as u8;
         let next_style_id = json_i32(json, "nextStyleId").unwrap_or(0) as u8;
@@ -5994,6 +6004,20 @@ impl HwpDocument {
         use crate::document_core::helpers::json_i32;
         use crate::model::style::{Numbering, NumberingHead};
 
+        // 입력 방어: 깨진 JSON이나 유효 레벨 형식이 없는 입력은 정의를 만들지 않는다(0 = 실패, id는 1-based).
+        let parsed: serde_json::Value = match serde_json::from_str(json) {
+            Ok(v) => v,
+            Err(_) => return 0,
+        };
+        let has_level_formats = parsed
+            .get("levelFormats")
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().any(|s| s.as_str().map_or(false, |s| !s.is_empty())))
+            .unwrap_or(false);
+        if !has_level_formats {
+            return 0;
+        }
+
         let mut n = Numbering::default();
 
         // levelFormats 배열 파싱
@@ -6040,8 +6064,10 @@ impl HwpDocument {
             }
         }
 
-        n.start_number = json_i32(json, "startNumber").unwrap_or(1) as u16;
-        n.level_start_numbers = [n.start_number as u32; 7];
+        // 음수·0·u16 초과 startNumber를 as u16 언더/오버플로로 뒤집지 말고 클램프한다.
+        let start_number = json_i32(json, "startNumber").unwrap_or(1).clamp(1, u16::MAX as i32) as u16;
+        n.start_number = start_number;
+        n.level_start_numbers = [start_number as u32; 7];
         self.core.document.doc_info.numberings.push(n);
         self.core.document.doc_info.numberings.len() as u16
     }
