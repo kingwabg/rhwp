@@ -798,9 +798,11 @@ fn issue_1481_insert_column_keeps_create_table_height() {
     let raw_common = parse_common_obj_attr(&table.raw_ctrl_data);
 
     assert_eq!(table.col_count, 6);
-    assert!(
-        table.common.width > original_width,
-        "열 추가 후 표 폭은 기준 열 폭만큼 증가해야 한다"
+    // [officex] 계약 변경: 열 추가는 표 전체 폭을 보존한다(한컴 동작 — 기존 열에서 폭을 나눠 온다).
+    // 옛 단언은 "기준 열 폭만큼 증가"로 현 결함을 박제하고 있었다. 이 테스트의 본래 초점은 height다.
+    assert_eq!(
+        table.common.width, original_width,
+        "열 추가는 표 전체 폭을 보존해야 한다"
     );
     assert_eq!(
         table.common.height, original_height,

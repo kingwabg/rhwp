@@ -2481,21 +2481,46 @@ impl LayoutEngine {
                         && declared_height > 0.0
                         && table_height
                             > declared_height + ROWBREAK_OBJECT_BOTTOM_BLEED_TOLERANCE_PX;
+                // [officex] TopAndBottom(자리차지) push-down 도 bit13 을 존중한다.
+                // 명세상 TopAndBottom 은 "좌, 우에는 텍스트를 배치하지 않음"일 뿐,
+                // "앞 내용 아래로 강제"가 아니다. 종전엔 제한을 꺼도 이 push-down 이
+                // 아래 클램프보다 **먼저** 걸려 위쪽 이동이 통째로 막혔다
+                // (실측: restrictInPage=false·vertOffset=-20mm 인데 y 가 132.3 그대로).
                 let pushed =
-                    if matches!(table_text_wrap, crate::model::shape::TextWrap::TopAndBottom) {
+                    if table.common.flow_with_text
+                        && matches!(table_text_wrap, crate::model::shape::TextWrap::TopAndBottom)
+                    {
                         raw_y.max(y_start)
                     } else {
                         raw_y
                     };
-                let min_y = if allow_para_top_bleed && v_offset < 0.0 {
+                // [officex] bit13(restrictInPage = common.flow_with_text)을 실제로 존중한다.
+                // 명세(한글 문서 파일 형식 5.0, 개체 공통 속성 bit13): "VertRelTo가 'para'일 때
+                // 오브젝트의 세로 위치를 본문 영역으로 제한할지 여부(0=off, 1=on)".
+                // 종전엔 바로 위 주석이 bit13을 언급하면서도 검사 없이 **항상** 본문 영역으로
+                // 클램프해, 제한을 꺼도 표가 본문 위로 못 올라갔다(실측: 위로 20mm → 0px 이동).
+                // 제한이 꺼져 있으면 용지 안에서 자유롭게 두고 용지 밖 이탈만 막는다.
+                let restrict = table.common.flow_with_text;
+                let min_y = if !restrict {
+                    0.0
+                } else if allow_para_top_bleed && v_offset < 0.0 {
                     body_top + v_offset
                 } else {
                     body_top
                 };
+                let max_y = if restrict {
+                    body_bottom.max(min_y)
+                } else {
+                    let paper_h = {
+                        let ph = self.current_paper_height.get();
+                        if ph > 0.0 { ph } else { col_area.y * 2.0 + col_area.height }
+                    };
+                    (paper_h - table_height).max(min_y)
+                };
                 if allow_rowbreak_object_bottom_bleed {
                     pushed.max(min_y)
                 } else {
-                    pushed.clamp(min_y, body_bottom.max(min_y))
+                    pushed.clamp(min_y, max_y)
                 }
             } else {
                 raw_y

@@ -970,6 +970,9 @@ impl Table {
         let col_widths = self.get_column_widths();
         let row_heights = self.get_row_heights();
         let new_col_width = col_widths[col_idx as usize];
+        // [officex] 삽입 전 표 전체 폭 — 아래에서 이 값으로 되맞춘다.
+        // 한컴은 열을 넣어도 표 폭을 보존하고 기존 열에서 폭을 나눠 온다.
+        let original_total_width: u64 = col_widths.iter().map(|w| *w as u64).sum();
 
         // 병합 셀 확장 + 기존 셀 시프트
         let mut covered_rows = vec![false; self.row_count as usize];
@@ -1032,6 +1035,32 @@ impl Table {
 
         // 행 우선 순서 정렬
         self.cells.sort_by_key(|c| (c.row, c.col));
+
+        // [officex] 새 열 폭을 그냥 더하면 표가 본문·용지 밖으로 나간다
+        // (QA "열 삽입: 폭 배분" — 559.4→745.8px, 오른쪽 끝이 쪽 폭 793.7 초과).
+        // 한컴처럼 표 전체 폭을 보존한다: 새 열 포함 전 열을 원래 총폭 비율로 축소하고
+        // 내림 잔여분은 가장 넓은 열에 몰아 합을 정확히 되돌린다. MIN_COLUMN_WIDTH 바닥에
+        // 닿으면 더 줄이지 않는다 — 열이 지나치게 많을 때만 폭이 조금 는다(가독성 우선).
+        const MIN_COLUMN_WIDTH: u32 = 200;
+        if original_total_width > 0 {
+            let mut widths = self.get_column_widths();
+            let grown: u64 = widths.iter().map(|w| *w as u64).sum();
+            if grown > original_total_width {
+                for w in &mut widths {
+                    let scaled = (*w as u64 * original_total_width) / grown;
+                    *w = (scaled as u32).max(MIN_COLUMN_WIDTH);
+                }
+                let assigned: u64 = widths.iter().map(|w| *w as u64).sum();
+                if assigned < original_total_width {
+                    let delta = (original_total_width - assigned).min(u32::MAX as u64) as u32;
+                    if let Some(w) = widths.iter_mut().max_by_key(|w| **w) {
+                        *w = w.saturating_add(delta);
+                    }
+                }
+                // set_column_widths 가 병합 셀 폭(걸친 열 폭 합)까지 정합하게 다시 쓴다.
+                self.set_column_widths(&widths)?;
+            }
+        }
 
         // CommonObjAttr 크기 갱신
         self.update_ctrl_dimensions();
@@ -1538,15 +1567,30 @@ impl Table {
             .map(|i| base_w + if i == 0 { remainder_w } else { 0 })
             .collect();
 
-        // 높이 분배
-        let sub_heights: Vec<HwpUnit> = if equal_row_height || n_rows > 1 {
+        // 높이 분배 — equal_row_height 가 의미를 갖는 유일한 지점.
+        //  · true  : 원래 셀 높이를 n_rows 로 균등 분배 → 표 전체 높이 보존
+        //            (한컴 "줄 높이를 같게 나누기" 체크 상태)
+        //  · false : 첫 서브행이 원래 높이를 유지하고 나머지는 최소 줄높이 →
+        //            표가 (n_rows-1)×최소높이 만큼 자란다(체크 해제 상태)
+        // ⚠ [officex] 옛 조건은 `equal_row_height || n_rows > 1` 이라 2행 이상 분할에선
+        // 플래그가 무시됐다(false 분기는 n_rows==1 일 때만 도달) — QA에서 true/false 결과가
+        // 완전히 동일했던 이유. 두 분기 모두 길이 n_rows 를 돌려줘야 한다(아래 sub_heights[ri] 인덱싱).
+        let sub_heights: Vec<HwpUnit> = if equal_row_height {
             let base_h = target_height / n_rows as u32;
             let remainder_h = target_height - base_h * n_rows as u32;
             (0..n_rows)
                 .map(|i| base_h + if i == 0 { remainder_h } else { 0 })
                 .collect()
         } else {
-            vec![target_height]
+            // 한 줄(1000HU) + 셀 상하 여백 = 빈 행의 최소 높이
+            let (pad_top, pad_bottom) = {
+                let p = &self.cells[cell_idx].padding;
+                (p.top.max(0) as u32, p.bottom.max(0) as u32)
+            };
+            let min_h: HwpUnit = pad_top + 1000 + pad_bottom;
+            (0..n_rows)
+                .map(|i| if i == 0 { target_height } else { min_h })
+                .collect()
         };
 
         // 서브셀의 col_span/row_span 분배 (grid_cols를 m_cols개에 분배)

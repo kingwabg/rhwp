@@ -1318,6 +1318,8 @@ pub struct LayoutEngine {
     show_control_codes: std::cell::Cell<bool>,
     /// 현재 페이지 용지 너비 (표 HorzRelTo::Paper 위치 계산용)
     current_paper_width: std::cell::Cell<f64>,
+    /// 현재 페이지 용지 높이 — 표 restrictInPage(bit13) off 일 때 용지 밖 이탈만 막는 상한 계산용
+    current_paper_height: std::cell::Cell<f64>,
     /// 현재 페이지 본문 영역 (표 HorzRelTo::Page / VertRelTo::Page 위치 계산용)
     /// (x, y, width, height). 미설정 시 (0, 0, 0, 0) — 호출부에서 col_area로 폴백.
     current_body_area: std::cell::Cell<(f64, f64, f64, f64)>,
@@ -1417,6 +1419,7 @@ impl LayoutEngine {
             active_field: std::cell::RefCell::new(None),
             show_control_codes: std::cell::Cell::new(false),
             current_paper_width: std::cell::Cell::new(0.0),
+            current_paper_height: std::cell::Cell::new(0.0),
             current_body_area: std::cell::Cell::new((0.0, 0.0, 0.0, 0.0)),
             is_hwp3_variant: std::cell::Cell::new(false),
             use_hwp3_origin_flow_spacing_before: std::cell::Cell::new(false),
@@ -2822,6 +2825,8 @@ impl LayoutEngine {
                 // 바탕쪽은 본문보다 먼저 렌더링되므로 표 위치 계산용 현재 페이지 context를
                 // 여기서 명시적으로 채워야 `vertRelTo=PAGE`, `horzRelTo=PAGE`가 올바르게 동작한다.
                 self.current_paper_width.set(layout.page_width);
+        self.current_paper_height.set(layout.page_height);
+                self.current_paper_height.set(layout.page_height);
                 self.current_body_area.set((
                     body_area.x,
                     body_area.y,
