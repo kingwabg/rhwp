@@ -1431,42 +1431,13 @@ impl DocumentCore {
                 bad.cell_idx, cell_count
             )));
         }
-        // [officex] 입력 방어 ②: 최소 크기 아래로 내려가는 델타를 조용히 클램프하지 않고 거부한다.
-        // 클램프하면 "요청 델타"와 "적용 델타"가 어긋난다 — 셀 폭만 MIN_CELL_SIZE로 깎이는데
-        // 표 폭(열별 max 합)은 같은 열 다른 행이 원래 폭을 쥐고 있어 그대로라, "행 폭 합 ≠ 표 폭"인
-        // 자기모순 모델이 ok:true 와 함께 남는다(QA: -999999 → 셀합 28168 vs 표폭 41952).
-        // 같은 cellIdx가 여러 번 오는 배치(보상 쌍)를 고려해 셀별로 누적한 뒤 검사한다.
-        // ⚠ 변형 루프 이전이어야 한다 — 루프 중간 Err는 앞선 셀이 변형된 채 남는 부분 적용이 된다.
-        {
-            let mut wanted = std::collections::BTreeMap::<usize, (i64, i64)>::new();
-            for upd in &updates {
-                let entry = wanted.entry(upd.cell_idx).or_insert((0, 0));
-                entry.0 += upd.width_delta as i64;
-                entry.1 += upd.height_delta as i64;
-            }
-            let bounds = (MIN_CELL_SIZE as i64)..=(u32::MAX as i64);
-            for (cell_idx, (dw, dh)) in &wanted {
-                let cell = &table.cells[*cell_idx]; // 범위는 바로 위에서 검증됨
-                if *dw != 0 {
-                    let requested = cell.width as i64 + dw;
-                    if !bounds.contains(&requested) {
-                        return Err(HwpError::InvalidField(format!(
-                            "셀 {} 폭 {}에 widthDelta {}를 적용하면 {} — 허용 범위 {}..={} 밖입니다",
-                            cell_idx, cell.width, dw, requested, MIN_CELL_SIZE, u32::MAX
-                        )));
-                    }
-                }
-                if *dh != 0 {
-                    let requested = cell.height as i64 + dh;
-                    if !bounds.contains(&requested) {
-                        return Err(HwpError::InvalidField(format!(
-                            "셀 {} 높이 {}에 heightDelta {}를 적용하면 {} — 허용 범위 {}..={} 밖입니다",
-                            cell_idx, cell.height, dh, requested, MIN_CELL_SIZE, u32::MAX
-                        )));
-                    }
-                }
-            }
-        }
+        // [officex] 최소 크기 아래 델타는 **클램프**한다(거부하지 않는다).
+        // 한때 거부로 바꿨다가 되돌렸다(2026-07-26). 거부 근거였던 "셀 폭 합 != 표 폭 = 자기모순"이
+        // 오진이었기 때문이다 — 열 폭은 그 열 셀들의 **최댓값**으로 유도되는 것이 정의된 계약이라
+        // (get_column_widths / resolve_column_widths 둘 다 max), 한 셀만 깎이면 합이 안 맞는 게 정상이다.
+        // 게다가 거부는 실사용을 깼다: 운영일지가 셀 3(폭 3192)에 -3000을 주는 정상 경로에서
+        // 결과 192가 최소값 200에 8 모자란다는 이유로 배치 전체가 실패했다.
+        // 남은 진짜 위험은 산술 오버플로뿐이라 아래 루프에서 i64로 계산해 막는다.
         let original_width = table.common.width;
         let original_height = table.common.height;
         let original_row_height_sum: u32 = table.get_row_heights().iter().sum();
