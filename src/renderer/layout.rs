@@ -447,16 +447,9 @@ fn table_has_detached_para_flow_object(table: &crate::model::table::Table) -> bo
 
 type ParaFloatLanes = std::collections::HashMap<usize, FloatLaneSet>;
 
-#[derive(Debug, Clone, Copy)]
-struct VisibleFloatExclusion {
-    /// visible host 문단의 양수 offset 자리차지 표가 후속 본문을 밀어내야 하는 y 구간.
-    top: f64,
-    bottom: f64,
-    /// 이 zone 을 만든 표가 앵커된 host 문단 index. 같은 문단의 텍스트(섹션 제목)는
-    /// 자기 표가 만든 zone 에 밀리면 안 된다 — 한컴은 제목을 문단 앵커(표 위)에 두고
-    /// 양수 offset 표를 그 아래에 둔다. consume 시 self-owned zone 을 skip 하는 데 쓴다.
-    owner_para: usize,
-}
+/// [officex] 자리차지 배타 밴드 — typeset 과 **같은 타입**을 쓴다(float_placement.rs).
+/// 종전엔 layout·typeset 에 각각 별도 struct 가 있어 규칙이 갈릴 위험이 있었다.
+type VisibleFloatExclusion = super::float_placement::FloatBand;
 
 fn render_node_contains_text_for_para(node: &RenderNode, para_index: usize) -> bool {
     if let RenderNodeType::TextRun(run) = &node.node_type {
@@ -5059,22 +5052,14 @@ impl LayoutEngine {
                         _ => 0.0,
                     }
                 };
-                let mut jump_to = y_offset;
-                for zone in &visible_float_exclusions {
-                    // [Issue #1549] 자기 문단에 앵커된 float 표는 그 문단의 텍스트(제목)를
-                    // 밀어내지 않는다 — 제목은 앵커(표 위)에 남아야 한다. owner 가 다른 후속
-                    // 문단은 그대로 표 아래로 밀린다.
-                    if zone.owner_para == item_para {
-                        continue;
-                    }
-                    let starts_in_zone = jump_to + 0.5 >= zone.top && jump_to < zone.bottom;
-                    let overlaps_zone = item_probe_height > 0.0
-                        && jump_to < zone.top
-                        && jump_to + item_probe_height > zone.top + 0.5;
-                    if starts_in_zone || overlaps_zone {
-                        jump_to = jump_to.max(zone.bottom);
-                    }
-                }
+                // [Issue #1549] 자기 문단에 앵커된 float 표는 그 문단의 텍스트(제목)를
+                // 밀어내지 않는다 — 제목은 앵커(표 위)에 남아야 한다. owner 로 전달한다.
+                let jump_to = super::float_placement::skip_float_bands(
+                    y_offset,
+                    &visible_float_exclusions,
+                    item_probe_height,
+                    Some(item_para),
+                );
                 if jump_to > y_offset + 0.5 {
                     let delta = jump_to - y_offset;
                     y_offset = jump_to;
@@ -6579,7 +6564,7 @@ impl LayoutEngine {
                         visible_float_exclusions.push(VisibleFloatExclusion {
                             top: table_visual_top,
                             bottom: table_visual_end + margin_bottom_px,
-                            owner_para: para_index,
+                            owner_para: Some(para_index),
                         });
                     }
                 }

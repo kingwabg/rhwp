@@ -178,6 +178,56 @@ pub(crate) fn ranges_overlap(a_start: f64, a_end: f64, b_start: f64, b_end: f64)
     a0 < b1 && b0 < a1
 }
 
+// ── [officex] 자리차지(TopAndBottom) 배타 밴드 — layout·typeset 공용 ──────────────
+//
+// 왜 여기 있나: 같은 개념이 layout.rs 와 typeset.rs 에 **각각 따로** 구현돼 있었다
+// (VisibleFloatExclusion 이 두 벌, 게이트도 미묘하게 다름). typeset 이 페이지 분할을
+// 먼저 확정하고 layout 이 그리므로, 두 쪽 규칙이 어긋나면 컬럼 높이 예산이 갈려
+// 페이지 바닥이 터진다. 그래서 규칙을 **한 함수**로 모은다 — 이후 어떤 변경이든
+// 두 엔진에 동시에 적용되도록 하는 것이 목적이다.
+//
+// 밴드는 x 가 없는 **순수 y 구간**이다. 이는 명세의 TopAndBottom 정의
+// ("좌, 우에는 텍스트를 배치하지 않음", 「한글 문서 파일 형식 5.0」 표 69)와 정확히 일치한다.
+
+/// 자리차지 개체가 본문에서 밀어내는 y 구간.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FloatBand {
+    pub top: f64,
+    pub bottom: f64,
+    /// 이 밴드를 만든 개체가 앵커된 문단. 같은 문단의 텍스트(섹션 제목)는 자기 표가 만든
+    /// 밴드에 밀리면 안 된다 — 한컴은 제목을 앵커(표 위)에 두고 표를 그 아래에 둔다.
+    /// typeset 처럼 소유자 개념이 없는 호출자는 None 을 쓴다(그러면 스킵이 일어나지 않는다).
+    pub owner_para: Option<usize>,
+}
+
+/// 시작 y 에서 밴드들을 피해 내려간 y 를 돌려준다. 피할 게 없으면 `start` 그대로.
+///
+/// - `probe_height`: 항목/줄의 잉크 높이. **0 이면 겹침 프로브를 끈다**(시작점이 밴드
+///   안에 있는 경우만 본다). 호출자마다 프로브 조건이 달라 값으로 흡수한다.
+/// - `owner`: 지금 배치 중인 문단. 같은 문단이 소유한 밴드는 건너뛴다.
+pub(crate) fn skip_float_bands(
+    start: f64,
+    bands: &[FloatBand],
+    probe_height: f64,
+    owner: Option<usize>,
+) -> f64 {
+    let mut jump_to = start;
+    for band in bands {
+        if let (Some(band_owner), Some(current)) = (band.owner_para, owner) {
+            if band_owner == current {
+                continue;
+            }
+        }
+        let starts_in_band = jump_to + 0.5 >= band.top && jump_to < band.bottom;
+        let overlaps_band =
+            probe_height > 0.0 && jump_to < band.top && jump_to + probe_height > band.top + 0.5;
+        if starts_in_band || overlaps_band {
+            jump_to = jump_to.max(band.bottom);
+        }
+    }
+    jump_to
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,5 +327,51 @@ mod tests {
 
         assert_eq!(x0, 140.0);
         assert_eq!(x1, 240.0);
+    }
+
+    // ── skip_float_bands — 리팩터 전 두 엔진의 동작을 그대로 고정한다 ──────────────
+    fn band(top: f64, bottom: f64, owner: Option<usize>) -> FloatBand {
+        FloatBand { top, bottom, owner_para: owner }
+    }
+
+    #[test]
+    fn skip_bands_leaves_start_when_clear() {
+        let bands = [band(100.0, 200.0, None)];
+        assert_eq!(skip_float_bands(10.0, &bands, 0.0, None), 10.0);
+        assert_eq!(skip_float_bands(250.0, &bands, 0.0, None), 250.0);
+    }
+
+    #[test]
+    fn skip_bands_jumps_when_starting_inside() {
+        let bands = [band(100.0, 200.0, None)];
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None), 200.0);
+        // 경계: top 바로 위(0.5 여유) 는 안쪽으로 본다
+        assert_eq!(skip_float_bands(99.6, &bands, 0.0, None), 200.0);
+    }
+
+    #[test]
+    fn skip_bands_overlap_probe_only_when_height_given() {
+        let bands = [band(100.0, 200.0, None)];
+        // 시작은 밴드 위지만 잉크가 밴드를 관통한다
+        assert_eq!(skip_float_bands(90.0, &bands, 30.0, None), 200.0);
+        // probe_height 0 이면 겹침을 보지 않는다(typeset 의 비-HWPX 경로와 동일)
+        assert_eq!(skip_float_bands(90.0, &bands, 0.0, None), 90.0);
+    }
+
+    #[test]
+    fn skip_bands_ignores_self_owned_band() {
+        let bands = [band(100.0, 200.0, Some(7))];
+        // 자기 표가 만든 밴드에는 밀리지 않는다(Issue #1549 제목 유지)
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, Some(7)), 150.0);
+        // 다른 문단은 그대로 밀린다
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, Some(8)), 200.0);
+        // 소유자 개념이 없는 호출자(typeset)는 항상 밀린다
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None), 200.0);
+    }
+
+    #[test]
+    fn skip_bands_chains_through_multiple() {
+        let bands = [band(100.0, 200.0, None), band(200.0, 300.0, None)];
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None), 300.0);
     }
 }

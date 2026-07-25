@@ -322,12 +322,10 @@ struct FormattedTable {
     table_footnote_count: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct VisibleFloatExclusion {
-    /// visible host 문단의 자리차지 float 표가 후속 본문을 피하게 만드는 y 구간.
-    top: f64,
-    bottom: f64,
-}
+/// [officex] 자리차지 배타 밴드 — layout 과 **같은 타입**을 쓴다.
+/// 종전엔 여기 별도 struct 가 있었는데, typeset 이 페이지 분할을 확정하고 layout 이 그리므로
+/// 두 쪽 규칙이 어긋나면 컬럼 예산이 갈려 페이지 바닥이 터진다(float_placement.rs 주석 참조).
+type VisibleFloatExclusion = crate::renderer::float_placement::FloatBand;
 
 #[derive(Debug, Clone)]
 struct DeferredTableControl {
@@ -2035,15 +2033,14 @@ impl TypesetState {
         self.visible_float_exclusions
             .retain(|zone| self.current_height < zone.bottom - 0.5);
 
-        let mut jump_to = self.current_height;
-        for zone in &self.visible_float_exclusions {
-            let starts_in_zone = jump_to + 0.5 >= zone.top && jump_to < zone.bottom;
-            let overlaps_zone =
-                use_overlap_probe && jump_to < zone.top && jump_to + probe_height > zone.top + 0.5;
-            if starts_in_zone || overlaps_zone {
-                jump_to = jump_to.max(zone.bottom);
-            }
-        }
+        // 겹침 프로브는 HWPX 원본에서만 켠다 — probe_height 0 이 곧 "프로브 끔"이다.
+        let probe = if use_overlap_probe { probe_height } else { 0.0 };
+        let jump_to = crate::renderer::float_placement::skip_float_bands(
+            self.current_height,
+            &self.visible_float_exclusions,
+            probe,
+            None, // typeset 에는 소유자 개념이 없다(종전 동작 그대로)
+        );
 
         if jump_to > self.current_height + 0.5 {
             self.current_height = jump_to;
@@ -13487,6 +13484,7 @@ impl TypesetEngine {
                     st.visible_float_exclusions.push(VisibleFloatExclusion {
                         top: table_top,
                         bottom: table_bottom,
+                        owner_para: None, // typeset 은 소유자 스킵을 쓰지 않는다(종전 동작 유지)
                     });
                 }
                 st.current_height += pre_height;
