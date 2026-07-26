@@ -1340,6 +1340,11 @@ pub struct LayoutEngine {
     cell_units_cache: std::cell::RefCell<
         std::collections::HashMap<usize, std::sync::Arc<Vec<table_layout::CellUnit>>>,
     >,
+    /// [officex/어울림 배선 3/3] 현재 항목이 속한 흐름의 자리차지 배타 밴드 스냅샷.
+    /// build_single_column 이 항목마다 채우고 비운다 — paragraph_layout 의 줄 루프가
+    /// 줄 단위 회피(stack)에 소비한다. 19인자 함수에 인자를 늘리지 않기 위한 인테리어 셀
+    /// (current_paper_height 패턴). 본문 흐름 전용 — 셀 내부(cell_ctx)는 소비하지 않는다.
+    current_flow_bands: std::cell::RefCell<Vec<VisibleFloatExclusion>>,
     /// [Issue #2063] 표 단위 불변량 `has_visible_text_with_nested_table` 를 표 포인터로
     /// 캐시한다. 이 값은 (측정 대상 셀과 무관한) 표 전체 스캔 결과인데 셀별
     /// `cell_units_uncached` 안에서 계산되어 52,694 셀 표에서 O(셀²)(≈28억) 로 폭증했다.
@@ -1420,6 +1425,7 @@ impl LayoutEngine {
             is_hwpx_source: std::cell::Cell::new(false),
             hwpx_page_preview: std::cell::RefCell::new(None),
             cell_units_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
+            current_flow_bands: std::cell::RefCell::new(Vec::new()),
             table_nested_text_flag_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             #[cfg(test)]
             table_nested_text_flag_scan_count: std::cell::Cell::new(0),
@@ -4347,6 +4353,26 @@ impl LayoutEngine {
             std::collections::HashMap::new();
         let mut para_float_lanes: ParaFloatLanes = std::collections::HashMap::new();
         let mut visible_float_exclusions: Vec<VisibleFloatExclusion> = Vec::new();
+        // [officex/어울림 배선 3/3] 사전 밴드 선등록 — typeset 이 실어 온(위로 올린 표)
+        // 밴드를 단 시작 시점에 절대 y 로 추정해 등록한다. 앵커 문단 도착을 기다리면
+        // 이미 배치된 앞 문단(판정식의 "앞 글자")을 밀 수 없다. para_start_y 사전 시드는
+        // 표 위치 동결 — 밀린 텍스트를 표가 따라 내려가는 순환을 끊는다(한컴 semantics).
+        // 추정식: col_anchor_y + (flow_top − start_height). 신규 조판 문서는 양쪽이 같은
+        // 컴포저를 쓰므로 실측 일치(probe-flow), 저장 vpos 문서는 재생 분기가 줄을 지배한다.
+        for band in &col_content.topbottom_bands {
+            if band.height <= 0.5 {
+                continue;
+            }
+            let est_top = col_anchor_y + band.flow_top - col_content.start_height;
+            visible_float_exclusions.push(VisibleFloatExclusion::full_width(
+                est_top,
+                est_top + band.height,
+                Some(band.para_index),
+            ));
+            para_start_y
+                .entry(band.para_index)
+                .or_insert(est_top - band.offset_from_para_top);
+        }
         // [Task #1151 v9 결함 D] paragraph 단위 inline picture 가로 분배 cursor state.
         // 같은 paragraph 의 sibling tac=true picture 들이 가로로 inline 분배 (한컴 native 정합).
         let mut para_inline_state: std::collections::HashMap<
@@ -5154,6 +5180,11 @@ impl LayoutEngine {
             if let Some(floor) = endnote_sep_body_floor.take() {
                 y_offset = y_offset.max(floor);
             }
+            // [officex/어울림 배선 3/3] 이 항목의 줄 루프가 소비할 밴드 스냅샷.
+            // 문단 시작 점프(위 skip_float_bands) **이후** 시점의 목록이어야
+            // 문단 단위·줄 단위 소비가 같은 밴드를 본다. 항목 종료 후 비워
+            // 각주/머리말 등 다른 흐름의 paragraph_layout 으로 새지 않게 한다.
+            *self.current_flow_bands.borrow_mut() = visible_float_exclusions.clone();
             let (mut new_y, was_tac) = self.layout_column_item(
                 tree,
                 &mut col_node,
@@ -5178,6 +5209,7 @@ impl LayoutEngine {
                 wrap_around_paras,
                 &col_content.wrap_anchors,
             );
+            self.current_flow_bands.borrow_mut().clear();
             if zero_between_shape_tail_margin_px > 0.0 {
                 // 미주 사이 0에서 직전 미주의 마지막 수식 tail을 앞 단에 남기고
                 // 비TAC 그림만 다음 단으로 넘긴 경우, 한컴은 그림 뒤 bottom margin을
@@ -6566,6 +6598,21 @@ impl LayoutEngine {
                             table_visual_top,
                             table_visual_end + margin_bottom_px,
                             Some(para_index),
+                        ));
+                    }
+                } else if is_current_visible_para_float && table_visual_height > 0.0 {
+                    // [officex/어울림 배선 3/3] 비양수 오프셋(v_off ≤ 0) visible float 도
+                    // 실제 그려진 상자를 배타 밴드로 등록한다 — 위로 올린 표가 host 문단의
+                    // 앞선 줄들을 아래로 미는 한컴 동작(판정식: probe-flow.mjs)의 근거.
+                    // owner 를 None 으로 두는 이유: 양수 오프셋(#1549)과 달리 이 표는
+                    // **자기 문단의 텍스트도** 밀어야 한다(제목-위·표-아래 계약이 아니라
+                    // 표-위·본문-아래). 항목 순서가 [표, host 텍스트]라 등록이 항상 선행한다.
+                    let table_visual_top = table_visual_end - table_visual_height;
+                    if table_visual_end > table_visual_top + 0.5 {
+                        visible_float_exclusions.push(VisibleFloatExclusion::full_width(
+                            table_visual_top,
+                            table_visual_end,
+                            None,
                         ));
                     }
                 }

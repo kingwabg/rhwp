@@ -222,6 +222,13 @@ pub struct PendingFloatBand {
     pub offset_from_para_top: f64,
     /// 밴드 높이 (px, 외곽 여백 포함)
     pub height: f64,
+    /// [officex/어울림 배선 3/3] 단(column) 흐름 좌표에서의 밴드 top (px, typeset
+    /// current_height 기준). 위로 올린 표(음수 오프셋)는 **이미 배치된 앞 문단**을
+    /// 밀어야 하므로 앵커 문단 도착을 기다릴 수 없다 — layout 은 단 시작 시점에
+    /// 이 값으로 절대 y 를 추정해 선등록하고, 같은 값에서 앵커 문단 시작
+    /// (flow_top − offset_from_para_top)을 역산해 para_start_y 를 사전 시드한다
+    /// (밀린 텍스트를 표가 따라 내려가는 순환 차단 = 한컴의 동결 semantics).
+    pub flow_top: f64,
 }
 
 #[derive(Debug)]

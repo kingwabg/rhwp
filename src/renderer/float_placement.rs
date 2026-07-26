@@ -282,7 +282,6 @@ pub(crate) fn skip_float_bands(
 /// - `line_advances`: 줄별 (잉크 높이, 줄 간격). 프로브는 **잉크 높이만** 쓴다(#1789 계약 —
 ///   spacing 포함 판정은 표 위에 남아야 할 줄을 아래로 밀어 한컴과 최대 345px 어긋났다).
 /// - 반환: (각 줄의 top y, 마지막 줄 아래 y).
-#[allow(dead_code)] // 배선(S6) 전까지 미사용 — 단위 테스트가 계약을 고정한다
 pub(crate) fn stack_lines_through_bands(
     start_y: f64,
     line_advances: &[(f64, f64)],

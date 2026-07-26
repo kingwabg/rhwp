@@ -2974,6 +2974,29 @@ impl LayoutEngine {
                     ),
                 )
             };
+            // [officex/어울림 배선 3/3 — 본편] 줄 단위 밴드 회피. 종전 소비는 문단 단위
+            // (첫 줄만 프로브)라, 밴드 위에서 시작한 문단의 **중간 줄**이 표를 관통했다.
+            // 줄마다 skip_float_bands 를 적용해 잉크가 밴드에 닿는 줄부터 아래로 내린다
+            // (stack_lines_through_bands 반복 1회분과 같은 수식 — 계약 테스트는
+            // float_placement.rs). 프로브는 잉크(line_height)만(#1789, spacing 제외).
+            // 재생(vpos replay) 문단은 저장 좌표 우선이라 교체하지 않고, 셀 내부는
+            // 본문 밴드의 영향권이 아니다. owner 전달로 자기 문단 양수-오프셋 표(#1549
+            // 제목-위 계약, owner=Some)는 건너뛰고, 비양수 표(owner=None)만 자기 문단을 민다.
+            if cell_ctx.is_none()
+                && endnote_line_vpos_base.is_none()
+                && para_topbottom_line_vpos_base.is_none()
+            {
+                let bands = self.current_flow_bands.borrow();
+                if !bands.is_empty() {
+                    y = crate::renderer::float_placement::skip_float_bands(
+                        y,
+                        &bands,
+                        line_height,
+                        Some(para_index),
+                        None,
+                    );
+                }
+            }
             // 들여쓰기/내어쓰기: 문단 여백은 무조건 적용
             // - 보통(ind=0): 모든 줄 margin_left
             // - 들여쓰기(ind>0): 첫줄 margin_left+indent, 다음줄 margin_left

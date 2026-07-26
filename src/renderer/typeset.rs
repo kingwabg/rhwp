@@ -11587,8 +11587,41 @@ impl TypesetEngine {
                     )
                 });
 
+        // [officex/어울림 배선 3/3] 밴드를 가로지르는 문단의 예산 짝맞춤 — layout 의
+        // 줄 단위 회피(같은 커밋)가 중간 줄을 밴드 아래로 내리면 문단이 자라므로,
+        // typeset 도 같은 계산부(stack_lines_through_bands)로 늘어난 만큼(extra)을
+        // fit 판정과 누적에 더한다. 한쪽만 바꾸면 페이지 바닥이 터진다(S3·S4 병력).
+        // 프로브 규약: HWP5 = 잉크(lh)만(#1789) · HWPX = lh+ls 유지(issue_1510).
+        let band_stack_extra = if st.visible_float_exclusions.is_empty()
+            || fmt.line_heights.is_empty()
+        {
+            0.0
+        } else {
+            let advances: Vec<(f64, f64)> = fmt
+                .line_heights
+                .iter()
+                .zip(fmt.line_spacings.iter())
+                .map(|(lh, ls)| {
+                    if st.is_hwpx_source {
+                        (lh + ls, 0.0)
+                    } else {
+                        (*lh, *ls)
+                    }
+                })
+                .collect();
+            let start = st.current_height + fmt.spacing_before;
+            let plain: f64 = advances.iter().map(|(ink, sp)| ink + sp).sum();
+            let (_, end) = crate::renderer::float_placement::stack_lines_through_bands(
+                start,
+                &advances,
+                &st.visible_float_exclusions,
+                None,
+                None,
+            );
+            (end - start - plain).max(0.0)
+        };
         if forced_page_break_line.is_none()
-            && (st.current_height + fmt.height_for_fit <= available
+            && (st.current_height + fmt.height_for_fit + band_stack_extra <= available
                 || saved_single_line_bottom_fits
                 || saved_list_tail_body_vpos_fits)
         {
@@ -11602,7 +11635,7 @@ impl TypesetEngine {
             // 다단에서는 layout 이 vpos 기반으로 항목을 단별로 stacking 하므로
             // typeset 누적 시 trailing_ls 인플레이션이 단을 조기 종료시킴.
             let advance = fmt.flow_advance_height(para, st.col_count, trim_spacing_before_for_flow);
-            st.current_height += advance;
+            st.current_height += advance + band_stack_extra;
             st.flow_underrun += (fmt.total_height - advance).max(0.0);
             if let Some(v) = body_bottom_vpos {
                 st.prev_body_bottom_vpos = Some(v);
@@ -13506,13 +13539,6 @@ impl TypesetEngine {
                     ));
                 }
                 st.current_height += pre_height;
-                // [officex/어울림 배선 2/3] 사전 밴드 생산 — 앵커 문단 상대 좌표.
-                // layout 이 para_start_y 확정 시점에 절대값으로 해석한다(운반로 주석 참조).
-                st.current_column_bands.push(crate::renderer::pagination::PendingFloatBand {
-                    para_index: para_idx,
-                    offset_from_para_top: table_top - para_start_height,
-                    height: (table_bottom - table_top).max(0.0),
-                });
                 // [officex/S4] 높이 회계 구멍 — 밴드 방식은 표 높이를 예산에 안 넣고
                 // "후속 본문이 밴드를 소비"하는 데 기댄다. 그런데 표 절대 하단이 단 용량을
                 // 넘으면 이 페이지의 어떤 본문도 그 초과분을 소비할 수 없고, 표가 페이지
@@ -13532,11 +13558,38 @@ impl TypesetEngine {
                 } else {
                     0.0
                 };
+                // [officex/어울림 배선 3/3] 음수 오프셋(위로 올린) visible float 의
+                // 사전 밴드 생산 — 앞 문단을 미는 역방향 소비를 위해 flow 좌표를 싣는다.
+                // 양수 밴드는 self-registration(layout)이 전담하므로 싣지 않는다.
+                if signed_vertical_offset < 0 && table_bottom > table_top + 0.5 {
+                    st.current_column_bands.push(crate::renderer::pagination::PendingFloatBand {
+                        para_index: para_idx,
+                        offset_from_para_top: table_top - para_start_height,
+                        height: table_bottom - table_top,
+                        flow_top: table_top,
+                    });
+                }
                 st.current_height = st.current_height.max(table_bottom + inter_float_gap);
             }
         } else if tac_wrap_split {
             st.current_height += table_total_height;
         } else {
+            // [officex/어울림 배선 3/3] 빈 host 단독 자리차지 float 를 위로 올린 경우
+            // (판정식 probe-flow.mjs 의 구조 — createTable 분할로 표는 빈 문단에 앵커).
+            // 이미 배치된 앞 문단을 밀어야 하므로 flow 좌표의 사전 밴드를 생산한다.
+            // 위치 계약 = compute_table_y_position 의 Para 기준: para_y + v_off (om 미가산).
+            if is_para_topbottom_float(&table.common) && signed_vertical_offset < 0 {
+                let v_off_px = hwpunit_to_px(signed_vertical_offset, self.dpi);
+                let band_top = para_start_height + v_off_px;
+                if table_total_height > 0.5 {
+                    st.current_column_bands.push(crate::renderer::pagination::PendingFloatBand {
+                        para_index: para_idx,
+                        offset_from_para_top: v_off_px,
+                        height: table_total_height,
+                        flow_top: band_top,
+                    });
+                }
+            }
             // [#2097 프로브 기록] 빈 host 자리차지 float(v_off>0)의 흐름 전진에
             // v_off + outer_bottom 을 더하는 기하 정합(82802 pi75: 저장 322.6 =
             // v_off 21.6 + outer 3.8 + 표 297.2, rhwp 299.1)은 격리 수정으로
