@@ -1672,6 +1672,41 @@ impl DocumentCore {
     /// 줄이면 표가 종이 밖으로 삐져나가는데 그동안 이를 알릴 신호가 어디에도 없었다.
     /// 이 질의로 앱/스튜디오가 넘침을 감지해 사용자에게 경고하거나 `fit_table_to_page`
     /// 를 호출할지 판단할 수 있다(감지와 보정을 분리 — 무단 축소를 강요하지 않음).
+    /// [officex] 표 넘침 감지·보정의 목표 폭(HWPUNIT).
+    ///
+    /// 기본은 1단 본문 폭 − 표 바깥 좌우 여백. **다단(column_count > 1)이고 표의 가로 기준이
+    /// 단/문단(Column|Para)일 때만 첫 단 폭**을 목표로 쓴다 — 종전엔 fit 계산이 다단을 몰라
+    /// 2단 문서에서 실제 단 폭 20693HU 대신 41954HU(1단 본문 폭)를 목표로 삼아, 두 단을
+    /// 가로지르는 표를 fits:true 로 거짓 보고했다(넘침 안전망이 조용히 꺼져 있었다).
+    /// get/fit 두 경로가 반드시 같은 값을 써야 fits:false → fit → fits:true 루프가 닫힌다.
+    fn table_fit_target_hu(
+        &self,
+        section_idx: usize,
+        outer_lr: u32,
+        horz_rel_to: crate::model::shape::HorzRelTo,
+    ) -> u32 {
+        use crate::model::shape::HorzRelTo;
+        let section = &self.document.sections[section_idx];
+        let page_def = &section.section_def.page_def;
+        let body = crate::model::page::PageAreas::from_page_def(page_def).body_area;
+        let body_w = (body.right - body.left).max(0) as u32;
+        let column_def = Self::find_initial_column_def(&section.paragraphs);
+        if column_def.column_count > 1
+            && matches!(horz_rel_to, HorzRelTo::Column | HorzRelTo::Para)
+        {
+            let layout = crate::renderer::page_layout::PageLayoutInfo::from_page_def(
+                page_def,
+                &column_def,
+                self.dpi,
+            );
+            if let Some(col) = layout.column_areas.first() {
+                let col_hu = crate::renderer::px_to_hwpunit(col.width, self.dpi).max(0) as u32;
+                return col_hu.saturating_sub(outer_lr);
+            }
+        }
+        body_w.saturating_sub(outer_lr)
+    }
+
     pub fn get_table_fit_native(
         &self,
         section_idx: usize,
@@ -1697,11 +1732,9 @@ impl DocumentCore {
 
         let outer = (table.outer_margin_left as i64 + table.outer_margin_right as i64).max(0) as u32;
         let total: u32 = table.get_column_widths().iter().sum();
+        let horz_rel_to = table.common.horz_rel_to;
 
-        let page_def = &self.document.sections[section_idx].section_def.page_def;
-        let body = crate::model::page::PageAreas::from_page_def(page_def).body_area;
-        let body_w = (body.right - body.left).max(0) as u32;
-        let target = body_w.saturating_sub(outer);
+        let target = self.table_fit_target_hu(section_idx, outer, horz_rel_to);
 
         let overflow = total.saturating_sub(target);
         Ok(super::super::helpers::json_ok_with(&format!(
@@ -1727,18 +1760,19 @@ impl DocumentCore {
         const MIN_COL: u32 = 200; // 최소 열 폭 (HWPUNIT)
 
         // 현재 열 폭과 표 바깥 좌우 여백을 읽는다.
-        let (widths, outer_lr) = {
+        let (widths, outer_lr, horz_rel_to) = {
             let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
             let outer = table.outer_margin_left as i64 + table.outer_margin_right as i64;
-            (table.get_column_widths(), outer.max(0) as u32)
+            (
+                table.get_column_widths(),
+                outer.max(0) as u32,
+                table.common.horz_rel_to,
+            )
         };
         let total: u32 = widths.iter().sum();
 
-        // 본문(텍스트) 폭 = 페이지 본문 영역 폭 − 표 바깥 좌우 여백.
-        let page_def = &self.document.sections[section_idx].section_def.page_def;
-        let body = crate::model::page::PageAreas::from_page_def(page_def).body_area;
-        let body_w = (body.right - body.left).max(0) as u32;
-        let target = body_w.saturating_sub(outer_lr);
+        // 목표 폭 — 다단이면 단 폭(위 table_fit_target_hu 참조). get 경로와 반드시 동일해야 한다.
+        let target = self.table_fit_target_hu(section_idx, outer_lr, horz_rel_to);
 
         if total == 0 || target == 0 || total <= target {
             // 이미 페이지 폭 안에 들어옴 — 변경 없음.

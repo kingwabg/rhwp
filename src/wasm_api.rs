@@ -4247,9 +4247,21 @@ impl HwpDocument {
     #[wasm_bindgen(js_name = insertClickHereFieldEx)]
     pub fn insert_click_here_field_ex(&mut self, options_json: &str) -> Result<String, JsValue> {
         use crate::document_core::helpers::{json_bool, json_str, json_u32};
+        // [officex] 좌표 필수키 검증 — 종전엔 깨진 JSON·오타 키(sectionIDX 등)가 전부
+        // unwrap_or(0) 으로 삼켜져 (0,0) 위치에 조용히 삽입됐다. 좌표가 없으면 정직하게 거부한다.
+        // 반환은 예외가 아니라 {ok:false} 스타일 — Ex 계열의 오류 계약을 더 쪼개지 않는다.
+        let (Some(sec), Some(para)) = (
+            json_u32(options_json, "sectionIdx"),
+            json_u32(options_json, "paraIdx"),
+        ) else {
+            return Ok(
+                r#"{"ok":false,"error":"필드 오류: sectionIdx/paraIdx 필수 (깨진 JSON 또는 키 누락)"}"#
+                    .to_string(),
+            );
+        };
         self.insert_click_here_field_at(
-            json_u32(options_json, "sectionIdx").unwrap_or(0) as usize,
-            json_u32(options_json, "paraIdx").unwrap_or(0) as usize,
+            sec as usize,
+            para as usize,
             json_u32(options_json, "charOffset").unwrap_or(0) as usize,
             &json_str(options_json, "guide").unwrap_or_default(),
             &json_str(options_json, "memo").unwrap_or_default(),
@@ -7022,7 +7034,18 @@ impl HwpViewer {
     #[wasm_bindgen(constructor)]
     pub fn new(document: HwpDocument) -> Self {
         let page_count = document.page_count();
-        let scheduler = RenderScheduler::new(page_count);
+        let mut scheduler = RenderScheduler::new(page_count);
+        // [officex] 쪽 높이를 스케줄러에 먹인다 — 이 배선이 빠져 page_offsets 가 영원히 비었고,
+        // visible_pages 가 스크롤 위치와 무관하게 [0]만 돌려줬다(updateViewport 무반응의 뿌리).
+        // 업스트림 단위 테스트(test_scheduler_visible_pages)도 set_page_heights 를 먼저 부른다 —
+        // 설계된 사용법인데 WASM 래퍼만 이 단계를 빠뜨렸다. HwpViewer 는 문서를 소유만 하고
+        // 편집 API 가 없으므로 생성 시 1회 계산으로 충분하다.
+        let heights: Vec<f64> = (0..page_count)
+            .filter_map(|i| document.find_page(i).ok().map(|(pc, _, _)| pc.layout.page_height))
+            .collect();
+        if heights.len() == page_count as usize {
+            scheduler.set_page_heights(&heights);
+        }
         Self {
             document,
             scheduler,

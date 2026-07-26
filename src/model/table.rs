@@ -1325,21 +1325,14 @@ impl Table {
             if in_range {
                 for para in &cell.paragraphs {
                     if !para.text.is_empty() {
-                        extra_paragraphs.push(Paragraph {
-                            text: para.text.clone(),
-                            char_count: para.char_count,
-                            char_count_msb: para.char_count_msb,
-                            control_mask: para.control_mask,
-                            char_offsets: para.char_offsets.clone(),
-                            char_shapes: para.char_shapes.clone(),
-                            line_segs: para.line_segs.clone(),
-                            range_tags: para.range_tags.clone(),
-                            para_shape_id: para.para_shape_id,
-                            style_id: para.style_id,
-                            raw_header_extra: para.raw_header_extra.clone(),
-                            has_para_text: para.has_para_text,
-                            ..Default::default()
-                        });
+                        // [officex] 문단을 **통째로** 복제한다. 종전엔 필드를 골라 복사하고
+                        // 나머지를 ..Default::default() 로 버려서, 흡수되는 셀의 누름틀
+                        // (controls·field_ranges)·ctrl_data_records·중첩 표·그림·각주가
+                        // 조용히 증발했다 — 글자만 살아남아 "값 111은 있는데 필드 officex.b 는
+                        // 사라진" 문서가 ok:true 와 함께 남았다(엔진 단독 재현 확정).
+                        // field_ranges[i].control_idx 는 같은 문단 안 controls 인덱스라
+                        // 문단 단위 clone 이면 정합이 유지된다. 빈 문단만 버리는 정책은 그대로.
+                        extra_paragraphs.push(para.clone());
                     }
                 }
             }

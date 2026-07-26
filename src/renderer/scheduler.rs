@@ -153,6 +153,8 @@ pub struct RenderScheduler {
     viewport: Viewport,
     /// 페이지별 Y 오프셋 (연속 스크롤용)
     page_offsets: Vec<f64>,
+    /// 쪽별 실제 높이(px) — 마지막 쪽 bottom 판정용
+    page_heights: Vec<f64>,
     /// 페이지 간 간격 (px)
     page_gap: f64,
     /// 프리페치 범위 (뷰포트 위/아래 페이지 수)
@@ -168,6 +170,7 @@ impl RenderScheduler {
             next_task_id: 0,
             viewport: Viewport::default(),
             page_offsets: Vec::new(),
+            page_heights: Vec::new(),
             page_gap: 10.0,
             prefetch_range: 2,
             total_pages,
@@ -177,6 +180,9 @@ impl RenderScheduler {
     /// 페이지 높이 목록으로 오프셋 계산
     pub fn set_page_heights(&mut self, heights: &[f64]) {
         self.page_offsets.clear();
+        // [officex] 높이도 보관한다 — 종전엔 offsets 만 남겨 마지막 쪽 bottom 을
+        // viewport.height 로 추정했고, 뷰포트가 쪽보다 크면 판정이 틀렸다.
+        self.page_heights = heights.to_vec();
         let mut offset = 0.0;
         for &h in heights {
             self.page_offsets.push(offset);
@@ -230,7 +236,9 @@ impl RenderScheduler {
             let page_bottom = if i + 1 < self.page_offsets.len() {
                 self.page_offsets[i + 1] - self.page_gap
             } else {
-                offset + self.viewport.height // 마지막 페이지 추정
+                // [officex] 마지막 쪽도 실제 높이로 — viewport.height 추정은 뷰포트가
+                // 쪽보다 크거나 작을 때 가시성 판정을 틀리게 했다.
+                offset + self.page_heights.get(i).copied().unwrap_or(self.viewport.height)
             };
 
             if offset < vp_bottom && page_bottom > vp_top {
