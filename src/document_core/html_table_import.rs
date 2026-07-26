@@ -447,12 +447,12 @@ impl DocumentCore {
                 },
             };
 
-            // [approval 워크어라운드 계약] 셀 글자/문단 서식(굵기·크기·색·정렬·줄간격)은 엔진이
-            // 보존하지 않는다 — 앱(lib/features/approval-document/hwp-cell-format.ts의
-            // restoreApprovalCellFormat)이 붙여넣기 뒤에 복원한다. 여기서 CSS 서식을 입히면
-            // 앱 복원과 충돌해 라벨 정렬·별표 색이 어긋난다(approval-document-template.test 회귀).
-            // 셀 레벨 속성(배경·테두리·폭%·padding·정렬 vertical)은 아래에서 그대로 반영한다.
-            let cell_char_shape_id = 0;
+            // [paste-import/셀글자서식] td 인라인 CSS(굵기·크기·색·폰트)를 셀 기본 char
+            // shape 로 반영한다 — 종전엔 0 고정(워크어라운드: sc- 앱 restoreApprovalCellFormat
+            // 이 복원을 전담)이라 QA 결함(❌ 셀 글자 서식 소실)이었다. css 에 글자 속성이
+            // 없으면 기본 shape 와 동일해 dedup 으로 0 이 되돌아오므로 무서식 셀은 불변.
+            // 문단 서식(정렬·줄간격)은 여전히 앱 복원 몫이다(cell_para_shape_id=0 유지).
+            let cell_char_shape_id = self.css_to_char_shape_id(&pc.cell_css, false, false, false);
             let cell_para_shape_id = 0;
 
             // 셀 내용 파싱

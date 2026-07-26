@@ -693,28 +693,37 @@ impl DocumentCore {
                     pos = tag_end + 1;
                     continue;
                 } else if tag_lower.starts_with("</") {
-                    // 닫는 태그 무시
+                    // 닫는 태그 무시 — 단 인라인 서식 닫기(b/i/u/span)는 보존해야
+                    // flush 의 parse_inline_content 가 run 경계를 닫을 수 있다
+                    // (아래 inline_fmt 보존과 한 쌍 — 이 분기가 먼저 매칭된다).
+                    if tag_lower.starts_with("</b>")
+                        || tag_lower.starts_with("</strong")
+                        || tag_lower.starts_with("</i>")
+                        || tag_lower.starts_with("</em")
+                        || tag_lower.starts_with("</u>")
+                        || tag_lower.starts_with("</span")
+                    {
+                        pending_text.push_str(&tag_str);
+                    }
                     pos = tag_end + 1;
                     continue;
                 } else {
-                    // 기타 태그 무시 (span 등 인라인은 <p> 밖에서 직접 올 수 있음)
-                    if tag_lower.starts_with("<span") {
-                        // <span>...</span> 인라인 콘텐츠
-                        let span_end = find_closing_tag_chars(&chars, pos, "span");
-                        let span_full: String =
-                            chars[tag_start..span_end.min(len)].iter().collect();
-                        let span_full = if let Some(idx) = span_full.rfind("</span>") {
-                            &span_full[..idx]
-                        } else {
-                            &span_full
-                        };
-                        // span 태그 내부 텍스트 추출
-                        if let Some(gt_pos) = span_full.find('>') {
-                            pending_text.push_str(&span_full[gt_pos + 1..]);
-                        }
-                        pos = span_end;
-                        continue;
+                    // [paste-import/셀글자서식] 인라인 서식 태그(b/i/u/span…)는 버리지
+                    // 않고 원문을 pending_text 에 보존한다 — flush 가 parse_inline_content
+                    // 로 넘겨 스타일 run 을 실체화한다. 종전엔 여기서 태그를 삼켜(span 은
+                    // 내부 텍스트만 추출) 표 셀의 <b>·<span style> 서식이 소실됐다(QA 결함).
+                    // 판별 prefix 는 parse_inline_content 의 것과 동일하게 유지한다.
+                    // (닫는 태그는 위 "</" 분기가 먼저 잡아 보존한다)
+                    let inline_fmt = tag_lower.starts_with("<span")
+                        || tag_lower.starts_with("<b>")
+                        || tag_lower.starts_with("<strong")
+                        || tag_lower.starts_with("<i>")
+                        || tag_lower.starts_with("<em")
+                        || tag_lower.starts_with("<u>");
+                    if inline_fmt {
+                        pending_text.push_str(&tag_str);
                     }
+                    // 그 외 태그는 종전대로 무시
                     pos = tag_end + 1;
                     continue;
                 }
@@ -754,7 +763,25 @@ impl DocumentCore {
     }
 
     /// 텍스트를 문단으로 변환하여 추가한다 (줄바꿈 기준 분리).
-    pub(crate) fn flush_text_to_paragraphs(&self, paragraphs: &mut Vec<Paragraph>, text: &str) {
+    pub(crate) fn flush_text_to_paragraphs(&mut self, paragraphs: &mut Vec<Paragraph>, text: &str) {
+        // [paste-import/셀글자서식] 인라인 태그가 남은 줄은 parse_inline_content 로 —
+        // run(굵기·색·크기)이 실체화된다. 태그 없는 입력은 종전 경로 그대로이며,
+        // 종전엔 디스패처가 태그를 전부 삼켜 이 함수에 '<' 가 도달할 수 없었으므로
+        // 기존 입력의 동작은 변하지 않는다.
+        if text.contains('<') {
+            for line in text.split('\n') {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let mut para = Paragraph::default();
+                self.parse_inline_content(&mut para, line.trim());
+                if para.text.trim().is_empty() {
+                    continue;
+                }
+                paragraphs.push(para);
+            }
+            return;
+        }
         let decoded = decode_html_entities(text);
         for line in decoded.split('\n') {
             let trimmed = line.trim();
@@ -936,20 +963,31 @@ impl DocumentCore {
             })
             .collect();
 
-        // 스타일 범위를 CharShapeRef로 변환
-        for (start, _end, char_shape_id) in &style_runs {
-            // char index → UTF-16 위치
-            let utf16_pos: u32 = para
-                .text
+        // 스타일 범위를 CharShapeRef로 변환. HWP 의 CharShapeRef 는 시작 위치만 갖고
+        // 다음 ref 까지 이어지므로, run 끝(_end)에서 기본 서식으로 되돌리는 리셋 ref 를
+        // 함께 넣는다 — 종전엔 시작만 push 해 "가<b>나</b>다" 의 '다' 까지 굵어졌다.
+        let total_chars = para.text.chars().count();
+        let utf16_at = |char_idx: usize| -> u32 {
+            para.text
                 .chars()
-                .take(*start)
+                .take(char_idx)
                 .map(|c| c.len_utf16() as u32)
-                .sum();
+                .sum()
+        };
+        for (i, (start, end, char_shape_id)) in style_runs.iter().enumerate() {
             para.char_shapes
                 .push(crate::model::paragraph::CharShapeRef {
-                    start_pos: utf16_pos,
+                    start_pos: utf16_at(*start),
                     char_shape_id: *char_shape_id,
                 });
+            let next_starts_here = style_runs.get(i + 1).is_some_and(|(ns, _, _)| ns == end);
+            if *end < total_chars && !next_starts_here {
+                para.char_shapes
+                    .push(crate::model::paragraph::CharShapeRef {
+                        start_pos: utf16_at(*end),
+                        char_shape_id: 0,
+                    });
+            }
         }
     }
 
@@ -974,6 +1012,9 @@ impl DocumentCore {
             0
         };
         let mut cs = self.document.doc_info.char_shapes[base_id as usize].clone();
+        // 변형본은 원본 raw 바이트를 이어받으면 안 된다 — 직렬화기의 raw_data 승자
+        // 규칙(serializer/doc_info.rs)이 수정(bold 등)을 삼켜 저장→재열기에서 증발한다.
+        cs.raw_data = None;
 
         // CSS 속성 파싱 및 적용
         let css_lower = css.to_lowercase();
