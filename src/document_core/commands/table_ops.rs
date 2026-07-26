@@ -1411,6 +1411,24 @@ impl DocumentCore {
                     depth -= 1;
                     if depth == 0 {
                         let obj = &inner[start..=i];
+                        // [officex] 혼동 키 방어: 이 API 는 **델타**(widthDelta/heightDelta)와
+                        // 절대 렌더 힌트(renderWidth/renderHeight)만 받는다. 절대 폭을 뜻하는
+                        // "width"/"height" 를 보내면 종전엔 조용히 0 델타로 접혀 아무 일도 안
+                        // 일어나는데 {ok:true} 가 나갔다 — 호출자는 "리사이즈가 안 먹는다"로만
+                        // 보였다(capability-map §3 의 "no-op(불확정)" 정체). 조용한 무동작 대신
+                        // 규약을 말해주고 거부한다. 정상 호출자(studio 드래그·균등화, sc- 일지)는
+                        // 이 키를 쓰지 않으므로 영향 없다.
+                        for bad_key in ["width", "height"] {
+                            if obj.contains(&format!("\"{bad_key}\":")) {
+                                return Err(HwpError::InvalidField(format!(
+                                    "resizeTableCells 는 '{bad_key}' 키를 받지 않습니다 — \
+                                     상대 변화는 '{bad_key}Delta', 절대 렌더 크기는 \
+                                     'render{}{}' 를 쓰세요",
+                                    bad_key[..1].to_uppercase(),
+                                    &bad_key[1..],
+                                )));
+                            }
+                        }
                         // cellIdx 파싱
                         let cell_idx = Self::parse_json_i32(obj, "cellIdx").unwrap_or(-1);
                         if cell_idx < 0 {
@@ -2938,6 +2956,46 @@ fn json_escape(s: &str) -> String {
 mod tests {
     use crate::model::shape::common_obj_offsets;
     use crate::parser::control::parse_common_obj_attr;
+    use crate::DocumentCore;
+
+    /// [officex] resizeTableCells 규약 핀 — 절대 'width'/'height' 키는 조용히 무시되지
+    /// 않고 거부된다. 종전엔 0 델타로 접혀 {ok:true} 만 나가서 "리사이즈가 안 먹는다"로
+    /// 보였다(capability-map §3 "no-op(불확정)"의 정체 = 호출자 규약 착오).
+    #[test]
+    fn resize_table_cells_rejects_absolute_width_height_keys() {
+        let mut core = DocumentCore::new_empty();
+        let mut section = crate::model::document::Section::default();
+        section.section_def.page_def = crate::model::page::PageDef::a4_default();
+        section
+            .paragraphs
+            .push(crate::model::paragraph::Paragraph::new_empty());
+        let mut document = crate::model::document::Document::default();
+        document.sections.push(section);
+        core.set_document(document);
+        core.create_blank_document_native().expect("blank");
+        let created = core.create_table_native(0, 0, 0, 2, 3).expect("table");
+        let v: serde_json::Value = serde_json::from_str(&created).expect("json");
+        let pi = v["paraIdx"].as_u64().expect("paraIdx") as usize;
+        let ci = v["controlIdx"].as_u64().expect("controlIdx") as usize;
+
+        for bad in [
+            r#"[{"cellIdx":0,"width":5000}]"#,
+            r#"[{"cellIdx":0,"height":5000}]"#,
+        ] {
+            let err = core
+                .resize_table_cells_native(0, pi, ci, bad)
+                .expect_err("절대 키는 거부되어야 한다");
+            let msg = format!("{err:?}");
+            assert!(
+                msg.contains("Delta") && msg.contains("render"),
+                "거부 메시지가 규약을 알려주지 않는다: {msg}"
+            );
+        }
+
+        // 정상 규약(델타)은 그대로 동작한다 — 과잉 거부 회귀 차단.
+        core.resize_table_cells_native(0, pi, ci, r#"[{"cellIdx":0,"widthDelta":-2000}]"#)
+            .expect("델타 경로는 통과해야 한다");
+    }
 
     #[test]
     fn raw_ctrl_data_offsets_match_parser() {
