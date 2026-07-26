@@ -5059,6 +5059,7 @@ impl LayoutEngine {
                     &visible_float_exclusions,
                     item_probe_height,
                     Some(item_para),
+                    None, // 가로 무시 = 종전 동작(모든 밴드가 전폭)
                 );
                 if jump_to > y_offset + 0.5 {
                     let delta = jump_to - y_offset;
@@ -6561,11 +6562,11 @@ impl LayoutEngine {
                         // (한컴: 섹션 표와 다음 섹션 제목 사이 간격 = 표 아래 외곽여백).
                         let margin_bottom_px =
                             hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi);
-                        visible_float_exclusions.push(VisibleFloatExclusion {
-                            top: table_visual_top,
-                            bottom: table_visual_end + margin_bottom_px,
-                            owner_para: Some(para_index),
-                        });
+                        visible_float_exclusions.push(VisibleFloatExclusion::full_width(
+                            table_visual_top,
+                            table_visual_end + margin_bottom_px,
+                            Some(para_index),
+                        ));
                     }
                 }
             }

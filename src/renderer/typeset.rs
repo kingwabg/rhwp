@@ -2040,6 +2040,7 @@ impl TypesetState {
             &self.visible_float_exclusions,
             probe,
             None, // typeset 에는 소유자 개념이 없다(종전 동작 그대로)
+            None, // 가로 무시 = 종전 동작
         );
 
         if jump_to > self.current_height + 0.5 {
@@ -13481,11 +13482,11 @@ impl TypesetEngine {
             let table_bottom = table_top + table_total_height.max(0.0);
             if signed_vertical_offset > 0 {
                 if table_bottom > table_top + 0.5 {
-                    st.visible_float_exclusions.push(VisibleFloatExclusion {
-                        top: table_top,
-                        bottom: table_bottom,
-                        owner_para: None, // typeset 은 소유자 스킵을 쓰지 않는다(종전 동작 유지)
-                    });
+                    st.visible_float_exclusions.push(VisibleFloatExclusion::full_width(
+                        table_top,
+                        table_bottom,
+                        None, // typeset 은 소유자 스킵을 쓰지 않는다(종전 동작 유지)
+                    ));
                 }
                 st.current_height += pre_height;
             } else {

@@ -12,6 +12,18 @@ pub(crate) fn signed_hwpunit(value: HwpUnit) -> i32 {
 }
 
 /// A non-TAC `TopAndBottom` object positioned from its host paragraph.
+///
+/// ⚠ **[officex] `VertRelTo::Para` 조건을 절대 떼지 말 것** (2026-07-26).
+/// 어울림(배타 밴드) 대상을 "TopAndBottom 인 모든 표"로 넓히려던 계획이 있었으나,
+/// 그러면 `VertRelTo::Page` + `VertAlign::Bottom` 인 **결재 서명틀**까지 밴드가 되어
+/// 서로 반대 방향을 잠근 짝 테스트가 동시에 깨진다:
+///   · `tests/issue_1611_footer_page_bottom_pagination.rs:19` — 발신명의 footer 가
+///     flow 를 **소비해야** `page_count == 2`
+///   · `tests/issue_1658_page_bottom_fixed_exclusion.rs:32` — 같은 틀이 flow 를
+///     **소비하면 안 되어** `page_count == 1`
+/// `issue_1658` 머리주석이 이 둘을 "배타 예약(과소)과 flow 소비(과대) 양쪽을 잠근다"고
+/// 명시한다. 그 개체는 아래 `is_page_bottom_fixed_float` 가 따로 맡는 영역이다.
+/// 즉 이 술어는 **세 조건이 다 필요하다** — 하나라도 빼면 두 계약이 충돌한다.
 pub(crate) fn is_para_topbottom_float(common: &CommonObjAttr) -> bool {
     !common.treat_as_char
         && matches!(common.text_wrap, TextWrap::TopAndBottom)
@@ -189,9 +201,17 @@ pub(crate) fn ranges_overlap(a_start: f64, a_end: f64, b_start: f64, b_end: f64)
 // 밴드는 x 가 없는 **순수 y 구간**이다. 이는 명세의 TopAndBottom 정의
 // ("좌, 우에는 텍스트를 배치하지 않음", 「한글 문서 파일 형식 5.0」 표 69)와 정확히 일치한다.
 
-/// 자리차지 개체가 본문에서 밀어내는 y 구간.
+/// 자리차지 개체가 본문에서 밀어내는 구간.
+///
+/// [officex] x 범위를 갖는다 — 지금 모든 호출자는 컬럼 전폭(`FloatBand::full_width`)을 넘겨
+/// 세로 밴드처럼 쓰지만, 빈-host 표는 x 를 아는 `FloatLaneSet` 경로를 타고 있어
+/// 좌·중·우 표가 나란히 선다(`tests/issue_986.rs:114`). 그 경로를 밴드로 옮기려면
+/// 폭이 반드시 있어야 하므로, 자료구조를 먼저 넓혀 두고 등록 범위는 나중에 손댄다.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FloatBand {
+    /// 밴드가 가리는 가로 범위(컬럼 로컬 px). 전폭이면 `f64::NEG_INFINITY..INFINITY`.
+    pub x_start: f64,
+    pub x_end: f64,
     pub top: f64,
     pub bottom: f64,
     /// 이 밴드를 만든 개체가 앵커된 문단. 같은 문단의 텍스트(섹션 제목)는 자기 표가 만든
@@ -200,21 +220,44 @@ pub(crate) struct FloatBand {
     pub owner_para: Option<usize>,
 }
 
+impl FloatBand {
+    /// 가로 전폭을 가리는 밴드 — 종전 동작(x 무시)과 정확히 같다.
+    pub(crate) fn full_width(top: f64, bottom: f64, owner_para: Option<usize>) -> Self {
+        Self { x_start: f64::NEG_INFINITY, x_end: f64::INFINITY, top, bottom, owner_para }
+    }
+
+    fn overlaps_x(&self, x_start: f64, x_end: f64) -> bool {
+        // 전폭 밴드는 항상 겹친다(무한대 비교를 타지 않고 빠르게 끝낸다).
+        if self.x_start.is_infinite() && self.x_end.is_infinite() {
+            return true;
+        }
+        ranges_overlap(self.x_start, self.x_end, x_start, x_end)
+    }
+}
+
 /// 시작 y 에서 밴드들을 피해 내려간 y 를 돌려준다. 피할 게 없으면 `start` 그대로.
 ///
 /// - `probe_height`: 항목/줄의 잉크 높이. **0 이면 겹침 프로브를 끈다**(시작점이 밴드
 ///   안에 있는 경우만 본다). 호출자마다 프로브 조건이 달라 값으로 흡수한다.
 /// - `owner`: 지금 배치 중인 문단. 같은 문단이 소유한 밴드는 건너뛴다.
+/// - `x_range`: 배치 중인 항목의 가로 범위. `None` 이면 가로를 보지 않는다(= 종전 동작).
 pub(crate) fn skip_float_bands(
     start: f64,
     bands: &[FloatBand],
     probe_height: f64,
     owner: Option<usize>,
+    x_range: Option<(f64, f64)>,
 ) -> f64 {
     let mut jump_to = start;
     for band in bands {
         if let (Some(band_owner), Some(current)) = (band.owner_para, owner) {
             if band_owner == current {
+                continue;
+            }
+        }
+        // 가로가 안 겹치면 이 밴드는 이 항목을 밀지 않는다(좌·중·우 표가 나란히 서는 근거).
+        if let Some((x0, x1)) = x_range {
+            if !band.overlaps_x(x0, x1) {
                 continue;
             }
         }
@@ -331,47 +374,69 @@ mod tests {
 
     // ── skip_float_bands — 리팩터 전 두 엔진의 동작을 그대로 고정한다 ──────────────
     fn band(top: f64, bottom: f64, owner: Option<usize>) -> FloatBand {
-        FloatBand { top, bottom, owner_para: owner }
+        FloatBand::full_width(top, bottom, owner)
+    }
+    /// 가로 범위를 가진 밴드 — 좌·중·우 표가 나란히 서는 근거를 고정한다.
+    fn xband(x0: f64, x1: f64, top: f64, bottom: f64) -> FloatBand {
+        FloatBand { x_start: x0, x_end: x1, top, bottom, owner_para: None }
     }
 
     #[test]
     fn skip_bands_leaves_start_when_clear() {
         let bands = [band(100.0, 200.0, None)];
-        assert_eq!(skip_float_bands(10.0, &bands, 0.0, None), 10.0);
-        assert_eq!(skip_float_bands(250.0, &bands, 0.0, None), 250.0);
+        assert_eq!(skip_float_bands(10.0, &bands, 0.0, None, None), 10.0);
+        assert_eq!(skip_float_bands(250.0, &bands, 0.0, None, None), 250.0);
     }
 
     #[test]
     fn skip_bands_jumps_when_starting_inside() {
         let bands = [band(100.0, 200.0, None)];
-        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None), 200.0);
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None, None), 200.0);
         // 경계: top 바로 위(0.5 여유) 는 안쪽으로 본다
-        assert_eq!(skip_float_bands(99.6, &bands, 0.0, None), 200.0);
+        assert_eq!(skip_float_bands(99.6, &bands, 0.0, None, None), 200.0);
     }
 
     #[test]
     fn skip_bands_overlap_probe_only_when_height_given() {
         let bands = [band(100.0, 200.0, None)];
         // 시작은 밴드 위지만 잉크가 밴드를 관통한다
-        assert_eq!(skip_float_bands(90.0, &bands, 30.0, None), 200.0);
+        assert_eq!(skip_float_bands(90.0, &bands, 30.0, None, None), 200.0);
         // probe_height 0 이면 겹침을 보지 않는다(typeset 의 비-HWPX 경로와 동일)
-        assert_eq!(skip_float_bands(90.0, &bands, 0.0, None), 90.0);
+        assert_eq!(skip_float_bands(90.0, &bands, 0.0, None, None), 90.0);
     }
 
     #[test]
     fn skip_bands_ignores_self_owned_band() {
         let bands = [band(100.0, 200.0, Some(7))];
         // 자기 표가 만든 밴드에는 밀리지 않는다(Issue #1549 제목 유지)
-        assert_eq!(skip_float_bands(150.0, &bands, 0.0, Some(7)), 150.0);
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, Some(7), None), 150.0);
         // 다른 문단은 그대로 밀린다
-        assert_eq!(skip_float_bands(150.0, &bands, 0.0, Some(8)), 200.0);
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, Some(8), None), 200.0);
         // 소유자 개념이 없는 호출자(typeset)는 항상 밀린다
-        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None), 200.0);
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None, None), 200.0);
     }
 
     #[test]
     fn skip_bands_chains_through_multiple() {
         let bands = [band(100.0, 200.0, None), band(200.0, 300.0, None)];
-        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None), 300.0);
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None, None), 300.0);
+    }
+
+    #[test]
+    fn skip_bands_respects_x_when_range_given() {
+        // 왼쪽 절반만 가리는 밴드. 오른쪽에 놓인 항목은 밀리지 않아야 한다
+        // (빈-host 좌·중·우 표가 나란히 서는 근거 — tests/issue_986.rs:114).
+        let bands = [xband(0.0, 100.0, 100.0, 200.0)];
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None, Some((0.0, 50.0))), 200.0);
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None, Some((120.0, 200.0))), 150.0);
+        // x_range 를 안 주면 가로를 보지 않는다 = 종전 동작
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None, None), 200.0);
+    }
+
+    #[test]
+    fn full_width_band_always_overlaps() {
+        // 전폭 밴드는 어떤 x 를 줘도 민다(무한대 비교를 타지 않는 빠른 경로).
+        let bands = [band(100.0, 200.0, None)];
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None, Some((9_000.0, 9_100.0))), 200.0);
     }
 }
