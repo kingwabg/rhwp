@@ -30,6 +30,20 @@ pub(crate) fn is_para_topbottom_float(common: &CommonObjAttr) -> bool {
         && matches!(common.vert_rel_to, VertRelTo::Para)
 }
 
+/// [officex 2026-07-27] Para 기준 **어울림 가족**(Square|Tight|Through) 부동 표.
+/// 빈 host 어울림 표가 어느 배치 경로에도 못 들어 vertOffset 이 렌더에 반영되지 않던
+/// 결함(드래그해도 화면 부동 — 모델 오프셋만 축적)의 수리 지점: 빈 host lane 경로의
+/// 분류를 topbottom 전용에서 이 가족까지 넓힌다. Page/Paper 기준 빈 host 는
+/// paper_page_square_empty_top(#2019/가족 확장)이 이미 처리하므로 Para 만 대상이다.
+pub(crate) fn is_para_square_family_float(common: &CommonObjAttr) -> bool {
+    !common.treat_as_char
+        && matches!(
+            common.text_wrap,
+            TextWrap::Square | TextWrap::Tight | TextWrap::Through
+        )
+        && matches!(common.vert_rel_to, VertRelTo::Para)
+}
+
 /// [Task #1658 v3] 페이지 하단 고정(vert=쪽·valign=Bottom) 자리차지 개체 (결재/서명 틀).
 /// 한글은 이를 본문 하단에 절대배치(겹침 허용)하고 본문 텍스트를 그 위까지만 흐르게
 /// 한다(하단 배타 영역) — 문서순 flow 소비 대상이 아니다. #1653 RCA 패턴 B.

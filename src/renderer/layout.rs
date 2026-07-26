@@ -6339,6 +6339,25 @@ impl LayoutEngine {
                     let v_offset_px =
                         hwpunit_to_px(signed_hwpunit(t.common.vertical_offset), self.dpi);
                     let raw_top = (para_y_for_table + v_offset_px).max(para_y_for_table);
+                    // [officex 2026-07-27] 빈 host lane 경로에 restrictInPage(bit13) 계약 적용 —
+                    // compute_table_y_position 의 Para 클램프와 동일: 제한 ON = 본문 안,
+                    // OFF = 용지 안(밖 이탈만 금지). 종전엔 lane 이 클램프 없이 raw_top 을
+                    // 그대로 써서, 제한 ON 인 표를 API/드래그로 밀면 용지 밖(+500mm 실측
+                    // y=2137)까지 나갔다. 표 높이는 선언값(+외곽 상하) 근사 — measured 는
+                    // 이 시점에 없고, 근사 오차는 클램프 위치 수 px 로 실사용 무해.
+                    let tbl_h_px = hwpunit_to_px(t.common.height as i32, self.dpi).max(0.0)
+                        + hwpunit_to_px(t.outer_margin_top as i32, self.dpi)
+                        + hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi);
+                    let max_top = if t.common.flow_with_text {
+                        col_area.y + col_area.height - tbl_h_px
+                    } else {
+                        let paper_h = {
+                            let ph = self.current_paper_height.get();
+                            if ph > 0.0 { ph } else { col_area.y * 2.0 + col_area.height }
+                        };
+                        paper_h - tbl_h_px
+                    };
+                    let raw_top = raw_top.min(max_top.max(col_area.y));
                     let lane_top = para_float_lanes
                         .entry(para_index)
                         .or_default()
@@ -6835,7 +6854,9 @@ impl LayoutEngine {
                     matches!(
                         c,
                         Control::Table(t)
-                            if is_para_topbottom_float(&t.common) && !para_has_visible_text(para)
+                            if (is_para_topbottom_float(&t.common)
+                                || super::float_placement::is_para_square_family_float(&t.common))
+                                && !para_has_visible_text(para)
                     )
                 })
                 .unwrap_or(false);
@@ -6856,7 +6877,8 @@ impl LayoutEngine {
                     matches!(
                         c,
                         Control::Table(t)
-                            if is_para_topbottom_float(&t.common)
+                            if (is_para_topbottom_float(&t.common)
+                                || super::float_placement::is_para_square_family_float(&t.common))
                                 && !para_has_visible_text(para)
                     )
                 }) == Some(control_index);
