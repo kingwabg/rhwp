@@ -2029,12 +2029,15 @@ impl TypesetState {
             return;
         }
 
-        let use_overlap_probe = self.is_hwpx_source && probe_height > 0.0;
         self.visible_float_exclusions
             .retain(|zone| self.current_height < zone.bottom - 0.5);
 
-        // 겹침 프로브는 HWPX 원본에서만 켠다 — probe_height 0 이 곧 "프로브 끔"이다.
-        let probe = if use_overlap_probe { probe_height } else { 0.0 };
+        // [officex/S3] 겹침 프로브를 소스 무관으로 — layout(layout.rs:5030-5060)과 같은 규칙.
+        // 종전엔 is_hwpx_source 일 때만 켜져, HWP5 문서에서 layout 은 줄을 표 아래로
+        // 건너뛰는데 typeset 은 그 줄을 표 위 예산에 넣는 비대칭이 있었다. 분할을 확정하는
+        // 쪽(typeset)과 그리는 쪽(layout)이 다른 규칙을 쓰면 페이지 바닥이 터진다.
+        // probe_height 0 은 여전히 "프로브 끔"(시작점 판정만)이다.
+        let probe = probe_height;
         let jump_to = crate::renderer::float_placement::skip_float_bands(
             self.current_height,
             &self.visible_float_exclusions,
@@ -11322,6 +11325,13 @@ impl TypesetEngine {
         } else {
             layout_drift_safety_px
         };
+        // [officex/S3] HWP5 에도 프로브를 켠다 — 종전엔 0(끔)이라, layout(소스 무관 프로브)이
+        // 줄을 표 아래로 건너뛰는데 typeset 은 그 줄을 표 위 예산에 넣는 **과소 예산** 비대칭이
+        // 있었다(페이지 바닥 터짐의 방향). HWP5 프로브는 layout 과 같은 spacing 제외(#1789).
+        // ⚠ HWPX 는 기존 lh+ls 를 **유지**한다 — issue_1510 이 이 값 위에서 한글 2쪽 대조
+        // 기준을 핀해 두었고(lh 로 줄이면 filler 30 이 1쪽에 남아 한컴과 어긋남), lh+ls 는
+        // 과대 예산이라 안전한 방향의 어긋남이다. HWPX 까지 lh 로 통일하려면 한글 재대조가
+        // 필요하므로 별건으로 남긴다.
         let exclusion_probe_height = if st.is_hwpx_source {
             fmt.line_heights
                 .first()
@@ -11329,7 +11339,10 @@ impl TypesetEngine {
                 .map(|(lh, ls)| lh + ls)
                 .unwrap_or(fmt.height_for_fit)
         } else {
-            0.0
+            fmt.line_heights
+                .first()
+                .copied()
+                .unwrap_or(fmt.height_for_fit)
         };
         st.apply_visible_float_exclusions(exclusion_probe_height);
         // [Task #1725] tail-before-vpos-reset 문단은 각주 안전마진(보수 버퍼 40px)만 1회 되돌려
@@ -13489,6 +13502,17 @@ impl TypesetEngine {
                     ));
                 }
                 st.current_height += pre_height;
+                // [officex/S4] 높이 회계 구멍 — 밴드 방식은 표 높이를 예산에 안 넣고
+                // "후속 본문이 밴드를 소비"하는 데 기댄다. 그런데 표 절대 하단이 단 용량을
+                // 넘으면 이 페이지의 어떤 본문도 그 초과분을 소비할 수 없고, 표가 페이지
+                // 마지막 항목이면 영영 회계되지 않아 다음 내용이 넘친 표 밑에 계속 쌓였다
+                // (pagination/engine.rs effective_table_height 의 "넘치면 차액" 반쪽이
+                // 여기엔 없었다). 넘친 경우에만 흐름을 표 하단까지 전진시켜 단을 닫는다 —
+                // 들어오는 경우(bottom ≤ 용량)는 기여 0 그대로라 기존 문서는 불변이다.
+                let column_capacity = st.available_height();
+                if table_bottom > column_capacity + 0.5 {
+                    st.current_height = st.current_height.max(table_bottom);
+                }
             } else {
                 let following_non_positive =
                     has_following_non_positive_visible_float(para, ctrl_idx);
