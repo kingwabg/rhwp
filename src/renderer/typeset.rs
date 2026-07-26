@@ -15230,6 +15230,50 @@ impl TypesetEngine {
             return;
         }
 
+        // [officex/E3] 쪽나눔 = "나누지 않음"(TablePageBreak::None) 존중.
+        //
+        // 한글의 표 나눔 속성 0 은 "이 표는 쪽 경계에서 자르지 않는다"이고, 남은 공간이
+        // 모자라면 표를 **통째로 다음 쪽으로** 옮긴다. 종전 엔진은 이 값을 분할 판정에
+        // 전혀 쓰지 않아(선언높이 신뢰 #2097 에만 사용) 0/1/2 가 동일하게 분할됐다
+        // (실측 2026-07-27 diag_page_break2: 앞 본문 + 40행 표에서 0·2 모두 쪽 0..1 분할).
+        //
+        // 위 #991(1행 tac)과 같은 형태다: 한 쪽에 들어가는 표만 옮기고, 한 쪽에도 안
+        // 들어가는 초대형 표는 분할 외 방법이 없으므로 종전 경로로 폴백한다.
+        // tac 표는 인라인 원자성 규칙(#991·capability-map §3.5)이 따로 있어 제외한다.
+        if matches!(table.page_break, crate::model::table::TablePageBreak::None)
+            && !table.common.treat_as_char
+            && matches!(table.common.text_wrap, TextWrap::TopAndBottom)
+            // 제목 줄 반복(repeat_header)이 켜진 표는 **쪽을 걸쳐 나뉘는 것을 전제**한
+            // 설정이다 — 반복할 머리행은 분할될 때만 의미가 있다. 실측이 이를 지지한다:
+            // task1725 문서(한컴 PDF 오라클 242쪽)의 pb=None·repeat_header=true 표를
+            // 통째 이동시키면 243쪽으로 어긋나고, 분할로 두면 242쪽으로 일치한다.
+            && !table.repeat_header
+            && table_total <= available
+            && !st.current_items.is_empty()
+        {
+            if std::env::var("RHWP_DIAG_E3").is_ok() {
+                eprintln!(
+                    "E3_MOVE pi={} rows={} total={:.1} cur_h={:.1} avail={:.1} wrap={:?} vrel={:?}",
+                    para_idx, table.row_count, table_total, st.current_height, available,
+                    table.common.text_wrap, table.common.vert_rel_to,
+                );
+            }
+            st.advance_column_or_new_page();
+            self.place_table_with_text(
+                st,
+                para_idx,
+                ctrl_idx,
+                para,
+                table,
+                fmt,
+                para_start_height,
+                table_total,
+                is_first_placed,
+                is_last_placed,
+            );
+            return;
+        }
+
         // MeasuredTable이 없거나 행이 없으면 강제 배치
         let mt = match mt {
             Some(m) if !m.row_heights.is_empty() => m,
