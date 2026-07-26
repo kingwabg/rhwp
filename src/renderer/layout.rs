@@ -1868,6 +1868,13 @@ impl LayoutEngine {
         wrap_around_paras: &[super::pagination::WrapAroundPara],
     ) -> PageRenderTree {
         let layout = &page_content.layout;
+        // [officex/E2] 용지 기하는 **모든 페이지**에서 채운다. 종전엔 바탕쪽(build_master_page)
+        // 에서만 설정돼, 바탕쪽 없는 일반 문서는 0 으로 남아 compute_table_y_position 의
+        // 폴백(col_area.y*2 + height)이 쓰였다. 그 폴백은 위·아래 여백 대칭을 가정하므로
+        // 비대칭 문서에서 용지 높이를 과대평가해(실측 A4: 1141.4 vs 실제 1122.5)
+        // restrictInPage=false 표가 용지 밖으로 18.9px 새어나갔다("용지 밖 이탈만 막는다" 계약 위반).
+        self.current_paper_width.set(layout.page_width);
+        self.current_paper_height.set(layout.page_height);
         let mut tree = PageRenderTree::new(
             page_content.page_index,
             layout.page_width,
@@ -2824,7 +2831,6 @@ impl LayoutEngine {
                 // 바탕쪽은 본문보다 먼저 렌더링되므로 표 위치 계산용 현재 페이지 context를
                 // 여기서 명시적으로 채워야 `vertRelTo=PAGE`, `horzRelTo=PAGE`가 올바르게 동작한다.
                 self.current_paper_width.set(layout.page_width);
-        self.current_paper_height.set(layout.page_height);
                 self.current_paper_height.set(layout.page_height);
                 self.current_body_area.set((
                     body_area.x,
