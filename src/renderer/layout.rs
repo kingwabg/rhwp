@@ -6238,8 +6238,19 @@ impl LayoutEngine {
             // [#2019 v3] 빈 앵커에 매달린 Paper/Page 기준 Square 표는 본문 flow 표가
             // 아니라 페이지 절대좌표 부동 표다. 표 자체는 선언 y 에 그리되, 뒤따르는
             // 문단을 표 아래로 밀지 않는다.
+            // [officex 2026-07-26] Square 전용이던 게이트를 어울림 가족(Square|Tight|Through)으로.
+            // Tight/Through 는 경계 규칙만 다른 같은 어울림 배치라 위치 계약(vertRelTo/vertAlign)이
+            // 동일해야 하는데, 여기서 빠져 흐름 위치에 남았다(실측: Page+Center 에서 Square=545
+            // 중앙 vs Tight/Through=238.9 고정 — diag_square_jump). Para 기준은 종전에도 6종
+            // 동일해 이 게이트만 넓힌다.
+            let tbl_is_square_family = matches!(
+                t.common.text_wrap,
+                crate::model::shape::TextWrap::Square
+                    | crate::model::shape::TextWrap::Tight
+                    | crate::model::shape::TextWrap::Through
+            );
             let paper_page_square_empty_top = if !is_tac
-                && tbl_is_square
+                && tbl_is_square_family
                 && !para_has_visible_text(para)
                 && matches!(
                     t.common.vert_rel_to,

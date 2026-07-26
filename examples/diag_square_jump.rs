@@ -28,3 +28,4 @@ fn main() {
         println!("{wrap:14} y={y:7.1} h={h:5.1}");
     }
 }
+// (vertRelTo 는 scenario 안에서 Page+Center — Paper 대조는 필요 시 문자열만 바꿔 재실행)
