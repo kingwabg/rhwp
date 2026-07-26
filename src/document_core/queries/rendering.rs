@@ -5275,7 +5275,7 @@ mod tests {
         let paragraphs = vec![p0, p1];
 
         // "page 2" 단: para 1 만 포함.
-        let cc = ColumnContent {
+        let cc = ColumnContent { topbottom_bands: Vec::new(),
             column_index: 0,
             start_height: 0.0,
             endnote_flow: false,

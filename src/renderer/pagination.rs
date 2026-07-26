@@ -210,6 +210,20 @@ pub struct FootnoteRef {
 }
 
 /// 한 단(Column)에 배치될 콘텐츠
+/// [officex/어울림 배선 1/3] typeset 이 컬럼 시작 전에 계산해 넘기는 자리차지 배타 밴드.
+/// 앵커 문단 **상대** 좌표로 담는다 — typeset current_height 와 layout y_offset 은
+/// 좌표계가 달라 절대 px 를 넘기면 어긋난다. layout 은 para_start_y 확정 시점에
+/// 절대값으로 해석(lazy resolve)한다. 지금은 운반로만 존재(생산자·소비자 0 — 동작 불변).
+#[derive(Debug, Clone, Copy)]
+pub struct PendingFloatBand {
+    /// 밴드를 만든 표의 앵커 문단
+    pub para_index: usize,
+    /// 앵커 문단 상단으로부터 밴드 top 까지 (px, 음수 = 문단 위)
+    pub offset_from_para_top: f64,
+    /// 밴드 높이 (px, 외곽 여백 포함)
+    pub height: f64,
+}
+
 #[derive(Debug)]
 pub struct ColumnContent {
     /// 단 인덱스 (0-based)
@@ -225,6 +239,8 @@ pub struct ColumnContent {
     /// 미주 본문은 일반 본문과 달리 한 단 안에서도 LINE_SEG vpos가 크게
     /// 되감길 수 있으므로, 렌더러의 vpos 보정 가드에서 별도 취급한다.
     pub endnote_flow: bool,
+    /// [officex] 이 단의 사전 배타 밴드 — 위 PendingFloatBand 참조. 현재 항상 비어 있다.
+    pub topbottom_bands: Vec<PendingFloatBand>,
     /// 배치될 문단 슬라이스 정보
     pub items: Vec<PageItem>,
     /// 이 존의 레이아웃 (None이면 page.layout 사용). 다단 설정 나누기로 같은 페이지 내 단 수 변경 시 사용.
@@ -598,7 +614,7 @@ impl PaginationResult {
                 column_contents: old_page
                     .column_contents
                     .iter()
-                    .map(|cc| ColumnContent {
+                    .map(|cc| ColumnContent { topbottom_bands: Vec::new(),
                         column_index: cc.column_index,
                         start_height: cc.start_height,
                         endnote_flow: cc.endnote_flow,

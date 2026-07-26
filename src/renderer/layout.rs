@@ -3914,7 +3914,7 @@ impl LayoutEngine {
             separator_color: 0,
             pagination_tolerance_px: 0.0,
         };
-        let col_content = ColumnContent {
+        let col_content = ColumnContent { topbottom_bands: Vec::new(),
             column_index: 0,
             start_height,
             endnote_flow: true,

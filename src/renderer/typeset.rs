@@ -1896,7 +1896,7 @@ impl TypesetState {
         if self.current_items.is_empty() && self.current_column_wrap_around_paras.is_empty() {
             return;
         }
-        let col_content = ColumnContent {
+        let col_content = ColumnContent { topbottom_bands: Vec::new(),
             column_index: self.current_column,
             start_height: self.current_start_height,
             endnote_flow: self.current_endnote_flow,
@@ -1950,7 +1950,7 @@ impl TypesetState {
 
     /// 비어있어도 flush
     fn flush_column_always(&mut self) {
-        let col_content = ColumnContent {
+        let col_content = ColumnContent { topbottom_bands: Vec::new(),
             column_index: self.current_column,
             start_height: self.current_start_height,
             endnote_flow: self.current_endnote_flow,
@@ -17040,7 +17040,7 @@ mod tests {
                 &ColumnDef::default(),
                 DEFAULT_DPI,
             ),
-            column_contents: vec![ColumnContent {
+            column_contents: vec![ColumnContent { topbottom_bands: Vec::new(),
                 column_index: 0,
                 start_height: 0.0,
                 endnote_flow: false,
