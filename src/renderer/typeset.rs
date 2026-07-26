@@ -523,6 +523,9 @@ struct TypesetState {
     /// [Task #362] 현재 단에서 표 옆에 배치되는 wrap-around paragraphs.
     /// flush_column 에서 ColumnContent 로 전달.
     current_column_wrap_around_paras: Vec<crate::renderer::pagination::WrapAroundPara>,
+    /// [officex/어울림 배선 2/3] 이 단에서 생산된 사전 배타 밴드(앵커 상대) —
+    /// flush 시 ColumnContent.topbottom_bands 로 넘어간다. 소비자는 아직 없다(동작 불변).
+    current_column_bands: Vec<crate::renderer::pagination::PendingFloatBand>,
     /// [Task #604 R3] 현재 단의 wrap text 문단 ↔ anchor 메타데이터.
     /// wrap_around state machine 매칭 시 등록. flush_column 에서 ColumnContent 로 전달.
     current_column_wrap_anchors:
@@ -1790,6 +1793,7 @@ impl TypesetState {
             behind_float_table_para: None,
             behind_pending_absorbs: Vec::new(),
             current_column_wrap_around_paras: Vec::new(),
+            current_column_bands: Vec::new(),
             current_column_wrap_anchors: std::collections::HashMap::new(),
             current_zone_column_type: column_type,
             current_zone_design_spacing_px: 0.0,
@@ -1896,7 +1900,7 @@ impl TypesetState {
         if self.current_items.is_empty() && self.current_column_wrap_around_paras.is_empty() {
             return;
         }
-        let col_content = ColumnContent { topbottom_bands: Vec::new(),
+        let col_content = ColumnContent { topbottom_bands: std::mem::take(&mut self.current_column_bands),
             column_index: self.current_column,
             start_height: self.current_start_height,
             endnote_flow: self.current_endnote_flow,
@@ -1950,7 +1954,7 @@ impl TypesetState {
 
     /// 비어있어도 flush
     fn flush_column_always(&mut self) {
-        let col_content = ColumnContent { topbottom_bands: Vec::new(),
+        let col_content = ColumnContent { topbottom_bands: std::mem::take(&mut self.current_column_bands),
             column_index: self.current_column,
             start_height: self.current_start_height,
             endnote_flow: self.current_endnote_flow,
@@ -13502,6 +13506,13 @@ impl TypesetEngine {
                     ));
                 }
                 st.current_height += pre_height;
+                // [officex/어울림 배선 2/3] 사전 밴드 생산 — 앵커 문단 상대 좌표.
+                // layout 이 para_start_y 확정 시점에 절대값으로 해석한다(운반로 주석 참조).
+                st.current_column_bands.push(crate::renderer::pagination::PendingFloatBand {
+                    para_index: para_idx,
+                    offset_from_para_top: table_top - para_start_height,
+                    height: (table_bottom - table_top).max(0.0),
+                });
                 // [officex/S4] 높이 회계 구멍 — 밴드 방식은 표 높이를 예산에 안 넣고
                 // "후속 본문이 밴드를 소비"하는 데 기댄다. 그런데 표 절대 하단이 단 용량을
                 // 넘으면 이 페이지의 어떤 본문도 그 초과분을 소비할 수 없고, 표가 페이지
