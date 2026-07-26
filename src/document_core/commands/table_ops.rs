@@ -38,6 +38,18 @@ impl DocumentCore {
     }
 
     /// 표에 행을 삽입한다 (네이티브).
+    /// [app-workflow/TAC 재열기] 표 기하 변형 후 host 문단의 LINE_SEG 를 재생성한다.
+    ///
+    /// 종전엔 표(행 추가 등)만 바뀌고 host 의 저장 lh 는 옛 값으로 박제됐다. typeset 의
+    /// TAC fit 은 저장 lineseg 를 신뢰하므로(#2319 보정은 lineseg 부재 문단만 구제),
+    /// 저장→재열기하면 91600HU 표를 lh=3600HU 로 계상해 넘친 표가 영영 1쪽에 갇혔다
+    /// (qa:rhwp 앱 통합 워크플로 결함 — 실측: tall.hwp pi3 rows=42, segs lh=3600).
+    /// reflow_line_segs 는 인라인 컨트롤 높이를 host 줄에 반영하므로(insert_text 경로와
+    /// 동일 기계) 변형 직후 한 번 돌리면 저장이 진실을 쓴다.
+    fn refresh_table_host_line_segs(&mut self, section_idx: usize, parent_para_idx: usize) {
+        self.reflow_paragraph(section_idx, parent_para_idx);
+    }
+
     pub fn insert_table_row_native(
         &mut self,
         section_idx: usize,
@@ -56,6 +68,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::TableRowInserted {
@@ -88,6 +101,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::TableColumnInserted {
@@ -119,6 +133,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::TableRowDeleted {
@@ -150,6 +165,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::TableColumnDeleted {
@@ -183,6 +199,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::CellsMerged {
@@ -213,6 +230,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::CellSplit {
@@ -248,6 +266,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::CellSplit {
@@ -292,6 +311,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::CellSplit {
@@ -970,6 +990,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         Ok("{\"ok\":true}".to_string())
@@ -1208,6 +1229,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         Ok(format!(
@@ -1604,6 +1626,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         Ok("{\"ok\":true}".to_string())
@@ -1656,6 +1679,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         Ok(super::super::helpers::json_ok_with(&format!(
@@ -1927,6 +1951,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         Ok(format!(
@@ -2472,6 +2497,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         if caption_created {
@@ -2767,6 +2793,7 @@ impl DocumentCore {
             self.document.is_hwp3_variant,
         );
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::TableColumnDeleted {
