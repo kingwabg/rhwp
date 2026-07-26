@@ -271,6 +271,35 @@ pub(crate) fn skip_float_bands(
     jump_to
 }
 
+/// [officex/어울림 본편] 문단의 줄들을 밴드를 피해 세로로 쌓는다 — layout·typeset 공용 계산부.
+///
+/// 지금의 소비는 **문단 단위**(첫 줄만 프로브)라, 밴드 위에서 시작한 문단의 중간 줄이
+/// 표를 관통한다. 이 함수가 그 격차를 메우는 계산이다: 줄마다 skip_float_bands 를 적용해
+/// 최종 y 목록과 끝 y 를 돌려준다. **두 엔진이 이 한 함수를 써야** 한다 —
+/// layout 은 줄 y 배치에, typeset 은 같은 값으로 문단 높이 예산에. 한쪽만 쓰면
+/// 분할 예산과 그림이 갈려 페이지 바닥이 터진다(오늘 S3·S4 에서 확인한 병).
+///
+/// - `line_advances`: 줄별 (잉크 높이, 줄 간격). 프로브는 **잉크 높이만** 쓴다(#1789 계약 —
+///   spacing 포함 판정은 표 위에 남아야 할 줄을 아래로 밀어 한컴과 최대 345px 어긋났다).
+/// - 반환: (각 줄의 top y, 마지막 줄 아래 y).
+#[allow(dead_code)] // 배선(S6) 전까지 미사용 — 단위 테스트가 계약을 고정한다
+pub(crate) fn stack_lines_through_bands(
+    start_y: f64,
+    line_advances: &[(f64, f64)],
+    bands: &[FloatBand],
+    owner: Option<usize>,
+    x_range: Option<(f64, f64)>,
+) -> (Vec<f64>, f64) {
+    let mut y = start_y;
+    let mut tops = Vec::with_capacity(line_advances.len());
+    for &(ink_height, spacing) in line_advances {
+        y = skip_float_bands(y, bands, ink_height, owner, x_range);
+        tops.push(y);
+        y += ink_height + spacing;
+    }
+    (tops, y)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,5 +467,46 @@ mod tests {
         // 전폭 밴드는 어떤 x 를 줘도 민다(무한대 비교를 타지 않는 빠른 경로).
         let bands = [band(100.0, 200.0, None)];
         assert_eq!(skip_float_bands(150.0, &bands, 0.0, None, Some((9_000.0, 9_100.0))), 200.0);
+    }
+
+    #[test]
+    fn stack_lines_no_bands_is_cumulative() {
+        let (tops, end) = stack_lines_through_bands(100.0, &[(17.0, 3.0), (17.0, 3.0)], &[], None, None);
+        assert_eq!(tops, vec![100.0, 120.0]);
+        assert_eq!(end, 140.0);
+    }
+
+    #[test]
+    fn stack_lines_mid_paragraph_jumps_band() {
+        // 문단이 밴드 위(y=100)에서 시작 — 3번째 줄이 밴드[140..300]에 닿으면 아래로 점프.
+        // 지금 문단 단위 소비(첫 줄만 프로브)로는 불가능한, 관통을 막는 바로 그 동작이다.
+        let bands = [band(140.0, 300.0, None)];
+        let lines = [(17.0, 3.0), (17.0, 3.0), (17.0, 3.0), (17.0, 3.0)];
+        let (tops, end) = stack_lines_through_bands(100.0, &lines, &bands, None, None);
+        assert_eq!(tops[0], 100.0);
+        assert_eq!(tops[1], 120.0); // 잉크 120..137 — 밴드 위에 안전(#1789: spacing 미포함)
+        assert_eq!(tops[2], 300.0); // 잉크가 밴드에 닿는 첫 줄 — 밴드 아래로
+        assert_eq!(tops[3], 320.0);
+        assert_eq!(end, 340.0);
+    }
+
+    #[test]
+    fn stack_lines_owner_paragraph_not_pushed() {
+        // 자기 표가 만든 밴드는 자기 문단(제목)을 밀지 않는다 — Issue #1549 계약 그대로.
+        let bands = [band(140.0, 300.0, Some(7))];
+        let lines = [(17.0, 3.0), (17.0, 3.0), (17.0, 3.0)];
+        let (tops, _) = stack_lines_through_bands(100.0, &lines, &bands, Some(7), None);
+        assert_eq!(tops, vec![100.0, 120.0, 140.0]);
+    }
+
+    #[test]
+    fn stack_lines_respects_x_lane() {
+        // 왼쪽 절반 밴드 — 오른쪽 레인의 줄은 관통이 아니라 '옆'이므로 안 밀린다.
+        let bands = [xband(0.0, 100.0, 140.0, 300.0)];
+        let lines = [(17.0, 3.0), (17.0, 3.0), (17.0, 3.0)];
+        let (right, _) = stack_lines_through_bands(100.0, &lines, &bands, None, Some((120.0, 200.0)));
+        assert_eq!(right, vec![100.0, 120.0, 140.0]);
+        let (left, _) = stack_lines_through_bands(100.0, &lines, &bands, None, Some((0.0, 50.0)));
+        assert_eq!(left[2], 300.0);
     }
 }
