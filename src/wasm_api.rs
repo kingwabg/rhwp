@@ -3542,7 +3542,12 @@ impl HwpDocument {
         // 글상자는 기본적으로 treat_as_char=true (한컴 기본값)
         let default_tac = shape_type == "textbox";
         let treat_as_char = json_bool(json, "treatAsChar").unwrap_or(default_tac);
-        let text_wrap = json_str(json, "textWrap").unwrap_or_else(|| "Square".to_string());
+        // [officex] 기본값을 배치에 맞춰 분기한다. 종전엔 무조건 "Square"였는데, floating 도형의
+        // attr 리터럴(0x046A4000)은 bits21-23=3=InFrontOfText 라 **메모리 enum(Square)과 저장 attr이
+        // 태생부터 어긋나** 있었다. 재열기하면 attr 쪽이 이겨 전부 InFrontOfText 로 뒤집혔다.
+        // inline 글상자는 0x0A0210(=Square)이므로 "Square" 그대로 — Task #1280 v2 계약 유지.
+        let default_wrap = if shape_type == "textbox" && treat_as_char { "Square" } else { "InFrontOfText" };
+        let text_wrap = json_str(json, "textWrap").unwrap_or_else(|| default_wrap.to_string());
         let line_flip_x = json_bool(json, "lineFlipX").unwrap_or(false);
         let line_flip_y = json_bool(json, "lineFlipY").unwrap_or(false);
         // 다각형 꼭짓점: "polygonPoints":[{"x":N,"y":N},...]

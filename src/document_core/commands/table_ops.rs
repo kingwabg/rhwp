@@ -2029,8 +2029,11 @@ impl DocumentCore {
         let treat_as_char = table.common.treat_as_char;
         let text_wrap = match table.common.text_wrap {
             crate::model::shape::TextWrap::Square => "Square",
-            crate::model::shape::TextWrap::Tight => "Square",
-            crate::model::shape::TextWrap::Through => "Square",
+            // [officex] 종전엔 둘 다 "Square"로 접어 보고했다 — 모델이 Tight를 들고 있어도
+            // 호출자는 Square로 읽어 "지정이 안 먹었다"로 보였다. 파서는 이미 4/5를 읽고
+            // (parser/control/shape.rs:397-398) 직렬화기도 4/5를 쓰는데 여기만 접혔다.
+            crate::model::shape::TextWrap::Tight => "Tight",
+            crate::model::shape::TextWrap::Through => "Through",
             crate::model::shape::TextWrap::TopAndBottom => "TopAndBottom",
             crate::model::shape::TextWrap::BehindText => "BehindText",
             crate::model::shape::TextWrap::InFrontOfText => "InFrontOfText",
@@ -2159,11 +2162,18 @@ impl DocumentCore {
 
         // 위치 속성: attr 비트 필드
         if let Some(v) = json_str(json, "textWrap") {
+            // [officex] 내부 배치 코드 — parser/control/shape.rs:395-403 과 짝이다.
+            // ⚠ 명세(표 69)의 값 번호와 다르다: 여기 4/5 는 Tight/Through 왕복 보존 슬롯이다.
+            // 종전엔 "Tight"/"Through" 가 `_ => 0`(Square)으로 접혀, 명세가 정의한 합법 값을
+            // {"ok":true} 로 받고 조용히 다른 값으로 바꿔 썼다(자기 직렬화기는 4/5를 내보내는데
+            // 자기 세터가 거부하는 자기모순).
             let bits: u32 = match v.as_str() {
                 "Square" => 0,
                 "TopAndBottom" => 1,
                 "BehindText" => 2,
                 "InFrontOfText" => 3,
+                "Tight" => 4,
+                "Through" => 5,
                 _ => 0,
             };
             table.attr = (table.attr & !(0x07 << 21)) | (bits << 21);
@@ -2171,6 +2181,8 @@ impl DocumentCore {
                 1 => crate::model::shape::TextWrap::TopAndBottom,
                 2 => crate::model::shape::TextWrap::BehindText,
                 3 => crate::model::shape::TextWrap::InFrontOfText,
+                4 => crate::model::shape::TextWrap::Tight,
+                5 => crate::model::shape::TextWrap::Through,
                 _ => crate::model::shape::TextWrap::Square,
             };
         }

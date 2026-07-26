@@ -1162,6 +1162,20 @@ impl DocumentCore {
         if treat_as_char {
             attr |= 0x01;
         }
+        // [officex] 호출자가 준 배치를 attr bits21-23 에 실는다. 종전엔 리터럴만 쓰고
+        // text_wrap_str 을 attr 에 반영하지 않아, serializer(control.rs: common.attr!=0 이면
+        // attr 우선)가 지정값을 버렸다 — 6종 어느 것을 줘도 재열기하면 InFrontOfText 였다.
+        // 코드는 parser/control/shape.rs:395-403 과 짝인 **엔진 내부 배치 코드**다(명세 값 번호와 다름).
+        let wrap_bits: u32 = match text_wrap_str {
+            "Square" => 0,
+            "TopAndBottom" => 1,
+            "BehindText" => 2,
+            "InFrontOfText" => 3,
+            "Tight" => 4,
+            "Through" => 5,
+            _ => (attr >> 21) & 0x07, // 모르는 문자열이면 리터럴 기본값을 유지한다
+        };
+        attr = (attr & !(0x07 << 21)) | (wrap_bits << 21);
 
         // --- 빈 문단 (글상자 내부용) ---
         let tb_inner_width = width.saturating_sub(1020); // 양쪽 여백 510+510
@@ -1275,6 +1289,11 @@ impl DocumentCore {
             },
             horz_align: HorzAlign::Left,
             text_wrap,
+            // [officex] attr 리터럴의 bit14(겹침 허용)와 메모리 enum 을 일치시킨다.
+            // 종전엔 이 필드를 안 채워 Default(false)였는데 attr 은 floating 에서 bit14=1 이라,
+            // 생성 직후 조회는 false·재열기 후에는 true 로 갈렸다(태생 불일치).
+            // 저장 바이트는 그대로 두고 메모리를 attr 에 맞춘다 — 왕복 일관성만 회복한다.
+            allow_overlap: !inline_textbox,
             description: match shape_type {
                 "line" => "선입니다.".to_string(),
                 "ellipse" => "타원입니다.".to_string(),

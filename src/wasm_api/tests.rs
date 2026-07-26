@@ -1974,6 +1974,63 @@ fn issue2214_deferred_table_caption_reports_flow_change() {
     );
 }
 
+// ── [officex] 도형 배치(textWrap) 저장 왕복 계약 ────────────────────────────
+// 왜 있나: createShapeControl 의 textWrap 이 attr 에 반영되지 않아, 6종 어느 것을 줘도
+// 재열기하면 InFrontOfText 로 뒤집혔다(attr 리터럴 0x046A4000 = bits21-23=3 이 enum 을 이겼다).
+// 이 테스트가 없어서 게이트가 회귀를 못 잡았다 — tests/ 전체에 create_shape_control 호출이
+// 검증 목적으로는 0건이었다.
+fn officex_make_shape(doc: &mut HwpDocument, wrap: &str, tac: bool, kind: &str) -> (usize, usize) {
+    let made = doc
+        .create_shape_control_native(0, 0, 0, 21_600, 7_200, 0, 0, tac, wrap, kind, false, false, &[])
+        .expect("도형 생성");
+    // 반환은 JSON 문자열 — paraIdx/controlIdx 를 뽑는다(다른 테스트와 같은 방식).
+    let grab = |key: &str| -> usize {
+        made.split(&format!("\"{key}\":"))
+            .nth(1)
+            .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).find(|t| !t.is_empty()))
+            .and_then(|num| num.parse().ok())
+            .unwrap_or_else(|| panic!("{key} 를 못 찾음: {made}"))
+    };
+    (grab("paraIdx"), grab("controlIdx"))
+}
+
+#[test]
+fn officex_shape_textwrap_survives_save_roundtrip() {
+    // 6종 전부: 지정한 배치가 저장 왕복 뒤에도 그대로여야 한다.
+    for wrap in ["Square", "Tight", "Through", "TopAndBottom", "BehindText", "InFrontOfText"] {
+        let mut doc = HwpDocument::create_empty();
+        doc.create_blank_document();
+        let (para, ctrl) = officex_make_shape(&mut doc, wrap, false, "rectangle");
+        let before = doc.get_shape_properties_native(0, para, ctrl).expect("생성 직후 조회");
+        assert!(
+            before.contains(wrap),
+            "메모리 단계부터 어긋난다(wrap={wrap}): {before}"
+        );
+        let bytes = doc.export_hwp().expect("저장");
+        let reopened = HwpDocument::from_bytes(&bytes).expect("재열기");
+        let after = reopened.get_shape_properties_native(0, para, ctrl).expect("재열기 후 조회");
+        assert!(
+            after.contains(wrap),
+            "저장 왕복에서 배치가 유실됐다(wrap={wrap}): {after}"
+        );
+    }
+}
+
+#[test]
+fn officex_shape_textwrap_default_is_unchanged() {
+    // 미지정 호출의 기본값 계약(Task #1280 v2): floating 도형 = InFrontOfText,
+    // inline 글상자 = Square. 이 값이 바뀌면 권위 샘플(textbox-under-image.hwp)과 어긋난다.
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document();
+    let (p1, c1) = officex_make_shape(&mut doc, "InFrontOfText", false, "rectangle");
+    let floating = doc.get_shape_properties_native(0, p1, c1).expect("조회");
+    assert!(floating.contains("InFrontOfText"), "floating 기본 배치가 바뀌었다: {floating}");
+
+    let (p2, c2) = officex_make_shape(&mut doc, "Square", true, "textbox");
+    let inline = doc.get_shape_properties_native(0, p2, c2).expect("조회");
+    assert!(inline.contains("Square"), "inline 글상자 기본 배치가 바뀌었다: {inline}");
+}
+
 #[test]
 fn issue2214_invalid_shape_cell_index_does_not_mutate_text() {
     let mut doc = HwpDocument::create_empty();
