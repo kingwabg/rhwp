@@ -53,6 +53,10 @@ pub struct DocumentCore {
     pub(crate) document: Document,
     /// 페이지 분할 결과
     pub(crate) pagination: Vec<PaginationResult>,
+    /// [드래그 안정화 2026-07-28] 어울림 재줄바꿈 훅 억제 — 드래그 중 재줄바꿈이 host
+    /// 위치를 되밀어 톱니 진동(프레임당 ±15px)을 만들었다. 드래그 동안 true 로 두고
+    /// 드롭에서 false + 1회 확정 재배치한다(studio setSquareReflowSuppressed).
+    pub(crate) suppress_square_reflow: bool,
     /// 해소된 스타일 세트
     pub(crate) styles: ResolvedStyleSet,
     /// 구역별 구성된 문단 목록
@@ -268,6 +272,7 @@ impl DocumentCore {
         DocumentCore {
             document: Document::default(),
             pagination: Vec::new(),
+            suppress_square_reflow: false,
             styles: ResolvedStyleSet::default(),
             composed: Vec::new(),
             render_normalized: Vec::new(),

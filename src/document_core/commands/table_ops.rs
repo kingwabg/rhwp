@@ -52,6 +52,9 @@ impl DocumentCore {
     /// 어긋난다(실측 34px). 렌더트리 1회 조회 비용은 편집당 조판 1회 추가 — 수용.
     /// 밴드에서 벗어난 문단은 전폭으로 자동 원복(빈 겹침 = 전폭 기록).
     pub(crate) fn reflow_paras_for_square_bands(&mut self, section_idx: usize) {
+        if self.suppress_square_reflow {
+            return;
+        }
         use crate::model::shape::{HorzRelTo, TextWrap, VertRelTo};
         use crate::renderer::render_tree::{RenderNode, RenderNodeType};
         let dpi = self.dpi;

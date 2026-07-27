@@ -126,6 +126,7 @@ impl DocumentCore {
         let mut doc = DocumentCore {
             document,
             pagination: Vec::new(),
+            suppress_square_reflow: false,
             styles,
             composed,
             render_normalized: Vec::new(),

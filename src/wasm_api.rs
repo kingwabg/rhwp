@@ -2582,6 +2582,18 @@ impl HwpDocument {
     ///
     /// delta_h, delta_v: HWPUNIT 단위 이동량 (양수=오른쪽/아래, 음수=왼쪽/위)
     /// 반환: JSON `{"ok":true}`
+    /// [드래그 안정화] 어울림 재줄바꿈 훅 억제 토글 — 드래그 시작 true / 드롭 false.
+    /// false 로 되돌릴 때 확정 재배치를 1회 수행한다.
+    #[wasm_bindgen(js_name = setSquareReflowSuppressed)]
+    pub fn set_square_reflow_suppressed(&mut self, on: bool) {
+        self.core.suppress_square_reflow = on;
+        if !on {
+            self.core.reflow_paras_for_square_bands(0);
+            self.core.recompose_section(0);
+            self.core.paginate_if_needed();
+        }
+    }
+
     #[wasm_bindgen(js_name = moveTableOffset)]
     pub fn move_table_offset(
         &mut self,

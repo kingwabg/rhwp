@@ -6347,7 +6347,14 @@ impl LayoutEngine {
                         horizontal_range(&t.common, width_px, placement_ctx, self.dpi);
                     let v_offset_px =
                         hwpunit_to_px(signed_hwpunit(t.common.vertical_offset), self.dpi);
-                    let raw_top = (para_y_for_table + v_offset_px).max(para_y_for_table);
+                    // [사용자 신고 2026-07-28] 위 본문이 있으면 어울림 표가 위로 못 올라감 —
+                    // 이 .max(para_y) 클램프가 음수 voff 를 통째로 삼켰다(voff -3000 에도
+                    // bbox 부동, 드래그 롤백이 반납 → "그 텍스트 위로는 이동이 안 돼").
+                    // Para 기준의 음수 오프셋은 한컴에서 정당한 배치(앵커 줄 위) — 위로도
+                    // 흐르게 허용한다. 위쪽 한계는 아래 restrictInPage 클램프(본문/용지)가
+                    // 그대로 지킨다. 앞 문단과의 어울림은 부분폭 밴드 + reflow 훅(재줄바꿈)
+                    // 파이프라인이 처리한다.
+                    let raw_top = para_y_for_table + v_offset_px;
                     // [officex 2026-07-27] 빈 host lane 경로에 restrictInPage(bit13) 계약 적용 —
                     // compute_table_y_position 의 Para 클램프와 동일: 제한 ON = 본문 안,
                     // OFF = 용지 안(밖 이탈만 금지). 종전엔 lane 이 클램프 없이 raw_top 을
@@ -6366,7 +6373,9 @@ impl LayoutEngine {
                         };
                         paper_h - tbl_h_px
                     };
-                    let raw_top = raw_top.min(max_top.max(col_area.y));
+                    // 위쪽 하한도 같은 계약: 제한 ON=본문 위(col_area.y), OFF=용지 위(0).
+                    let top_floor = if t.common.flow_with_text { col_area.y } else { 0.0 };
+                    let raw_top = raw_top.max(top_floor).min(max_top.max(col_area.y));
                     let lane_top = para_float_lanes
                         .entry(para_index)
                         .or_default()

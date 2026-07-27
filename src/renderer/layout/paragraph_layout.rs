@@ -3182,36 +3182,13 @@ impl LayoutEngine {
             } else {
                 None
             };
-            // [officex/어울림 본편] 라이브 옆 흐름 — 부분폭 밴드(빈 host Square 표)와
-            // 세로로 겹치는 줄은 옆 남은 폭으로 좁혀 표 옆에 세운다. 저장된 줄 폭
-            // (file_narrow_override)이나 앵커 재생이 있으면 그쪽이 정본이므로 양보한다.
-            let live_band_narrow = if wrap_anchor.is_none()
-                && cell_ctx.is_none()
-                && file_narrow_override.is_none()
-            {
-                let bands = self.current_flow_bands.borrow();
-                let full_w = effective_col_w - effective_margin_left - margin_right;
-                let line_top = text_y;
-                let line_bottom = text_y + line_height.max(1.0);
-                bands
-                    .iter()
-                    .filter(|b| b.x_start.is_finite() && b.x_end.is_finite())
-                    .find(|b| line_bottom > b.top + 0.5 && line_top + 0.5 < b.bottom)
-                    .and_then(|b| {
-                        let left_room = b.x_start.max(0.0);
-                        let right_room = (full_w - b.x_end).max(0.0);
-                        // 넓은 쪽 하나를 고른다(좌·우 동시 흐름은 한컴도 안 한다).
-                        if right_room >= left_room && right_room >= 40.0 {
-                            Some((b.x_end, right_room))
-                        } else if left_room >= 40.0 {
-                            Some((0.0, left_room))
-                        } else {
-                            None
-                        }
-                    })
-            } else {
-                None
-            };
+            // [사용자 신고 2026-07-28] 즉석 좁힘(live_band_narrow) 안전망 폐지 — 전폭으로
+            // 구성된 줄을 렌더에서만 좁히면 양쪽정렬이 글자를 압축해 "간격이 좁아지는"
+            // 흉한 화면이 됐다(재줄바꿈이 아니라 욱여넣기). 정본은 편집 훅의 재줄바꿈
+            // (reflow_paras_for_square_bands)이 기록한 줄별 cs/sw 재생 하나다. 훅이 아직
+            // 안 돈 순간(타이핑 직후 등)엔 잠깐 표와 겹쳐 보일 수 있으나, 압축보다 낫고
+            // 다음 이동/속성 변경에서 즉시 복원된다(타이핑 훅은 v2).
+            let live_band_narrow: Option<(f64, f64)> = None;
             // 소비 우선순위: 저장 줄별 cs/sw(재생 — 줄바꿈까지 반영된 정본) →
             // 라이브 즉석 좁힘(기록 전 1차 조판의 겹침 완화 안전망) → 앵커 재생.
             let (line_cs_offset, line_avail_w_override) = if let Some((cs, sw)) = file_narrow_override {
