@@ -3917,6 +3917,14 @@ impl LayoutEngine {
             // 셀 BorderFill 조회
             let border_style = if cell.border_fill_id > 0 {
                 let idx = (cell.border_fill_id as usize).saturating_sub(1);
+                if std::env::var("RHWP_BORDER_DBG").is_ok() {
+                    eprintln!(
+                        "[BORDER] cell r{}c{} bf_id={} styles_len={} hit={}",
+                        cell.row, cell.col, cell.border_fill_id,
+                        styles.border_styles.len(),
+                        styles.border_styles.get(idx).is_some()
+                    );
+                }
                 styles.border_styles.get(idx)
             } else {
                 None

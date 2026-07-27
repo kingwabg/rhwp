@@ -4008,6 +4008,13 @@ impl LayoutEngine {
                 y += line_flow_height;
             } else if skip_advance_empty_line {
                 // no advance
+            } else if para
+                .and_then(|p| Some((p.line_segs.get(line_idx)?, p.line_segs.get(line_idx + 1)?)))
+                .map(|(a, b)| b.vertical_pos == a.vertical_pos)
+                .unwrap_or(false)
+            {
+                // [양쪽 흐름] 다음 줄이 같은 vertical_pos = 같은 시각적 줄의 다음 세그
+                // (표 왼쪽/오른쪽) — y 를 전진시키지 않아 두 세그가 나란히 선다.
             } else {
                 y += render_line_flow_height + render_line_spacing_px + tac_picture_label_extra;
             }

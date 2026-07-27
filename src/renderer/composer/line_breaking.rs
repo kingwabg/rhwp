@@ -44,6 +44,9 @@ struct LineBreakResult {
     end_idx: usize, // exclusive
     max_font_size: f64,
     has_line_break: bool, // 강제 줄 바꿈 여부
+    /// [양쪽 흐름] 이 결과가 앞 결과와 **같은 시각적 줄**의 다음 세그먼트인가.
+    /// (표 좌우로 글이 갈라질 때 한 줄 = 왼쪽 세그 + 오른쪽 세그)
+    continues_line: bool,
 }
 
 /// 줄 머리 금칙: 줄 시작에 올 수 없는 문자
@@ -654,6 +657,7 @@ fn fill_lines_per_line(
             end_idx: 0,
             max_font_size: 0.0,
             has_line_break: false,
+            continues_line: false,
         }];
     }
 
@@ -713,6 +717,7 @@ fn fill_lines_per_line(
                     end_idx: *idx + 1,
                     max_font_size: line_max_fs,
                     has_line_break: true,
+                    continues_line: false,
                 });
                 current_line_idx += 1;
                 line_start_idx = *idx + 1;
@@ -738,6 +743,7 @@ fn fill_lines_per_line(
                             end_idx: last_break_char_idx,
                             max_font_size: fs_at_last_break,
                             has_line_break: false,
+                    continues_line: false,
                         });
                 current_line_idx += 1;
                         line_start_idx = last_break_char_idx;
@@ -749,6 +755,7 @@ fn fill_lines_per_line(
                             end_idx: *idx,
                             max_font_size: line_max_fs,
                             has_line_break: false,
+                    continues_line: false,
                         });
                 current_line_idx += 1;
                         line_start_idx = *idx;
@@ -851,6 +858,7 @@ fn fill_lines_per_line(
                                 end_idx: last_break_char_idx,
                                 max_font_size: fs_at_last_break,
                                 has_line_break: false,
+                    continues_line: false,
                             });
                 current_line_idx += 1;
                             let mut next_start = last_break_char_idx;
@@ -918,6 +926,7 @@ fn fill_lines_per_line(
             end_idx: last_end,
             max_font_size: line_max_fs,
             has_line_break: false,
+            continues_line: false,
         });
                 current_line_idx += 1;
     }
@@ -928,6 +937,7 @@ fn fill_lines_per_line(
             end_idx: text_chars.len(),
             max_font_size: 0.0,
             has_line_break: false,
+            continues_line: false,
         });
                 current_line_idx += 1;
     }
@@ -1019,6 +1029,7 @@ fn char_level_break_hwp(
                 end_idx: ci,
                 max_font_size: line_max_fs,
                 has_line_break: false,
+                    continues_line: false,
             });
             *line_start_idx = ci;
             lw = char_w;
@@ -1320,18 +1331,28 @@ pub(crate) fn reflow_line_segs_with_bands(
             let sp = compute_line_spacing_hwp(ls_type, ls_value, lh, dpi);
             (lh + sp) as f64 / 7200.0 * dpi
         };
-        let width_for_top = |top: f64, adv: f64| -> Option<f64> {
+        // 시각적 한 줄이 차지하는 세그들: 보통 1개, 양쪽(BothSides) 밴드 줄은 2개
+        // (왼쪽 세그 + 오른쪽 세그 — 같은 y 를 공유). fill 에는 각 세그가 "연속된
+        // 좁은 줄"로 공급되고, 기록 단계(아래)가 같은 vertical_pos 로 묶는다.
+        let segs_for_top = |top: f64, adv: f64| -> Vec<(f64, f64, bool)> {
             for b in bands {
                 if top + adv > b.top_px + 0.5 && top + 0.5 < b.bottom_px {
-                    return match side_pick_for_band(available_width_px, b.x0_px, b.x1_px, b.flow) {
-                        Some((_, w)) => Some(w),
-                        // 옆 공간이 없으면 이 줄은 어차피 layout 이 밴드 아래로 민다 —
-                        // 전폭으로 줄바꿈해 두는 편이 안전(자리차지와 같은 그림).
-                        None => None,
+                    let left = b.x0_px.max(0.0);
+                    let right = (available_width_px - b.x1_px).max(0.0);
+                    if matches!(b.flow, crate::model::shape::TextFlow::BothSides)
+                        && left >= 40.0
+                        && right >= 40.0
+                    {
+                        return vec![(0.0, left, false), (b.x1_px, right, true)];
+                    }
+                    return match side_pick_for_band(available_width_px, b.x0_px, b.x1_px, b.flow)
+                    {
+                        Some((cs, w)) => vec![(cs, w, false)],
+                        None => vec![(0.0, available_width_px, false)],
                     };
                 }
             }
-            None
+            vec![(0.0, available_width_px, false)]
         };
         let mut breaks = fill_lines(
             &tokens,
@@ -1342,26 +1363,26 @@ pub(crate) fn reflow_line_segs_with_bands(
             korean_break_unit,
             condense_min_space,
         );
-        for _ in 0..3 {
-            // 이전 결과의 줄 높이로 줄별 top 산출 → 폭 목록 확정
-            let mut tops: Vec<(f64, f64)> = Vec::with_capacity(breaks.len() + 4);
+        let mut final_plan: Vec<(f64, f64, bool)> = Vec::new();
+        for _ in 0..4 {
+            // 이전 결과(가상 줄 수) 기준으로 시각 줄 top 을 전진 계산하며 세그 계획 수립.
+            // is_cont(세그 연속) 가상 줄은 y 를 전진시키지 않는다.
+            let mut plan: Vec<(f64, f64, bool)> = Vec::new();
             let mut y = para_top_px;
-            for lb in &breaks {
-                let adv = advance_px_of(lb.max_font_size);
-                tops.push((y, adv));
+            let mut consumed = 0usize;
+            while consumed < breaks.len() + 4 {
+                let fs = breaks
+                    .get(consumed)
+                    .map(|lb| lb.max_font_size)
+                    .unwrap_or(12.0);
+                let adv = advance_px_of(fs);
+                let segs = segs_for_top(y, adv);
+                let n = segs.len();
+                plan.extend(segs);
                 y += adv;
+                consumed += n;
             }
-            // 폭이 좁아져 줄이 늘 수 있으니 여분 줄은 마지막 advance 로 연장
-            let last_adv = tops.last().map(|t| t.1).unwrap_or(advance_px_of(12.0));
-            let widths: Vec<Option<f64>> = (0..breaks.len() + 8)
-                .map(|i| {
-                    let (top, adv) = tops
-                        .get(i)
-                        .copied()
-                        .unwrap_or((y + (i - tops.len()) as f64 * last_adv, last_adv));
-                    width_for_top(top, adv)
-                })
-                .collect();
+            let widths: Vec<(f64, f64, bool)> = plan.clone();
             let next = fill_lines_per_line(
                 &tokens,
                 &text_chars,
@@ -1370,14 +1391,20 @@ pub(crate) fn reflow_line_segs_with_bands(
                 tab_width,
                 korean_break_unit,
                 condense_min_space,
-                Some(&|i: usize| widths.get(i).copied().flatten()),
+                Some(&|i: usize| widths.get(i).map(|(_, w, _)| *w)),
             );
             let converged = next.len() == breaks.len();
             breaks = next;
+            final_plan = plan;
             if converged {
                 break;
             }
         }
+        para.reflow_seg_plan = final_plan
+            .iter()
+            .take(breaks.len())
+            .map(|(cs, w, cont)| (*cs, *w, *cont))
+            .collect();
         breaks
     };
     let mut new_line_segs: Vec<LineSeg> = Vec::new();
@@ -1430,27 +1457,47 @@ pub(crate) fn reflow_line_segs_with_bands(
         vpos += new_line_segs[i].line_height + new_line_segs[i].line_spacing;
     }
 
-    // [officex/어울림 본편] 밴드와 겹치는 줄의 column_start/segment_width 를 줄별로
-    // 기록한다 — 한컴이 저장하는 형식 그대로라, 렌더의 기존 재생 소비(줄 폭·x 이동)가
-    // 추가 코드 없이 그대로 먹는다. 줄 top 은 위 vpos 누적(줄바꿈 고정점과 같은 산식).
-    if !bands.is_empty() {
-        let hu_to_px = |hu: i32| hu as f64 / 7200.0 * dpi;
+    // [officex/어울림 본편] 세그 계획(reflow_seg_plan)을 line_segs 에 기록 — 줄별
+    // column_start/segment_width + 양쪽 세그는 **같은 vertical_pos** 로 묶는다(한 줄).
+    // 한컴 저장 형식 그대로라 렌더의 재생 소비(줄 폭·x·같은 y)가 그대로 먹는다.
+    if !bands.is_empty() && !para.reflow_seg_plan.is_empty() {
         let px_to_hu = |px: f64| (px * 7200.0 / dpi) as i32;
-        for seg in new_line_segs.iter_mut() {
-            let top = para_top_px + hu_to_px(seg.vertical_pos - vpos_start);
-            let adv = hu_to_px(seg.line_height + seg.line_spacing);
-            for b in bands {
-                if top + adv > b.top_px + 0.5 && top + 0.5 < b.bottom_px {
-                    if let Some((cs_px, w_px)) =
-                        side_pick_for_band(available_width_px, b.x0_px, b.x1_px, b.flow)
-                    {
-                        seg.column_start = px_to_hu(cs_px);
-                        seg.segment_width = px_to_hu(w_px);
-                    }
-                    break;
-                }
+        let plan = std::mem::take(&mut para.reflow_seg_plan);
+        // vpos 재누적: cont 세그는 이전 세그와 같은 vpos, advance 는 시각 줄당 1회.
+        let mut vpos = vpos_start;
+        for (i, seg) in new_line_segs.iter_mut().enumerate() {
+            let (cs, w, cont) = plan
+                .get(i)
+                .copied()
+                .unwrap_or((0.0, available_width_px, false));
+            if cs > 0.5 || w < available_width_px - 0.5 {
+                seg.column_start = px_to_hu(cs);
+                seg.segment_width = px_to_hu(w);
+            }
+            if cont {
+                // 같은 시각 줄의 다음 세그 — y 공유, 누적 없음
+                seg.vertical_pos = vpos - (seg.line_height + seg.line_spacing).max(0);
+                // 위 식은 직전 누적을 되돌린 값 — 아래 일반식과 함께 정리된다
+            }
+            let _ = seg;
+        }
+        // 누적을 처음부터 다시: cont 세그는 이전 vpos 복사, 아니면 누적 후 진행.
+        let mut vpos2 = vpos_start;
+        let mut prev_vpos = vpos_start;
+        for (i, seg) in new_line_segs.iter_mut().enumerate() {
+            let cont = plan.get(i).map(|p| p.2).unwrap_or(false);
+            if cont {
+                seg.vertical_pos = prev_vpos;
+            } else {
+                seg.vertical_pos = vpos2;
+                prev_vpos = vpos2;
+                vpos2 += seg.line_height + seg.line_spacing;
             }
         }
+        vpos = vpos2;
+        let _ = vpos;
+    } else {
+        para.reflow_seg_plan.clear();
     }
 
     para.line_segs = new_line_segs;

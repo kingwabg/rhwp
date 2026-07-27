@@ -26,6 +26,10 @@ pub struct Paragraph {
     pub char_shapes: Vec<CharShapeRef>,
     /// 줄 레이아웃 정보
     pub line_segs: Vec<LineSeg>,
+    /// [양쪽 흐름] reflow 가 계산한 세그 계획 (cs_px, w_px, 같은줄 연속 여부) —
+    /// line_segs 기록 직후 소비되고 비워진다. 직렬화 대상 아님(런타임 스크래치).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub reflow_seg_plan: Vec<(f64, f64, bool)>,
     /// 영역 태그 정보
     pub range_tags: Vec<RangeTag>,
     /// 필드 텍스트 범위 (0x03~0x04 사이 텍스트 인덱스 + 컨트롤 인덱스)
@@ -420,6 +424,7 @@ impl Paragraph {
                 tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
                 ..Default::default()
             }],
+            reflow_seg_plan: Vec::new(),
             ..Default::default()
         }
     }
@@ -903,6 +908,7 @@ impl Paragraph {
             char_offsets: new_char_offsets,
             char_shapes: new_char_shapes,
             line_segs: new_line_segs,
+            reflow_seg_plan: Vec::new(),
             range_tags: new_range_tags,
             field_ranges: Vec::new(), // controls가 이동하지 않으므로 새 문단에는 필드 없음
             orphan_field_ends: Vec::new(),
