@@ -120,6 +120,8 @@ impl DocumentCore {
                                     bottom_px: n.bbox.y + n.bbox.height,
                                     x0_px: n.bbox.x - probe.col_x,
                                     x1_px: n.bbox.x + n.bbox.width - probe.col_x,
+                                    // 본문위치는 아래에서 host 문단의 표 모델로 보강한다
+                                    flow: crate::model::shape::TextFlow::LargestOnly,
                                 },
                             ));
                         }
@@ -147,6 +149,29 @@ impl DocumentCore {
         }
         if probe.col_w <= 0.0 {
             return;
+        }
+        // 밴드 flow 보강: square_hosts 문단의 표 모델에서 본문위치를 읽는다.
+        {
+            let Some(section) = self.document.sections.get(section_idx) else {
+                return;
+            };
+            let mut flows: Vec<crate::model::shape::TextFlow> = Vec::new();
+            for &host in &square_hosts {
+                if let Some(para) = section.paragraphs.get(host) {
+                    for ctrl in &para.controls {
+                        if let Control::Table(t) = ctrl {
+                            if !t.common.treat_as_char {
+                                flows.push(t.common.text_flow);
+                            }
+                        }
+                    }
+                }
+            }
+            for (i, (_, band)) in probe.bands.iter_mut().enumerate() {
+                if let Some(f) = flows.get(i) {
+                    band.flow = *f;
+                }
+            }
         }
 
         let Some(section) = self.document.sections.get_mut(section_idx) else {
@@ -2311,7 +2336,7 @@ impl DocumentCore {
         };
 
         Ok(format!(
-            "{{\"cellSpacing\":{},\"paddingLeft\":{},\"paddingRight\":{},\"paddingTop\":{},\"paddingBottom\":{},\"pageBreak\":{},\"repeatHeader\":{},{},\"tableWidth\":{},\"tableHeight\":{},\"outerLeft\":{},\"outerRight\":{},\"outerTop\":{},\"outerBottom\":{}{},\"treatAsChar\":{},\"textWrap\":\"{}\",\"vertRelTo\":\"{}\",\"vertAlign\":\"{}\",\"horzRelTo\":\"{}\",\"horzAlign\":\"{}\",\"vertOffset\":{},\"horzOffset\":{},\"restrictInPage\":{},\"allowOverlap\":{},\"keepWithAnchor\":{}}}",
+            "{{\"cellSpacing\":{},\"paddingLeft\":{},\"paddingRight\":{},\"paddingTop\":{},\"paddingBottom\":{},\"pageBreak\":{},\"repeatHeader\":{},{},\"tableWidth\":{},\"tableHeight\":{},\"outerLeft\":{},\"outerRight\":{},\"outerTop\":{},\"outerBottom\":{}{},\"treatAsChar\":{},\"textWrap\":\"{}\",\"vertRelTo\":\"{}\",\"vertAlign\":\"{}\",\"horzRelTo\":\"{}\",\"horzAlign\":\"{}\",\"vertOffset\":{},\"horzOffset\":{},\"textFlow\":\"{}\",\"restrictInPage\":{},\"allowOverlap\":{},\"keepWithAnchor\":{}}}",
             table.cell_spacing,
             table.padding.left, table.padding.right, table.padding.top, table.padding.bottom,
             pb, table.repeat_header,
@@ -2322,6 +2347,12 @@ impl DocumentCore {
             treat_as_char,
             text_wrap, vert_rel_to, vert_align, horz_rel_to, horz_align,
             vert_offset, horz_offset,
+            match table.common.text_flow {
+                crate::model::shape::TextFlow::BothSides => "BothSides",
+                crate::model::shape::TextFlow::LeftOnly => "LeftOnly",
+                crate::model::shape::TextFlow::RightOnly => "RightOnly",
+                crate::model::shape::TextFlow::LargestOnly => "LargestOnly",
+            },
             restrict_in_page, allow_overlap, keep_with_anchor,
         ))
     }
@@ -2509,6 +2540,30 @@ impl DocumentCore {
                 table.common.allow_overlap = false;
             }
             table.common.attr = table.attr;
+        }
+        // [officex/본문위치] 어울림일 때 글이 개체의 어느 쪽에 흐르는가(한컴 "본문 위치":
+        // 양쪽/왼쪽/오른쪽/큰 쪽 — attr bit 24-25). 파서·직렬화는 이미 왕복 보존하고
+        // 있었고 setter 와 조판 소비(side_pick_for_band)만 비어 있었다.
+        if let Some(v) = super::super::helpers::json_str(json, "textFlow") {
+            use crate::model::shape::TextFlow;
+            let flow = match v.as_str() {
+                "BothSides" => Some(TextFlow::BothSides),
+                "LeftOnly" => Some(TextFlow::LeftOnly),
+                "RightOnly" => Some(TextFlow::RightOnly),
+                "LargestOnly" => Some(TextFlow::LargestOnly),
+                _ => None,
+            };
+            if let Some(flow) = flow {
+                let bits = match flow {
+                    TextFlow::BothSides => 0u32,
+                    TextFlow::LeftOnly => 1,
+                    TextFlow::RightOnly => 2,
+                    TextFlow::LargestOnly => 3,
+                };
+                table.attr = (table.attr & !(0x03 << 24)) | (bits << 24);
+                table.common.text_flow = flow;
+                table.common.attr = table.attr;
+            }
         }
         // attr 비트 변경을 raw_ctrl_data FLAGS(0..4)에도 반영. HWP5 직렬화기
         // (serialize_table)는 raw_ctrl_data 가 있으면 그대로 기록하므로, 여기

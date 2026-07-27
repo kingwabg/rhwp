@@ -1102,19 +1102,34 @@ pub(crate) struct ReflowBand {
     pub bottom_px: f64,
     pub x0_px: f64,
     pub x1_px: f64,
+    /// 한컴 "본문 위치" — 글이 개체의 어느 쪽에 흐르나(양쪽/왼쪽/오른쪽/큰 쪽).
+    pub flow: crate::model::shape::TextFlow,
 }
 
-/// 밴드 옆 공간 선택 — layout 소비부와 **같은 규칙**(넓은 쪽 하나, 최소 40px).
+/// 밴드 옆 공간 선택 — 한컴 "본문 위치"를 따른다(최소 40px).
 /// 반환 (cs_px, w_px): 줄 시작 오프셋(컬럼 로컬)과 가용 폭.
-pub(crate) fn side_pick_for_band(full_w_px: f64, x0: f64, x1: f64) -> Option<(f64, f64)> {
+///
+/// - 왼쪽(LeftOnly): 개체 왼쪽에만 글 · 오른쪽(RightOnly): 오른쪽에만
+/// - 큰 쪽(LargestOnly): 넓은 쪽 하나(동률은 오른쪽)
+/// - 양쪽(BothSides): 한 줄을 좌·우 두 세그로 쪼개야 하는데 LINE_SEG 재생 소비가
+///   줄당 세그 1개 전제라 **큰 쪽으로 폴백**(한계 기록 — capability-map §3).
+pub(crate) fn side_pick_for_band(
+    full_w_px: f64,
+    x0: f64,
+    x1: f64,
+    flow: crate::model::shape::TextFlow,
+) -> Option<(f64, f64)> {
+    use crate::model::shape::TextFlow;
     let left_room = x0.max(0.0);
     let right_room = (full_w_px - x1).max(0.0);
-    if right_room >= left_room && right_room >= 40.0 {
-        Some((x1, right_room))
-    } else if left_room >= 40.0 {
-        Some((0.0, left_room))
-    } else {
-        None
+    let left = || (left_room >= 40.0).then_some((0.0, left_room));
+    let right = || (right_room >= 40.0).then_some((x1, right_room));
+    match flow {
+        TextFlow::LeftOnly => left(),
+        TextFlow::RightOnly => right(),
+        TextFlow::BothSides | TextFlow::LargestOnly => {
+            if right_room >= left_room { right().or_else(left) } else { left().or_else(right) }
+        }
     }
 }
 
@@ -1308,7 +1323,7 @@ pub(crate) fn reflow_line_segs_with_bands(
         let width_for_top = |top: f64, adv: f64| -> Option<f64> {
             for b in bands {
                 if top + adv > b.top_px + 0.5 && top + 0.5 < b.bottom_px {
-                    return match side_pick_for_band(available_width_px, b.x0_px, b.x1_px) {
+                    return match side_pick_for_band(available_width_px, b.x0_px, b.x1_px, b.flow) {
                         Some((_, w)) => Some(w),
                         // 옆 공간이 없으면 이 줄은 어차피 layout 이 밴드 아래로 민다 —
                         // 전폭으로 줄바꿈해 두는 편이 안전(자리차지와 같은 그림).
@@ -1427,7 +1442,7 @@ pub(crate) fn reflow_line_segs_with_bands(
             for b in bands {
                 if top + adv > b.top_px + 0.5 && top + 0.5 < b.bottom_px {
                     if let Some((cs_px, w_px)) =
-                        side_pick_for_band(available_width_px, b.x0_px, b.x1_px)
+                        side_pick_for_band(available_width_px, b.x0_px, b.x1_px, b.flow)
                     {
                         seg.column_start = px_to_hu(cs_px);
                         seg.segment_width = px_to_hu(w_px);
