@@ -78,6 +78,17 @@ function bandRight(prof, [s, e]) {
   return v[Math.floor(v.length / 2)];
 }
 
+// 세로 밀림 보정: 문서 전체가 몇 px 밀린 것과 조판이 틀어진 것은 전혀 다른 결함이다.
+// 보정 없이 재면 1px 밀림도 전 줄 불일치로 나와 점수가 무의미해진다(byeolpyo4 3% 사례).
+function bestShift(a, b) {
+  let best = { shift: 0, hit: -1 };
+  for (let d = -24; d <= 24; d++) {
+    const r = score(a.map(([s, e]) => [s + d, e + d]), b);
+    if (r.hit > best.hit) best = { shift: d, hit: r.hit, r };
+  }
+  return best;
+}
+
 function score(a, b) {
   // 띠 중심을 그리디 매칭 — 5px 이내면 일치
   const ca = a.map(([s, e]) => (s + e) / 2);
@@ -100,7 +111,9 @@ for (const n of names) {
     const [o, h] = await Promise.all([profile(join(dir, `${n}.ours.svg`)), profile(join(dir, `${n}.hancom.png`))]);
     const maxRow = Math.max(...h.rows);
     const ob = bands(o.rows, maxRow * 0.02), hb = bands(h.rows, maxRow * 0.02);
-    const s = score(ob, hb);
+    const bs = bestShift(ob, hb);
+    const s = bs.r;
+    const shift = bs.shift;
     const pct = s.hancom ? Math.round((s.hit / s.hancom) * 100) : 0;
     // 짝지어진 띠끼리 줄 끝 위치를 비교 — 8px 넘게 어긋나면 폭이 틀린 것이다.
     let wOk = 0, wTot = 0;
@@ -116,13 +129,13 @@ for (const n of names) {
     // 253E164F57A1BC6934-empty 는 본문이 비었는데 미리보기엔 포스터가 있다).
     const ratio = h.mass > 0 ? o.mass / h.mass : 0;
     const suspect = ratio < 0.2 || ratio > 5;
-    results.push({ n, pct, wpct, ...s, suspect, ratio });
+    results.push({ n, pct, wpct, shift, ...s, suspect, ratio });
   } catch (e) { results.push({ n, pct: -1, err: String(e).slice(0, 40) }); }
 }
 results.sort((a, b) => a.pct - b.pct);
 const ok = results.filter(r => r.pct >= 0 && !r.suspect);
 const bad = results.filter(r => r.pct < 0 || r.suspect);
-for (const r of ok) console.log(`${String(r.pct).padStart(4)}%  폭 ${String(r.wpct).padStart(4)}%  줄 ${String(r.ours).padStart(3)}/${String(r.hancom).padStart(3)}  ${r.n}`);
+for (const r of ok) console.log(`${String(r.pct).padStart(4)}%  폭 ${String(r.wpct).padStart(4)}%  밀림 ${String(r.shift).padStart(3)}px  줄 ${String(r.ours).padStart(3)}/${String(r.hancom).padStart(3)}  ${r.n}`);
 if (bad.length) {
   console.log(`\n[제외 ${bad.length}건 — 오라클 의심/오류]`);
   for (const r of bad) console.log(`  ${r.n}  ${r.err ?? `잉크비 ${r.ratio?.toFixed(2)}`}`);
@@ -131,4 +144,5 @@ const avg = ok.length ? Math.round(ok.reduce((a, r) => a + r.pct, 0) / ok.length
 const perfect = ok.filter(r => r.pct === 100).length;
 const wok = ok.filter(r => r.wpct >= 0);
 const wavg = wok.length ? Math.round(wok.reduce((a, r) => a + r.wpct, 0) / wok.length) : 0;
-console.log(`\n세로(줄 위치) ${avg}% · 완전일치 ${perfect}/${ok.length} | 가로(줄 끝) ${wavg}% (${wok.length}건) | 제외 ${bad.length}건`);
+const drift = ok.filter(r => Math.abs(r.shift) > 2).length;
+console.log(`\n세로(밀림 보정 후) ${avg}% · 완전일치 ${perfect}/${ok.length} | 가로(줄 끝) ${wavg}% (${wok.length}건) | 밀림>2px ${drift}건 | 제외 ${bad.length}건`);
