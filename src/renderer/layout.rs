@@ -6612,6 +6612,19 @@ impl LayoutEngine {
                     } else {
                         table_y_before.max(table_visual_end + visible_outer_bottom_px)
                     }
+                } else if is_current_empty_para_float
+                    && is_para_topbottom_float(&t.common)
+                    && signed_hwpunit(t.common.vertical_offset) > 0
+                    && table_visual_height > 0.0
+                {
+                    // [편집/자리차지] 빈 host 표를 아래로(voff>0) 이동한 경우 — 한컴은 표 위
+                    // 공간(voff 만큼)을 **뒤 문단 줄들이 채우고** 표 상자 구간은 건너뛴다
+                    // (자리차지 = "개체 높이만큼 줄을 차지", 한컴 도움말 정본). 종전엔 advance
+                    // 를 표높이만 하고 상자만 voff 아래 그려서, 옛 자리에 공백이 남고 새
+                    // 자리에서 본문과 겹쳤다(실측 diag_move_topbottom: 표 345 인데 p8~10 이
+                    // 332·354·375 그대로). visible host voff>0(#1549)과 같은 계약으로 통일:
+                    // 흐름은 표 앞(table_y_before)에서 계속, 상자는 아래 배타 밴드로만 존재.
+                    table_y_before
                 } else if paper_page_square_empty_top.is_some() {
                     table_y_before
                 } else if table_visual_shift > 0.0 {
@@ -6634,6 +6647,23 @@ impl LayoutEngine {
                             table_visual_top,
                             table_visual_end + margin_bottom_px,
                             Some(para_index),
+                        ));
+                    }
+                } else if is_current_empty_para_float
+                    && is_para_topbottom_float(&t.common)
+                    && signed_hwpunit(t.common.vertical_offset) > 0
+                    && table_visual_height > 0.0
+                {
+                    // 위 y_offset 분기와 짝: 아래로 이동한 빈 host 자리차지 표의 상자를
+                    // 배타 밴드로 등록해 뒤 문단 줄들이 위 공간을 채우고 상자를 건너뛰게.
+                    let table_visual_top = table_visual_end - table_visual_height;
+                    if table_visual_end > table_visual_top + 0.5 {
+                        let margin_bottom_px =
+                            hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi);
+                        visible_float_exclusions.push(VisibleFloatExclusion::full_width(
+                            table_visual_top,
+                            table_visual_end + margin_bottom_px,
+                            None,
                         ));
                     }
                 } else if is_current_visible_para_float && table_visual_height > 0.0 {
