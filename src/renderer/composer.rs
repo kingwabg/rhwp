@@ -2412,7 +2412,8 @@ pub mod lineseg_compare;
 
 pub(crate) use line_breaking::{
     is_line_end_forbidden, is_line_start_forbidden, paragraph_flow_end, recalculate_section_vpos,
-    reflow_line_segs, tokenize_paragraph, BreakToken,
+    reflow_line_segs, reflow_line_segs_with_bands, side_pick_for_band, tokenize_paragraph,
+    BreakToken, ReflowBand,
 };
 
 #[cfg(test)]

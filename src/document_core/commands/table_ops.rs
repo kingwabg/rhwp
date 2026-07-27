@@ -46,6 +46,184 @@ impl DocumentCore {
     /// (qa:rhwp 앱 통합 워크플로 결함 — 실측: tall.hwp pi3 rows=42, segs lh=3600).
     /// reflow_line_segs 는 인라인 컨트롤 높이를 host 줄에 반영하므로(insert_text 경로와
     /// 동일 기계) 변형 직후 한 번 돌리면 저장이 진실을 쓴다.
+    /// [officex/어울림 본편] 어울림 표 이동/속성 변경 뒤 — 옆 문단 줄바꿈을 표 상자
+    /// 기준으로 재계산한다(2-패스). 좌표는 vpos(저장 축)가 아니라 **렌더트리**에서
+    /// 뽑는다: 이 케이스에서 vpos 축은 float 표의 흐름 소비를 반영하지 않아 렌더와
+    /// 어긋난다(실측 34px). 렌더트리 1회 조회 비용은 편집당 조판 1회 추가 — 수용.
+    /// 밴드에서 벗어난 문단은 전폭으로 자동 원복(빈 겹침 = 전폭 기록).
+    pub(crate) fn reflow_paras_for_square_bands(&mut self, section_idx: usize) {
+        use crate::model::shape::{HorzRelTo, TextWrap, VertRelTo};
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+        let dpi = self.dpi;
+        let styles = self.styles.clone();
+
+        // 섹션에 "빈 host Square 가족(Para 기준)" 표가 있는지 — 없으면(과거 좁힘 흔적도
+        // 없으면) 아무것도 안 한다. 흔적 원복을 위해 흔적 여부는 아래에서 함께 본다.
+        let square_hosts: Vec<usize> = {
+            let Some(section) = self.document.sections.get(section_idx) else {
+                return;
+            };
+            section
+                .paragraphs
+                .iter()
+                .enumerate()
+                .filter(|(_, para)| !para.text.chars().any(|ch| !ch.is_whitespace()))
+                .filter(|(_, para)| {
+                    para.controls.iter().any(|ctrl| {
+                        matches!(ctrl, Control::Table(t)
+                            if !t.common.treat_as_char
+                                && matches!(t.common.text_wrap, TextWrap::Square | TextWrap::Tight | TextWrap::Through)
+                                && matches!(t.common.vert_rel_to, VertRelTo::Para)
+                                && matches!(t.common.horz_rel_to, HorzRelTo::Column | HorzRelTo::Para))
+                    })
+                })
+                .map(|(pi, _)| pi)
+                .collect()
+        };
+
+        // 페이지 수 확보(조판 유발) 후 렌더트리에서 (표 상자, 문단 첫줄 y, 페이지) 수집.
+        let page_count = DocumentCore::page_count(self).max(1) as usize;
+        struct Probe {
+            bands: Vec<(usize, crate::renderer::composer::ReflowBand)>, // (page, band)
+            para_tops: std::collections::HashMap<usize, (usize, f64)>,  // pi -> (page, top)
+            col_x: f64,
+            col_w: f64,
+        }
+        let mut probe = Probe {
+            bands: Vec::new(),
+            para_tops: std::collections::HashMap::new(),
+            col_x: 0.0,
+            col_w: 0.0,
+        };
+        fn walk(
+            n: &RenderNode,
+            page: usize,
+            square_hosts: &[usize],
+            probe: &mut Probe,
+            in_table: bool,
+        ) {
+            match &n.node_type {
+                RenderNodeType::Column { .. } => {
+                    // 첫 컬럼 기하 채택(다단 문서의 옆 흐름은 v2)
+                    if probe.col_w == 0.0 {
+                        probe.col_x = n.bbox.x;
+                        probe.col_w = n.bbox.width;
+                    }
+                }
+                RenderNodeType::Table(t) => {
+                    if let Some(host) = t.para_index {
+                        if square_hosts.contains(&host) {
+                            probe.bands.push((
+                                page,
+                                crate::renderer::composer::ReflowBand {
+                                    top_px: n.bbox.y,
+                                    bottom_px: n.bbox.y + n.bbox.height,
+                                    x0_px: n.bbox.x - probe.col_x,
+                                    x1_px: n.bbox.x + n.bbox.width - probe.col_x,
+                                },
+                            ));
+                        }
+                    }
+                    // 셀 내부 줄은 본문이 아니다
+                    return;
+                }
+                RenderNodeType::TextLine(tl) => {
+                    if !in_table {
+                        if let (Some(pi), Some(0)) = (tl.para_index, tl.line_index) {
+                            probe.para_tops.entry(pi).or_insert((page, n.bbox.y));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for c in &n.children {
+                walk(c, page, square_hosts, probe, in_table);
+            }
+        }
+        for pg in 0..page_count {
+            if let Ok(tree) = self.build_page_render_tree(pg as u32) {
+                walk(&tree.root, pg, &square_hosts, &mut probe, false);
+            }
+        }
+        if probe.col_w <= 0.0 {
+            return;
+        }
+
+        let Some(section) = self.document.sections.get_mut(section_idx) else {
+            return;
+        };
+        let full_hu = (probe.col_w * 7200.0 / dpi) as i32;
+        let mut changed = false;
+        let para_count = section.paragraphs.len();
+        for pi in 0..para_count {
+            let para = &section.paragraphs[pi];
+            if para.text.is_empty()
+                || para
+                    .controls
+                    .iter()
+                    .any(|c| matches!(c, Control::Table(_)))
+            {
+                continue;
+            }
+            let Some(&(page, ptop)) = probe.para_tops.get(&pi) else {
+                continue;
+            };
+            let bands: Vec<crate::renderer::composer::ReflowBand> = probe
+                .bands
+                .iter()
+                .filter(|(bpage, _)| *bpage == page)
+                .map(|(_, b)| *b)
+                .collect();
+            let pheight: f64 = para
+                .line_segs
+                .iter()
+                .map(|s| (s.line_height + s.line_spacing) as f64 / 7200.0 * dpi)
+                .sum();
+            // 아래쪽 여유 = 밴드 높이 + 2줄: 옆 흐름이 켜지면 밴드 "아래"에 있던 문단이
+            // 위로 올라와 밴드와 겹치게 된다(닭-달걀). 현재 렌더 위치 기준으로는 그
+            // 후보들이 밴드 아래 최대 밴드높이만큼에 있으므로 그 범위를 대상에 넣는다.
+            let overlaps = bands.iter().any(|b| {
+                let band_h = b.bottom_px - b.top_px;
+                ptop + pheight > b.top_px - 25.0 && ptop < b.bottom_px + band_h + 50.0
+            });
+            let had_narrow = para.line_segs.iter().any(|s| {
+                s.column_start > 0
+                    || (s.segment_width > 0 && s.segment_width < full_hu - 800)
+            });
+            if !overlaps && !had_narrow {
+                continue;
+            }
+            if std::env::var("RHWP_SIDE_DEBUG").is_ok() {
+                eprintln!(
+                    "[side-reflow] para {pi} ({:?}) ptop={ptop:.0} bands={:?}",
+                    para.text.chars().take(6).collect::<String>(),
+                    bands
+                        .iter()
+                        .map(|b| (b.top_px as i32, b.bottom_px as i32, b.x0_px as i32, b.x1_px as i32))
+                        .collect::<Vec<_>>()
+                );
+            }
+            let para = &mut section.paragraphs[pi];
+            let para_style = styles.para_styles.get(para.para_shape_id as usize);
+            let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
+            let margin_right = para_style.map(|s| s.margin_right).unwrap_or(0.0);
+            let available_width = (probe.col_w - margin_left - margin_right).max(1.0);
+            crate::renderer::composer::reflow_line_segs_with_bands(
+                para,
+                available_width,
+                &styles,
+                dpi,
+                ptop,
+                &bands,
+            );
+            changed = true;
+        }
+        if changed {
+            self.document.sections[section_idx].raw_stream = None;
+            self.recompose_section(section_idx);
+        }
+    }
+
     fn refresh_table_host_line_segs(&mut self, section_idx: usize, parent_para_idx: usize) {
         self.reflow_paragraph(section_idx, parent_para_idx);
     }
@@ -1970,6 +2148,8 @@ impl DocumentCore {
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
         self.refresh_table_host_line_segs(section_idx, parent_para_idx);
+        // [officex/어울림 본편] 어울림 표가 움직였으면 옆 문단 줄바꿈을 밴드 기준 재계산
+        self.reflow_paras_for_square_bands(section_idx);
         self.paginate_if_needed();
 
         Ok(format!(
@@ -2516,6 +2696,8 @@ impl DocumentCore {
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
         self.refresh_table_host_line_segs(section_idx, parent_para_idx);
+        // [officex/어울림 본편] 배치/오프셋이 바뀌면 옆 문단 줄바꿈을 밴드 기준 재계산
+        self.reflow_paras_for_square_bands(section_idx);
         self.paginate_if_needed();
 
         if caption_created {

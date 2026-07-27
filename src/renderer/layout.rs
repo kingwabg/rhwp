@@ -6721,12 +6721,11 @@ impl LayoutEngine {
                             hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi);
                         let (x0, x1) = tbl_x_range.unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
                         let side_room = (col_area.width - (x1 - x0).max(0.0)).max(0.0);
-                        // ⚠ 부분폭(진짜 옆 흐름)은 아직 opt-in — 줄 **내용**이 전폭 기준으로
-                        // 쪼개진 상태라(composer 미개입) 좁힌 줄에 전폭 분량 글자가 들어간다.
-                        // 본편 = composer 가 줄별 가용 폭(밴드)을 알고 재줄바꿈하는 것. 그
-                        // 전까지 기본은 전폭 밴드(자리차지와 같은 계약: 겹침 없이 아래로).
-                        let side_flow_on = std::env::var("RHWP_SIDE_FLOW").is_ok();
-                        let band = if side_flow_on && side_room >= 40.0 && x0.is_finite() {
+                        // 부분폭 = 진짜 옆 흐름. 줄 내용은 편집 훅(reflow_paras_for_
+                        // square_bands, 2-패스)이 밴드 기준으로 재줄바꿈해 line_segs 에
+                        // 줄별 cs/sw 로 기록하고, 렌더는 그 저장값을 재생 소비한다.
+                        // 1차 조판(기록 전)의 일시 겹침은 재조판에서 해소된다.
+                        let band = if side_room >= 40.0 && x0.is_finite() {
                             VisibleFloatExclusion {
                                 x_start: x0,
                                 x_end: x1,

@@ -620,6 +620,34 @@ fn fill_lines(
     korean_break_unit: u8,
     condense_min_space: u8,
 ) -> Vec<LineBreakResult> {
+    fill_lines_per_line(
+        tokens,
+        text_chars,
+        available_width_px,
+        indent_px,
+        default_tab_width,
+        korean_break_unit,
+        condense_min_space,
+        None,
+    )
+}
+
+/// [officex/어울림 본편] 줄바꿈에 줄별 가용 폭을 공급하는 확장판.
+///
+/// `per_line_width(line_idx)` 가 Some(px) 을 주면 그 줄의 가용 폭이 그 값이 된다
+/// (부분폭 밴드 옆 줄). None 이면 `available_width_px`. 들여쓰기 규칙은 폭 위에
+/// 그대로 적용된다. 기본 경로(fill_lines)는 공급자 None 으로 위임 — 동작 불변.
+#[allow(clippy::too_many_arguments)]
+fn fill_lines_per_line(
+    tokens: &[BreakToken],
+    text_chars: &[char],
+    available_width_px: f64,
+    indent_px: f64,
+    default_tab_width: f64,
+    korean_break_unit: u8,
+    condense_min_space: u8,
+    per_line_width: Option<&dyn Fn(usize) -> Option<f64>>,
+) -> Vec<LineBreakResult> {
     if tokens.is_empty() {
         return vec![LineBreakResult {
             start_idx: 0,
@@ -652,21 +680,28 @@ fn fill_lines(
     let mut space_savings_at_last_break = 0i32;
     let mut fs_at_last_break = 0.0f64;
 
-    let eff_w = |first: bool| -> i32 {
+    let mut current_line_idx = 0usize;
+    let base_w = |line_idx: usize| -> f64 {
+        per_line_width
+            .and_then(|f| f(line_idx))
+            .unwrap_or(available_width_px)
+    };
+    let eff_w_at = |first: bool, line_idx: usize| -> i32 {
+        let w = base_w(line_idx);
         if indent_px > 0.0 {
             if first {
-                to_hwp((available_width_px - indent_px).max(1.0))
+                to_hwp((w - indent_px).max(1.0))
             } else {
-                to_hwp(available_width_px)
+                to_hwp(w)
             }
         } else if indent_px < 0.0 {
             if first {
-                to_hwp(available_width_px)
+                to_hwp(w)
             } else {
-                to_hwp((available_width_px + indent_px).max(1.0))
+                to_hwp((w + indent_px).max(1.0))
             }
         } else {
-            to_hwp(available_width_px)
+            to_hwp(w)
         }
     };
 
@@ -679,6 +714,7 @@ fn fill_lines(
                     max_font_size: line_max_fs,
                     has_line_break: true,
                 });
+                current_line_idx += 1;
                 line_start_idx = *idx + 1;
                 lw = 0;
                 line_space_savings = 0;
@@ -695,7 +731,7 @@ fn fill_lines(
                     line_max_fs = *max_font_size;
                 }
 
-                if next_tab_hwp > eff_w(is_first_line) && line_start_idx < *idx {
+                if next_tab_hwp > eff_w_at(is_first_line, current_line_idx) && line_start_idx < *idx {
                     if let Some(_) = last_break_token_idx {
                         results.push(LineBreakResult {
                             start_idx: line_start_idx,
@@ -703,6 +739,7 @@ fn fill_lines(
                             max_font_size: fs_at_last_break,
                             has_line_break: false,
                         });
+                current_line_idx += 1;
                         line_start_idx = last_break_char_idx;
                         lw = lw - width_at_last_break;
                         line_space_savings -= space_savings_at_last_break;
@@ -713,6 +750,7 @@ fn fill_lines(
                             max_font_size: line_max_fs,
                             has_line_break: false,
                         });
+                current_line_idx += 1;
                         line_start_idx = *idx;
                         lw = 0;
                         line_space_savings = 0;
@@ -777,7 +815,7 @@ fn fill_lines(
                     // 이 글자가 줄에 들어가는 경우에만 break point 갱신
                     if allow_break
                         && condensed_line_width_hwp(candidate_w, line_space_savings)
-                            <= eff_w(is_first_line) + LINE_BREAK_TOLERANCE
+                            <= eff_w_at(is_first_line, current_line_idx) + LINE_BREAK_TOLERANCE
                     {
                         last_break_token_idx = Some(ti);
                         last_break_char_idx = *end_idx; // 이 글자 다음 (이 글자 포함)
@@ -789,7 +827,7 @@ fn fill_lines(
                 // 한컴은 HWPUNIT 정수 양자화 시 미세한 반올림 차이를 허용
                 // 12 HU(~0.17mm) 이내의 초과는 줄에 포함 (경험적 허용 오차)
                 const LINE_BREAK_TOLERANCE: i32 = 15;
-                let effective_width = eff_w(is_first_line);
+                let effective_width = eff_w_at(is_first_line, current_line_idx);
                 let natural_candidate = lw + w_hwp;
                 let condensed_candidate =
                     condensed_line_width_hwp(natural_candidate, line_space_savings);
@@ -814,6 +852,7 @@ fn fill_lines(
                                 max_font_size: fs_at_last_break,
                                 has_line_break: false,
                             });
+                current_line_idx += 1;
                             let mut next_start = last_break_char_idx;
                             while next_start < text_chars.len() && text_chars[next_start] == ' ' {
                                 next_start += 1;
@@ -842,8 +881,8 @@ fn fill_lines(
                         &mut line_start_idx,
                         lw,
                         line_max_fs,
-                        eff_w(is_first_line),
-                        eff_w(false),
+                        eff_w_at(is_first_line, current_line_idx),
+                        eff_w_at(false, current_line_idx + 1),
                         is_first_line,
                         &cw_hwp,
                     );
@@ -880,6 +919,7 @@ fn fill_lines(
             max_font_size: line_max_fs,
             has_line_break: false,
         });
+                current_line_idx += 1;
     }
 
     if results.is_empty() {
@@ -889,6 +929,7 @@ fn fill_lines(
             max_font_size: 0.0,
             has_line_break: false,
         });
+                current_line_idx += 1;
     }
 
     results
@@ -1053,11 +1094,51 @@ fn apply_inline_control_line_height(seg: &mut LineSeg, height_hwp: i32) {
     }
 }
 
+/// [officex/어울림 본편] 부분폭 밴드(빈 host Square 표 상자)의 세로 구간.
+/// 좌표는 **컬럼 로컬 px**(문단이 배치되는 단의 x=0 기준), top 은 문서 흐름 y.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ReflowBand {
+    pub top_px: f64,
+    pub bottom_px: f64,
+    pub x0_px: f64,
+    pub x1_px: f64,
+}
+
+/// 밴드 옆 공간 선택 — layout 소비부와 **같은 규칙**(넓은 쪽 하나, 최소 40px).
+/// 반환 (cs_px, w_px): 줄 시작 오프셋(컬럼 로컬)과 가용 폭.
+pub(crate) fn side_pick_for_band(full_w_px: f64, x0: f64, x1: f64) -> Option<(f64, f64)> {
+    let left_room = x0.max(0.0);
+    let right_room = (full_w_px - x1).max(0.0);
+    if right_room >= left_room && right_room >= 40.0 {
+        Some((x1, right_room))
+    } else if left_room >= 40.0 {
+        Some((0.0, left_room))
+    } else {
+        None
+    }
+}
+
 pub(crate) fn reflow_line_segs(
     para: &mut Paragraph,
     available_width_px: f64,
     styles: &ResolvedStyleSet,
     dpi: f64,
+) {
+    reflow_line_segs_with_bands(para, available_width_px, styles, dpi, 0.0, &[]);
+}
+
+/// 줄바꿈이 부분폭 밴드를 인지하는 본체 — 밴드와 세로로 겹치는 줄은 옆 남은 폭으로
+/// 줄바꿈되고, 그 줄의 line_seg 에 column_start/segment_width 가 **줄별로** 기록된다
+/// (한컴 저장 형식과 동일 — 이후 렌더는 기존 재생 파이프라인이 그대로 소비).
+/// 줄 폭이 줄 수를 바꾸고 줄 수가 줄 위치(top)를 바꾸는 상호의존은 고정점 반복
+/// (최대 3회 — 실측 2회 수렴)으로 푼다.
+pub(crate) fn reflow_line_segs_with_bands(
+    para: &mut Paragraph,
+    available_width_px: f64,
+    styles: &ResolvedStyleSet,
+    dpi: f64,
+    para_top_px: f64,
+    bands: &[ReflowBand],
 ) {
     // 기존 LineSeg에서 dimension 값 보존 (원본 HWP 호환성 유지)
     let seg_width_hwp = px_to_hwpunit(available_width_px, dpi);
@@ -1204,15 +1285,86 @@ pub(crate) fn reflow_line_segs(
         english_break_unit,
         korean_break_unit,
     );
-    let line_breaks = fill_lines(
-        &tokens,
-        &text_chars,
-        available_width_px,
-        indent_px,
-        tab_width,
-        korean_break_unit,
-        condense_min_space,
-    );
+    // [officex/어울림 본편] 밴드가 있으면 줄별 폭으로 줄바꿈 — 고정점 반복.
+    // 줄 top(문단 상단 기준) = Σ(이전 줄 line_height+line_spacing). 폭이 줄 수를 바꾸면
+    // top 이 밀리므로, 이전 반복의 높이 목록으로 폭 함수를 만들고 다시 줄바꿈한다.
+    let line_breaks = if bands.is_empty() {
+        fill_lines(
+            &tokens,
+            &text_chars,
+            available_width_px,
+            indent_px,
+            tab_width,
+            korean_break_unit,
+            condense_min_space,
+        )
+    } else {
+        let advance_px_of = |fs: f64| -> f64 {
+            let fs = if fs > 0.0 { fs } else { 12.0 };
+            let lh = font_size_to_line_height(fs, dpi);
+            let sp = compute_line_spacing_hwp(ls_type, ls_value, lh, dpi);
+            (lh + sp) as f64 / 7200.0 * dpi
+        };
+        let width_for_top = |top: f64, adv: f64| -> Option<f64> {
+            for b in bands {
+                if top + adv > b.top_px + 0.5 && top + 0.5 < b.bottom_px {
+                    return match side_pick_for_band(available_width_px, b.x0_px, b.x1_px) {
+                        Some((_, w)) => Some(w),
+                        // 옆 공간이 없으면 이 줄은 어차피 layout 이 밴드 아래로 민다 —
+                        // 전폭으로 줄바꿈해 두는 편이 안전(자리차지와 같은 그림).
+                        None => None,
+                    };
+                }
+            }
+            None
+        };
+        let mut breaks = fill_lines(
+            &tokens,
+            &text_chars,
+            available_width_px,
+            indent_px,
+            tab_width,
+            korean_break_unit,
+            condense_min_space,
+        );
+        for _ in 0..3 {
+            // 이전 결과의 줄 높이로 줄별 top 산출 → 폭 목록 확정
+            let mut tops: Vec<(f64, f64)> = Vec::with_capacity(breaks.len() + 4);
+            let mut y = para_top_px;
+            for lb in &breaks {
+                let adv = advance_px_of(lb.max_font_size);
+                tops.push((y, adv));
+                y += adv;
+            }
+            // 폭이 좁아져 줄이 늘 수 있으니 여분 줄은 마지막 advance 로 연장
+            let last_adv = tops.last().map(|t| t.1).unwrap_or(advance_px_of(12.0));
+            let widths: Vec<Option<f64>> = (0..breaks.len() + 8)
+                .map(|i| {
+                    let (top, adv) = tops
+                        .get(i)
+                        .copied()
+                        .unwrap_or((y + (i - tops.len()) as f64 * last_adv, last_adv));
+                    width_for_top(top, adv)
+                })
+                .collect();
+            let next = fill_lines_per_line(
+                &tokens,
+                &text_chars,
+                available_width_px,
+                indent_px,
+                tab_width,
+                korean_break_unit,
+                condense_min_space,
+                Some(&|i: usize| widths.get(i).copied().flatten()),
+            );
+            let converged = next.len() == breaks.len();
+            breaks = next;
+            if converged {
+                break;
+            }
+        }
+        breaks
+    };
     let mut new_line_segs: Vec<LineSeg> = Vec::new();
     for lb in &line_breaks {
         let utf16_start = if new_line_segs.is_empty() {
@@ -1261,6 +1413,29 @@ pub(crate) fn reflow_line_segs(
     for i in 0..new_line_segs.len() {
         new_line_segs[i].vertical_pos = vpos;
         vpos += new_line_segs[i].line_height + new_line_segs[i].line_spacing;
+    }
+
+    // [officex/어울림 본편] 밴드와 겹치는 줄의 column_start/segment_width 를 줄별로
+    // 기록한다 — 한컴이 저장하는 형식 그대로라, 렌더의 기존 재생 소비(줄 폭·x 이동)가
+    // 추가 코드 없이 그대로 먹는다. 줄 top 은 위 vpos 누적(줄바꿈 고정점과 같은 산식).
+    if !bands.is_empty() {
+        let hu_to_px = |hu: i32| hu as f64 / 7200.0 * dpi;
+        let px_to_hu = |px: f64| (px * 7200.0 / dpi) as i32;
+        for seg in new_line_segs.iter_mut() {
+            let top = para_top_px + hu_to_px(seg.vertical_pos - vpos_start);
+            let adv = hu_to_px(seg.line_height + seg.line_spacing);
+            for b in bands {
+                if top + adv > b.top_px + 0.5 && top + 0.5 < b.bottom_px {
+                    if let Some((cs_px, w_px)) =
+                        side_pick_for_band(available_width_px, b.x0_px, b.x1_px)
+                    {
+                        seg.column_start = px_to_hu(cs_px);
+                        seg.segment_width = px_to_hu(w_px);
+                    }
+                    break;
+                }
+            }
+        }
     }
 
     para.line_segs = new_line_segs;

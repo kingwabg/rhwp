@@ -3212,9 +3212,11 @@ impl LayoutEngine {
             } else {
                 None
             };
-            let (line_cs_offset, line_avail_w_override) = if let Some((cs, sw)) = live_band_narrow {
+            // 소비 우선순위: 저장 줄별 cs/sw(재생 — 줄바꿈까지 반영된 정본) →
+            // 라이브 즉석 좁힘(기록 전 1차 조판의 겹침 완화 안전망) → 앵커 재생.
+            let (line_cs_offset, line_avail_w_override) = if let Some((cs, sw)) = file_narrow_override {
                 (cs, Some(sw))
-            } else if let Some((cs, sw)) = file_narrow_override {
+            } else if let Some((cs, sw)) = live_band_narrow {
                 (cs, Some(sw))
             } else if let Some(anchor) = wrap_anchor {
                 let seg = para.and_then(|p| p.line_segs.get(line_idx));
@@ -3252,9 +3254,13 @@ impl LayoutEngine {
                 BoundingBox::new(
                     // [Task #604 R3] wrap_anchor 가 있으면 line_cs_offset 사용 (col_area.x 기준),
                     // 아니면 Task #489 effective_col_x 사용. 두 경로 중복 적용 방지.
-                    // [officex/어울림 본편] 라이브 좁힘(live_band_narrow)도 cs 를 쓴다 —
-                    // 조건을 wrap_anchor 로만 걸면 오른쪽 공간으로 옮긴 줄이 왼쪽에 그려진다.
-                    if wrap_anchor.is_some() || live_band_narrow.is_some() {
+                    // [officex/어울림 본편] 재생(file_narrow_override)·라이브 좁힘 모두
+                    // cs 를 쓴다 — 조건을 wrap_anchor 로만 걸면 오른쪽 공간으로 옮긴
+                    // 줄이 왼쪽에 그려진다.
+                    if wrap_anchor.is_some()
+                        || live_band_narrow.is_some()
+                        || file_narrow_override.is_some()
+                    {
                         col_area.x + effective_margin_left + line_cs_offset
                     } else {
                         effective_col_x + effective_margin_left
@@ -3526,7 +3532,10 @@ impl LayoutEngine {
             };
             // [Task #604 R3] wrap_anchor 가 있으면 col_area.x + line_cs_offset 기준,
             // 아니면 effective_col_x (Task #489) 기준.
-            let x_base = if wrap_anchor.is_some() || live_band_narrow.is_some() {
+            let x_base = if wrap_anchor.is_some()
+                || live_band_narrow.is_some()
+                || file_narrow_override.is_some()
+            {
                 col_area.x + effective_margin_left + line_cs_offset
             } else {
                 effective_col_x + effective_margin_left
