@@ -10,14 +10,30 @@
 import { createRequire } from "node:module";
 const req = createRequire(process.env.RHWP_SHARP_FROM ?? "/Users/king/dev/sc-/package.json");
 const sharp = req("sharp");
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const dir = process.argv[2] ?? "parity/out";
 const H = 1024; // 정규화 높이 — 한컴 미리보기 기본값
 
+// ⚠ librsvg(sharp)는 SVG 안의 **GIF data URI 를 조용히 안 그린다**(2026-07-27 실측 —
+// hwp3-sample16 계열 로고가 통째로 사라져 "엔진이 그림을 못 그린다"는 오진을 낳았다.
+// 같은 SVG 를 WebKit 으로 그리면 정상). 그래서 래스터화 전에 GIF 를 PNG 로 바꿔 넣는다.
+async function svgWithGifAsPng(path) {
+  let svg = readFileSync(path, "utf8");
+  const gifs = [...svg.matchAll(/data:image\/gif;base64,([A-Za-z0-9+/=]+)/g)];
+  for (const m of gifs) {
+    try {
+      const png = await sharp(Buffer.from(m[1], "base64")).png().toBuffer();
+      svg = svg.replace(m[0], `data:image/png;base64,${png.toString("base64")}`);
+    } catch { /* 못 바꾸면 원본 유지 — 조용히 사라지는 것보단 낫다 */ }
+  }
+  return Buffer.from(svg);
+}
+
 async function profile(path) {
-  const img = sharp(path, { density: 200 }).flatten({ background: "#fff" }).resize({ height: H, fit: "contain", background: "#fff" }).greyscale();
+  const src = path.endsWith(".svg") ? await svgWithGifAsPng(path) : path;
+  const img = sharp(src, { density: 200 }).flatten({ background: "#fff" }).resize({ height: H, fit: "contain", background: "#fff" }).greyscale();
   const { data, info } = await img.raw().toBuffer({ resolveWithObject: true });
   const rows = new Float64Array(info.height);
   const cols = new Float64Array(info.width);
