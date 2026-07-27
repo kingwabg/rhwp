@@ -3147,7 +3147,35 @@ impl LayoutEngine {
             // [Task #722] inter-image-text gap 보정 — 한컴 viewer 는 anchor image 의
             // outer margin_right (HU) 만큼 cs 에 더해 text 시작 x 결정. sw 에서 동일량
             // 차감하여 가용 폭 정합. WrapAnchorRef.anchor_image_margin_right 활용.
-            let (line_cs_offset, line_avail_w_override) = if let Some(anchor) = wrap_anchor {
+            // [officex/parity] 어울림 옆흐름 — 아무 경로도 좁히지 않았을 때만 파일 값을 쓴다.
+            //
+            // 한컴은 저장 시 각 줄의 column_start/segment_width 를 기록한다. 그런데 앵커가
+            // 안 잡히면(#1956 전폭 가드가 호스트 자기등록을 막는 경우 등) 그 기록이 통째로
+            // 버려지고 단 전폭으로 조판된다 → 양쪽정렬이 전폭으로 벌어지고 줄 꼬리가 그림
+            // 밑으로 파고든다(오라클 pic2-2018: 파일 26140HU=348.5px, 렌더 566.9px 전폭.
+            // 수리 후 348.5px 로 한컴과 줄 단위 일치).
+            //
+            // ⚠ **다른 어울림 경로를 이기지 않는다**: 이미 누군가 좁혀 놨으면(effective_col_w 가
+            // 단 폭보다 작으면) 손대지 않는다. 온새미로 35쪽이 그 경우로, 그 경로는 257.3px 를
+            // 쓰는데 파일 기록은 280.0px 다 — 어느 쪽이 한컴인지는 그 쪽 정답지(PrvImage 는
+            // 1쪽뿐)가 없어 **미확정**이라, 기존 동작을 이긴다고 가정하지 않는다.
+            let file_narrow_override = if wrap_anchor.is_none() && cell_ctx.is_none() {
+                let full_col_w = effective_col_w - effective_margin_left - margin_right;
+                para.and_then(|p| p.line_segs.get(line_idx)).and_then(|seg| {
+                    let sw = crate::renderer::hwpunit_to_px(seg.segment_width as i32, self.dpi);
+                    let cs = crate::renderer::hwpunit_to_px(seg.column_start as i32, self.dpi);
+                    // 26.7px(2000HU) 넘게 좁게 적혀 있고, 아직 아무도 안 좁혔을 때만.
+                    // "아직 아무도 안 좁혔다" = 이 문단의 단 폭이 원래 단 폭 그대로다.
+                    let untouched = (col_area.width - effective_col_w).abs() < 0.5;
+                    (sw > 0.0 && full_col_w - sw > 26.7 && untouched)
+                        .then_some((cs, sw))
+                })
+            } else {
+                None
+            };
+            let (line_cs_offset, line_avail_w_override) = if let Some((cs, sw)) = file_narrow_override {
+                (cs, Some(sw))
+            } else if let Some(anchor) = wrap_anchor {
                 let seg = para.and_then(|p| p.line_segs.get(line_idx));
                 let cs = seg.map(|s| s.column_start as i32).unwrap_or(0);
                 let sw = seg.map(|s| s.segment_width as i32).unwrap_or(0);

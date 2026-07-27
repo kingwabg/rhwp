@@ -27,9 +27,17 @@ async function profile(path) {
       if (ink > 40) { rows[y] += ink; cols[x] += ink; }
     }
   }
+  // 각 행의 잉크 좌·우 끝 — 세로 띠만 보면 "폭이 틀린" 결함(어울림 옆흐름 등)을 놓친다.
+  const left = new Int32Array(info.height).fill(-1);
+  const right = new Int32Array(info.height).fill(-1);
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      if (255 - data[y * info.width + x] > 40) { if (left[y] < 0) left[y] = x; right[y] = x; }
+    }
+  }
   let mass = 0;
   for (let i = 0; i < rows.length; i++) mass += rows[i];
-  return { rows, cols, w: info.width, h: info.height, mass };
+  return { rows, cols, left, right, w: info.width, h: info.height, mass };
 }
 
 // 잉크 있는 행 → 띠(연속 구간)로 묶는다
@@ -45,18 +53,28 @@ function bands(arr, thresh) {
   return out;
 }
 
+// 띠 안 행들의 오른쪽 끝 중앙값 — 줄이 어디서 끝나는가(폭 정합)
+function bandRight(prof, [s, e]) {
+  const v = [];
+  for (let y = s; y < e; y++) if (prof.right[y] >= 0) v.push(prof.right[y]);
+  if (!v.length) return -1;
+  v.sort((p, q) => p - q);
+  return v[Math.floor(v.length / 2)];
+}
+
 function score(a, b) {
   // 띠 중심을 그리디 매칭 — 5px 이내면 일치
   const ca = a.map(([s, e]) => (s + e) / 2);
   const cb = b.map(([s, e]) => (s + e) / 2);
   let hit = 0;
   const used = new Set();
-  for (const x of ca) {
+  const pairs = [];
+  ca.forEach((x, ai) => {
     let best = -1, bd = 6;
     cb.forEach((y, i) => { const d = Math.abs(x - y); if (!used.has(i) && d < bd) { bd = d; best = i; } });
-    if (best >= 0) { used.add(best); hit++; }
-  }
-  return { hit, ours: ca.length, hancom: cb.length };
+    if (best >= 0) { used.add(best); hit++; pairs.push([ai, best]); }
+  });
+  return { hit, ours: ca.length, hancom: cb.length, pairs };
 }
 
 const names = [...new Set(readdirSync(dir).filter(f => f.endsWith(".hancom.png")).map(f => f.replace(".hancom.png", "")))];
@@ -68,22 +86,33 @@ for (const n of names) {
     const ob = bands(o.rows, maxRow * 0.02), hb = bands(h.rows, maxRow * 0.02);
     const s = score(ob, hb);
     const pct = s.hancom ? Math.round((s.hit / s.hancom) * 100) : 0;
+    // 짝지어진 띠끼리 줄 끝 위치를 비교 — 8px 넘게 어긋나면 폭이 틀린 것이다.
+    let wOk = 0, wTot = 0;
+    for (const [ai, bi] of s.pairs) {
+      const ro = bandRight(o, ob[ai]), rh = bandRight(h, hb[bi]);
+      if (ro < 0 || rh < 0) continue;
+      wTot++;
+      if (Math.abs(ro - rh) <= 8) wOk++;
+    }
+    const wpct = wTot ? Math.round((wOk / wTot) * 100) : -1;
     // 잉크량이 극단으로 어긋나면 오라클 자체를 의심한다 — PrvImage 는 한글이 **마지막에
     // 저장할 때** 만든 그림이라, 다른 도구가 재저장한 파일에선 낡은 그림이 남는다(실측:
     // 253E164F57A1BC6934-empty 는 본문이 비었는데 미리보기엔 포스터가 있다).
     const ratio = h.mass > 0 ? o.mass / h.mass : 0;
     const suspect = ratio < 0.2 || ratio > 5;
-    results.push({ n, pct, ...s, suspect, ratio });
+    results.push({ n, pct, wpct, ...s, suspect, ratio });
   } catch (e) { results.push({ n, pct: -1, err: String(e).slice(0, 40) }); }
 }
 results.sort((a, b) => a.pct - b.pct);
 const ok = results.filter(r => r.pct >= 0 && !r.suspect);
 const bad = results.filter(r => r.pct < 0 || r.suspect);
-for (const r of ok) console.log(`${String(r.pct).padStart(4)}%  줄 ${String(r.ours).padStart(3)}/${String(r.hancom).padStart(3)}  ${r.n}`);
+for (const r of ok) console.log(`${String(r.pct).padStart(4)}%  폭 ${String(r.wpct).padStart(4)}%  줄 ${String(r.ours).padStart(3)}/${String(r.hancom).padStart(3)}  ${r.n}`);
 if (bad.length) {
   console.log(`\n[제외 ${bad.length}건 — 오라클 의심/오류]`);
   for (const r of bad) console.log(`  ${r.n}  ${r.err ?? `잉크비 ${r.ratio?.toFixed(2)}`}`);
 }
 const avg = ok.length ? Math.round(ok.reduce((a, r) => a + r.pct, 0) / ok.length) : 0;
 const perfect = ok.filter(r => r.pct === 100).length;
-console.log(`\n평균 정합 ${avg}% · 완전일치 ${perfect}/${ok.length}건 (제외 ${bad.length}건)`);
+const wok = ok.filter(r => r.wpct >= 0);
+const wavg = wok.length ? Math.round(wok.reduce((a, r) => a + r.wpct, 0) / wok.length) : 0;
+console.log(`\n세로(줄 위치) ${avg}% · 완전일치 ${perfect}/${ok.length} | 가로(줄 끝) ${wavg}% (${wok.length}건) | 제외 ${bad.length}건`);
