@@ -17,8 +17,27 @@ fn build(voff_at_create: i32, move_after: i32) -> Vec<(usize, i32)> {
     doc.set_table_properties(0, pi, ci, &format!(
         r#"{{"treatAsChar":false,"textWrap":"TopAndBottom","vertRelTo":"Para","horzRelTo":"Column","vertOffset":{voff_at_create}}}"#
     )).unwrap();
+    if std::env::var("PRE_QUERY").is_ok() {
+        // 브라우저 시나리오 재현: 이동 "전"에 조판을 유발하는 조회를 한 번 한다
+        let _ = doc.build_page_render_tree(0);
+    }
     if move_after != 0 {
-        doc.move_table_offset(0, pi, ci, 0, move_after).unwrap();
+        if std::env::var("SPLIT_MOVE").is_ok() {
+            // 브라우저 드래그 재현: 프레임처럼 375HU 씩 나눠 이동 + 매 프레임 bbox 조회
+            let mut left = move_after;
+            while left != 0 {
+                let step = left.clamp(-375, 375);
+                let _ = doc.get_table_bbox(0, pi, ci);
+                doc.move_table_offset(0, pi, ci, 0, step).unwrap();
+                let _ = doc.get_table_bbox(0, pi, ci);
+                if std::env::var("FRAME_RENDER").is_ok() {
+                    let _ = doc.build_page_render_tree(0);
+                }
+                left -= step;
+            }
+        } else {
+            doc.move_table_offset(0, pi, ci, 0, move_after).unwrap();
+        }
     }
     // 렌더트리에서 문단 첫 줄 y + 표 y
     let tree = doc.build_page_render_tree(0).unwrap();
@@ -40,8 +59,9 @@ fn build(voff_at_create: i32, move_after: i32) -> Vec<(usize, i32)> {
 }
 
 fn main() {
-    let stat = build(4800, 0);
-    let dynm = build(0, 4800);
+    let v: i32 = std::env::var("VOFF").ok().and_then(|x| x.parse().ok()).unwrap_or(4800);
+    let stat = build(v, 0);
+    let dynm = build(0, v);
     println!("{:>6} {:>8} {:>8}", "para", "정적voff", "move후");
     let keys: std::collections::BTreeSet<usize> = stat.iter().chain(&dynm).map(|x| x.0).collect();
     for k in keys {

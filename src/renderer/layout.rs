@@ -5086,9 +5086,18 @@ impl LayoutEngine {
                 };
                 // [Issue #1549] 자기 문단에 앵커된 float 표는 그 문단의 텍스트(제목)를
                 // 밀어내지 않는다 — 제목은 앵커(표 위)에 남아야 한다. owner 로 전달한다.
+                // [officex/어울림 본편] 부분폭 밴드(옆 흐름 대상)는 문단을 아래로 밀지
+                // 않는다 — 줄 소비부(live_band_narrow)가 폭을 좁혀 옆으로 흘린다.
+                // 전폭 밴드만 종전대로 y 점프 대상.
+                let full_width_bands: Vec<super::float_placement::FloatBand> =
+                    visible_float_exclusions
+                        .iter()
+                        .filter(|b| b.x_start.is_infinite() && b.x_end.is_infinite())
+                        .copied()
+                        .collect();
                 let jump_to = super::float_placement::skip_float_bands(
                     y_offset,
-                    &visible_float_exclusions,
+                    &full_width_bands,
                     item_probe_height,
                     Some(item_para),
                     None, // 가로 무시 = 종전 동작(모든 밴드가 전폭)
@@ -6625,6 +6634,17 @@ impl LayoutEngine {
                     // 332·354·375 그대로). visible host voff>0(#1549)과 같은 계약으로 통일:
                     // 흐름은 표 앞(table_y_before)에서 계속, 상자는 아래 배타 밴드로만 존재.
                     table_y_before
+                } else if is_current_empty_para_float
+                    && super::float_placement::is_para_square_family_float(&t.common)
+                    && {
+                        // 부분폭(옆 공간 40px 이상) Square 만 — 등록 분기와 같은 판정.
+                        let w_px = hwpunit_to_px(t.common.width as i32, self.dpi);
+                        col_area.width - w_px >= 40.0
+                    }
+                {
+                    // 옆 흐름 계약: 본문 흐름은 표 앞에서 계속되고(다음 문단이 표 옆에
+                    // 선다), 표 상자는 부분폭 밴드로만 존재한다. 아래 등록 분기와 짝.
+                    table_y_before
                 } else if paper_page_square_empty_top.is_some() {
                     table_y_before
                 } else if table_visual_shift > 0.0 {
@@ -6665,6 +6685,63 @@ impl LayoutEngine {
                             table_visual_end + margin_bottom_px,
                             None,
                         ));
+                    }
+                } else if is_current_empty_para_float
+                    && super::float_placement::is_para_square_family_float(&t.common)
+                    && table_visual_height > 0.0
+                {
+                    // [officex/어울림 본편] 빈 host Square 가족 표 — 본문이 **옆으로** 흐르는
+                    // 배치의 라이브(줄세그 없는 편집 문서) 경로. 표 상자를 **부분폭** 밴드로
+                    // 등록하면: 세로로 겹치는 줄은 아래 소비부(paragraph_layout 의
+                    // live_band_narrow)가 옆 남은 폭으로 좁히고, 가로로 안 겹치는 항목은
+                    // skip_float_bands 의 x_range 게이트가 그냥 통과시킨다. 전폭에 가까운
+                    // 표(남는 폭 < 40px)는 옆 흐름이 무의미하므로 전폭 밴드와 동일하게 둔다.
+                    let table_visual_top = table_visual_end - table_visual_height;
+                    if table_visual_end > table_visual_top + 0.5 {
+                        // 방금 layout_table 이 col_node 에 붙인 Table 노드의 실측 x 를 쓴다
+                        // (정렬·오프셋 규칙을 여기서 재현하지 않기 위해 — 렌더가 정본).
+                        let tbl_x_range = col_node
+                            .children
+                            .iter()
+                            .rev()
+                            .find_map(|n| match &n.node_type {
+                                RenderNodeType::Table(_) => {
+                                    // 한컴의 표-글 간격 = 표 바깥 여백. 밴드 폭에 포함해
+                                    // 옆 줄이 여백만큼 떨어져 시작하게 한다.
+                                    let ml = hwpunit_to_px(t.outer_margin_left as i32, self.dpi);
+                                    let mr = hwpunit_to_px(t.outer_margin_right as i32, self.dpi);
+                                    Some((
+                                        n.bbox.x - ml - col_area.x,
+                                        n.bbox.x + n.bbox.width + mr - col_area.x,
+                                    ))
+                                }
+                                _ => None,
+                            });
+                        let margin_bottom_px =
+                            hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi);
+                        let (x0, x1) = tbl_x_range.unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
+                        let side_room = (col_area.width - (x1 - x0).max(0.0)).max(0.0);
+                        // ⚠ 부분폭(진짜 옆 흐름)은 아직 opt-in — 줄 **내용**이 전폭 기준으로
+                        // 쪼개진 상태라(composer 미개입) 좁힌 줄에 전폭 분량 글자가 들어간다.
+                        // 본편 = composer 가 줄별 가용 폭(밴드)을 알고 재줄바꿈하는 것. 그
+                        // 전까지 기본은 전폭 밴드(자리차지와 같은 계약: 겹침 없이 아래로).
+                        let side_flow_on = std::env::var("RHWP_SIDE_FLOW").is_ok();
+                        let band = if side_flow_on && side_room >= 40.0 && x0.is_finite() {
+                            VisibleFloatExclusion {
+                                x_start: x0,
+                                x_end: x1,
+                                top: table_visual_top,
+                                bottom: table_visual_end + margin_bottom_px,
+                                owner_para: None,
+                            }
+                        } else {
+                            VisibleFloatExclusion::full_width(
+                                table_visual_top,
+                                table_visual_end + margin_bottom_px,
+                                None,
+                            )
+                        };
+                        visible_float_exclusions.push(band);
                     }
                 } else if is_current_visible_para_float && table_visual_height > 0.0 {
                     // [officex/어울림 배선 3/3] 비양수 오프셋(v_off ≤ 0) visible float 도

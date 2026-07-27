@@ -2988,13 +2988,22 @@ impl LayoutEngine {
             {
                 let bands = self.current_flow_bands.borrow();
                 if !bands.is_empty() {
-                    y = crate::renderer::float_placement::skip_float_bands(
-                        y,
-                        &bands,
-                        line_height,
-                        Some(para_index),
-                        None,
-                    );
+                    // [officex/어울림 본편] 부분폭 밴드는 y 점프 대상이 아니라 **좁힘**
+                    // 대상이다(아래 live_band_narrow) — 전폭 밴드만 줄을 아래로 민다.
+                    let full: Vec<crate::renderer::float_placement::FloatBand> = bands
+                        .iter()
+                        .filter(|b| b.x_start.is_infinite() && b.x_end.is_infinite())
+                        .copied()
+                        .collect();
+                    if !full.is_empty() {
+                        y = crate::renderer::float_placement::skip_float_bands(
+                            y,
+                            &full,
+                            line_height,
+                            Some(para_index),
+                            None,
+                        );
+                    }
                 }
             }
             // 들여쓰기/내어쓰기: 문단 여백은 무조건 적용
@@ -3173,7 +3182,39 @@ impl LayoutEngine {
             } else {
                 None
             };
-            let (line_cs_offset, line_avail_w_override) = if let Some((cs, sw)) = file_narrow_override {
+            // [officex/어울림 본편] 라이브 옆 흐름 — 부분폭 밴드(빈 host Square 표)와
+            // 세로로 겹치는 줄은 옆 남은 폭으로 좁혀 표 옆에 세운다. 저장된 줄 폭
+            // (file_narrow_override)이나 앵커 재생이 있으면 그쪽이 정본이므로 양보한다.
+            let live_band_narrow = if wrap_anchor.is_none()
+                && cell_ctx.is_none()
+                && file_narrow_override.is_none()
+            {
+                let bands = self.current_flow_bands.borrow();
+                let full_w = effective_col_w - effective_margin_left - margin_right;
+                let line_top = text_y;
+                let line_bottom = text_y + line_height.max(1.0);
+                bands
+                    .iter()
+                    .filter(|b| b.x_start.is_finite() && b.x_end.is_finite())
+                    .find(|b| line_bottom > b.top + 0.5 && line_top + 0.5 < b.bottom)
+                    .and_then(|b| {
+                        let left_room = b.x_start.max(0.0);
+                        let right_room = (full_w - b.x_end).max(0.0);
+                        // 넓은 쪽 하나를 고른다(좌·우 동시 흐름은 한컴도 안 한다).
+                        if right_room >= left_room && right_room >= 40.0 {
+                            Some((b.x_end, right_room))
+                        } else if left_room >= 40.0 {
+                            Some((0.0, left_room))
+                        } else {
+                            None
+                        }
+                    })
+            } else {
+                None
+            };
+            let (line_cs_offset, line_avail_w_override) = if let Some((cs, sw)) = live_band_narrow {
+                (cs, Some(sw))
+            } else if let Some((cs, sw)) = file_narrow_override {
                 (cs, Some(sw))
             } else if let Some(anchor) = wrap_anchor {
                 let seg = para.and_then(|p| p.line_segs.get(line_idx));
@@ -3211,7 +3252,9 @@ impl LayoutEngine {
                 BoundingBox::new(
                     // [Task #604 R3] wrap_anchor 가 있으면 line_cs_offset 사용 (col_area.x 기준),
                     // 아니면 Task #489 effective_col_x 사용. 두 경로 중복 적용 방지.
-                    if wrap_anchor.is_some() {
+                    // [officex/어울림 본편] 라이브 좁힘(live_band_narrow)도 cs 를 쓴다 —
+                    // 조건을 wrap_anchor 로만 걸면 오른쪽 공간으로 옮긴 줄이 왼쪽에 그려진다.
+                    if wrap_anchor.is_some() || live_band_narrow.is_some() {
                         col_area.x + effective_margin_left + line_cs_offset
                     } else {
                         effective_col_x + effective_margin_left
@@ -3483,7 +3526,7 @@ impl LayoutEngine {
             };
             // [Task #604 R3] wrap_anchor 가 있으면 col_area.x + line_cs_offset 기준,
             // 아니면 effective_col_x (Task #489) 기준.
-            let x_base = if wrap_anchor.is_some() {
+            let x_base = if wrap_anchor.is_some() || live_band_narrow.is_some() {
                 col_area.x + effective_margin_left + line_cs_offset
             } else {
                 effective_col_x + effective_margin_left
