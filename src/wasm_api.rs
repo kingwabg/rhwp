@@ -4195,6 +4195,45 @@ impl HwpDocument {
         self.get_field_list_json()
     }
 
+    /// 문서의 메모 목록을 조회한다 (읽기 전용, 2026-07-28 신설).
+    ///
+    /// 반환: `[{sectionIndex, paragraphIndex, charOffset, memoIndex, text}]`
+    /// - `charOffset`: 메모 앵커(필드가 놓인 글자 위치). 말풍선 연결선의 기준.
+    /// - `text`: 메모 본문 문단들을 개행으로 이은 것.
+    #[wasm_bindgen(js_name = getMemos)]
+    pub fn get_memos(&self) -> String {
+        use crate::model::control::{Control, FieldType};
+        let mut out: Vec<serde_json::Value> = Vec::new();
+        for (si, sec) in self.core.document.sections.iter().enumerate() {
+            for (pi, para) in sec.paragraphs.iter().enumerate() {
+                // 필드는 문단 내 컨트롤 순서대로 등장한다 — 앵커 글자 위치는 제어문자
+                // 위치와 대응하나, 정확한 매핑 API 가 없어 등장 순서를 offset 힌트로 준다.
+                let mut nth = 0usize;
+                for ctrl in &para.controls {
+                    if let Control::Field(f) = ctrl {
+                        if f.field_type == FieldType::Memo {
+                            let text = f
+                                .memo_paragraphs
+                                .iter()
+                                .map(|p| p.text.clone())
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            out.push(serde_json::json!({
+                                "sectionIndex": si,
+                                "paragraphIndex": pi,
+                                "charOffset": nth,
+                                "memoIndex": f.memo_index,
+                                "text": text,
+                            }));
+                        }
+                        nth += 1;
+                    }
+                }
+            }
+        }
+        serde_json::to_string(&out).unwrap_or_else(|_| "[]".to_string())
+    }
+
     /// field_id로 필드 값을 조회한다.
     ///
     /// 반환: `{ok, value}`
