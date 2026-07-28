@@ -2019,6 +2019,16 @@ impl LayoutEngine {
             for child in &body_node.children {
                 expand_clip(&mut clip, child);
             }
+            // [테두리 잘림 2026-07-28] 선은 경로 중심 기준으로 그려져 두께의 절반이 bbox
+            // 바깥으로 나간다. 위 expand_clip은 자식 bbox에 "딱" 맞추므로, 여백 경계에 붙은
+            // 표는 왼쪽·위 선의 절반이 clip 밖으로 잘려 그 두 변만 얇게 보였다
+            // (실측 diag_table_edge_clip: 여유 0.013px / 선 0.5px → 47% 손실).
+            const STROKE_HALF_PAD: f64 = 2.0; // 0.5mm(≈1.9px) 굵기 테두리까지 커버
+            clip.x -= STROKE_HALF_PAD;
+            clip.y -= STROKE_HALF_PAD;
+            clip.width += STROKE_HALF_PAD * 2.0;
+            clip.height += STROKE_HALF_PAD * 2.0;
+
             let body_bottom = body_bbox.y + body_bbox.height;
             let max_bottom = body_bottom + 10.0;
             if clip.y + clip.height > max_bottom {

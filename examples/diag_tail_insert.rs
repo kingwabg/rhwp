@@ -18,13 +18,10 @@ fn main() {
     doc.set_table_properties(0, pi, ci,
         r#"{"treatAsChar":false,"textWrap":"Square","vertRelTo":"Para","horzRelTo":"Column","horzAlign":"Right","vertOffset":0,"horzOffset":0}"#
     ).unwrap();
-    // 문단별 column_type 검사 — 쪽나누기 플래그 오염 추적
-    {
-        let core = doc.core_ref();
-        for (i, p) in core.document.sections[0].paragraphs.iter().enumerate() {
-            println!("para{i} column_type={:?} text={:?}", p.column_type, p.text.chars().take(6).collect::<String>());
-        }
-    }
+    // ⚠ 문단별 column_type 검사(쪽나누기 플래그 오염 추적)는 `doc.core` 가 private 이라
+    //   예제에서 볼 수 없다. 이 블록이 컴파일되지 않아 `cargo test`(예제까지 빌드)가
+    //   c84529431 이후 계속 깨져 있었다 → 제거(2026-07-28).
+    //   같은 관찰이 다시 필요하면 src/ 안의 단위 테스트로 옮겨서 볼 것.
     let b: serde_json::Value = serde_json::from_str(&doc.get_table_bbox(0, pi, ci).unwrap()).unwrap();
     println!("pages={} tblPage={} y={:.0}", doc.page_count(), b["pageIndex"], b["y"].as_f64().unwrap());
 }
