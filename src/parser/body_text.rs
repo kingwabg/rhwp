@@ -84,6 +84,12 @@ pub fn parse_body_text_section(data: &[u8]) -> Result<Section, BodyTextError> {
         }
     }
 
+    // [메모 유실 수리 2026-07-28] HWP5 의 메모 본문(MEMO_LIST 꼬리)을 필드로 되돌린다.
+    // 직렬화(serializer/body_text.rs collect_memo_lists/serialize_memo_tail)는 완전히
+    // 구현돼 있는데 파서가 memo_index 만 읽고 본문은 버려서, 한컴에서 메모를 단 .hwp 를
+    // 열었다 저장하면 **메모가 통째로 사라졌다**(HWPX 는 정상). 대칭을 맞춘다.
+    parse_memo_tail(&records, &mut section);
+
     // 확장 바탕쪽 파싱: 마지막 문단 이후의 LIST_HEADER (level=1)
     // HWP 바이너리에서 확장 바탕쪽(마지막 쪽, 임의 쪽)은 Section 스트림 끝에 저장되지만,
     // level=1로 태그되어 마지막 문단의 자식으로 오인됨.
@@ -120,6 +126,76 @@ pub fn parse_body_text_section(data: &[u8]) -> Result<Section, BodyTextError> {
     }
 
     Ok(section)
+}
+
+/// 구역 스트림 꼬리의 MEMO_LIST 묶음을 파싱해 해당 메모 필드에 본문을 붙인다.
+///
+/// 구조(한컴 저장본): [빈 root 문단] (MEMO_LIST(memo_index) + LIST_HEADER(count) + 문단×N)×M
+fn parse_memo_tail(records: &[Record], section: &mut Section) {
+    // memo_index -> 본문 문단들
+    let mut memos: Vec<(u32, Vec<Paragraph>)> = Vec::new();
+
+    let mut i = 0;
+    while i < records.len() {
+        if records[i].tag_id != tags::HWPTAG_MEMO_LIST {
+            i += 1;
+            continue;
+        }
+        let memo_index = if records[i].data.len() >= 4 {
+            u32::from_le_bytes([
+                records[i].data[0],
+                records[i].data[1],
+                records[i].data[2],
+                records[i].data[3],
+            ])
+        } else {
+            0
+        };
+        i += 1;
+        // LIST_HEADER(문단 수) 는 있을 수도 없을 수도 있다 — 있으면 건너뛴다.
+        if i < records.len() && records[i].tag_id == tags::HWPTAG_LIST_HEADER {
+            i += 1;
+        }
+        // 다음 MEMO_LIST 전까지의 PARA_HEADER 묶음이 이 메모의 본문
+        let mut paragraphs = Vec::new();
+        while i < records.len() && records[i].tag_id != tags::HWPTAG_MEMO_LIST {
+            if records[i].tag_id == tags::HWPTAG_PARA_HEADER {
+                let base_level = records[i].level;
+                let start = i;
+                i += 1;
+                while i < records.len() && records[i].level > base_level {
+                    i += 1;
+                }
+                if let Ok(p) = parse_paragraph(&records[start..i]) {
+                    paragraphs.push(p);
+                }
+            } else {
+                i += 1;
+            }
+        }
+        if !paragraphs.is_empty() {
+            memos.push((memo_index, paragraphs));
+        }
+    }
+
+    if memos.is_empty() {
+        return;
+    }
+
+    // 본문의 메모 필드에 index 로 맞춰 붙인다.
+    for para in &mut section.paragraphs {
+        for ctrl in &mut para.controls {
+            if let Control::Field(field) = ctrl {
+                if field.field_type == crate::model::control::FieldType::Memo
+                    && field.memo_paragraphs.is_empty()
+                {
+                    if let Some((_, ps)) = memos.iter().find(|(idx, _)| *idx == field.memo_index) {
+                        field.memo_paragraphs = ps.clone();
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// 문단 레코드 그룹에서 Paragraph 구성

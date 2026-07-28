@@ -84,7 +84,7 @@ fn ctrl_id_to_field_type(ctrl_id: u32) -> FieldType {
 /// - 일반 컨트롤: CTRL_HEADER = [ctrl_id(4)] + [ctrl_data]
 /// - 필드 컨트롤: CTRL_HEADER = [ctrl_id(4)] + [속성(4)] + [기타속성(1)] + [command_len(2)] + [command] + [id(4)]
 fn parse_field_control(ctrl_id: u32, ctrl_data: &[u8]) -> Control {
-    let field_type = ctrl_id_to_field_type(ctrl_id);
+    let mut field_type = ctrl_id_to_field_type(ctrl_id);
 
     // ctrl_data: 속성(4) + 기타속성(1) + command_len(2) + command(가변) + id(4)
     if ctrl_data.len() < 7 {
@@ -122,6 +122,14 @@ fn parse_field_control(ctrl_id: u32, ctrl_data: &[u8]) -> Control {
     } else {
         0
     };
+
+    // [메모 인식 2026-07-28] 한컴은 메모 필드를 **ctrl_id=UNKNOWN + 속성 bit15(0x8000)**
+    // 으로 기록한다(우리 직렬화도 같은 규약 — serializer/control.rs:112-121). 그래서
+    // ctrl_id 만 보는 매핑으로는 영원히 Unknown 이었고, 뒤이은 MEMO_LIST 본문도 붙일
+    // 대상을 못 찾아 메모가 통째로 유실됐다.
+    if field_type == FieldType::Unknown && (properties & 0x8000) != 0 {
+        field_type = FieldType::Memo;
+    }
 
     Control::Field(Field {
         field_type,
