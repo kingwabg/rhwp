@@ -4195,6 +4195,82 @@ impl HwpDocument {
         self.get_field_list_json()
     }
 
+    /// 구역의 바탕쪽 목록을 조회한다 (2026-07-28 신설).
+    ///
+    /// 반환: `[{index, applyTo, isExtension, overlap, text}]`
+    /// - `applyTo`: "both" | "odd" | "even"
+    /// - `text`: 바탕쪽 문단들을 개행으로 이은 것
+    #[wasm_bindgen(js_name = getMasterPages)]
+    pub fn get_master_pages(&self, section_idx: u32) -> String {
+        let Some(sec) = self.core.document.sections.get(section_idx as usize) else {
+            return "[]".to_string();
+        };
+        let out: Vec<serde_json::Value> = sec
+            .section_def
+            .master_pages
+            .iter()
+            .enumerate()
+            .map(|(i, mp)| {
+                serde_json::json!({
+                    "index": i,
+                    "applyTo": format!("{:?}", mp.apply_to).to_lowercase(),
+                    "isExtension": mp.is_extension,
+                    "overlap": mp.overlap,
+                    "text": mp.paragraphs.iter().map(|p| p.text.clone())
+                        .collect::<Vec<_>>().join("\n"),
+                })
+            })
+            .collect();
+        serde_json::to_string(&out).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    /// 바탕쪽 본문을 통째로 바꾼다 (2026-07-28 신설, 편집 v1).
+    ///
+    /// 줄바꿈(`\n`)마다 문단 1개. 빈 문자열이면 빈 문단 1개가 남는다.
+    ///
+    /// ⚠ 원본 바이트(`raw_list_header`)를 반드시 무효화한다 — 그대로 두면 문단 수가
+    /// 바뀌어도 옛 헤더가 저장돼 편집이 파일에 반영되지 않는다(조사 2026-07-28).
+    #[wasm_bindgen(js_name = setMasterPageText)]
+    pub fn set_master_page_text(
+        &mut self,
+        section_idx: u32,
+        mp_index: u32,
+        text: &str,
+    ) -> Result<String, JsValue> {
+        use crate::model::paragraph::Paragraph;
+        let Some(sec) = self.core.document.sections.get_mut(section_idx as usize) else {
+            return Ok(r#"{"ok":false,"error":"구역 없음"}"#.to_string());
+        };
+        let Some(mp) = sec.section_def.master_pages.get_mut(mp_index as usize) else {
+            return Ok(r#"{"ok":false,"error":"바탕쪽 없음"}"#.to_string());
+        };
+        let mut paragraphs = Vec::new();
+        for line in text.split('\n') {
+            let mut p = Paragraph::new_empty();
+            p.text = line.to_string();
+            p.char_count = p.text.chars().count() as u32;
+            paragraphs.push(p);
+        }
+        mp.paragraphs = paragraphs.clone();
+        // 원본 헤더는 문단 수를 담고 있어 편집과 모순된다 → 재생성하도록 비운다.
+        mp.raw_list_header.clear();
+
+        // ⚠ section_def 는 **두 곳에 산다**: Section.section_def 와 문단0의 SectionDef
+        //   컨트롤. 직렬화는 컨트롤 쪽(serializer/control.rs:323)을 읽으므로 둘 다
+        //   고쳐야 저장에 반영된다(실측 2026-07-28: 한쪽만 고치면 조용히 무시됨).
+        for para in sec.paragraphs.iter_mut() {
+            for ctrl in para.controls.iter_mut() {
+                if let crate::model::control::Control::SectionDef(sd) = ctrl {
+                    if let Some(target) = sd.master_pages.get_mut(mp_index as usize) {
+                        target.paragraphs = paragraphs.clone();
+                        target.raw_list_header.clear();
+                    }
+                }
+            }
+        }
+        Ok(r#"{"ok":true}"#.to_string())
+    }
+
     /// 문서의 메모 목록을 조회한다 (읽기 전용, 2026-07-28 신설).
     ///
     /// 반환: `[{sectionIndex, paragraphIndex, charOffset, memoIndex, text}]`
