@@ -1225,6 +1225,19 @@ impl DocumentCore {
                 None
             };
             html.push_str(&self.paragraph_to_html(para, start, end));
+            // 범위 안 컨트롤(표·그림)도 직렬화 — 이게 빠져서 전체선택 복사가
+            // 첫 문단 텍스트만 실었다(2026-07-30 한컴 상호운용 실측). 경계 문단은
+            // 앵커 문자 위치가 선택 범위 안일 때만 포함. 문단 중간 앵커의 순서는
+            // 문단 뒤로 몰린다(텍스트 사이 삽입 순서 근사 — 표는 통상 문단을 독점).
+            let ctrl_positions = para.control_text_positions();
+            let lo = start.unwrap_or(0);
+            let hi = end.unwrap_or(usize::MAX);
+            for (ci, ctrl) in para.controls.iter().enumerate() {
+                let pos = ctrl_positions.get(ci).copied().unwrap_or(0);
+                if pos >= lo && pos <= hi {
+                    html.push_str(&self.control_to_html(ctrl));
+                }
+            }
         }
 
         html.push_str("<!--EndFragment-->\n</body></html>");
@@ -1538,9 +1551,12 @@ impl DocumentCore {
                 // 병합된 셀은 첫 번째 셀만 출력 (rowspan/colspan 은 merge 된 셀 정보)
                 let mut td_style = String::new();
 
-                // 셀 배경/테두리 (BorderFill)
+                // 셀 배경/테두리 (BorderFill) — border_fill_id 는 1-기반(0=없음),
+                // 렌더러(layout.rs)와 동일하게 -1 해서 조회. 그대로 인덱싱하면 off-by-one 으로
+                // 엉뚱한/없는 테두리를 읽어 표가 무테두리로 복사됐다(2026-07-30 한컴 실측).
                 if cell.border_fill_id > 0 {
-                    if let Some(bs) = self.styles.border_styles.get(cell.border_fill_id as usize) {
+                    let bf_idx = (cell.border_fill_id - 1) as usize;
+                    if let Some(bs) = self.styles.border_styles.get(bf_idx) {
                         self.apply_border_fill_css(&mut td_style, bs);
                     }
                 }

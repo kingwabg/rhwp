@@ -4310,6 +4310,31 @@ fn test_export_selection_html_partial() {
     assert!(html.contains(">BCD<"));
 }
 
+/// [2026-07-30 한컴 상호운용 실측 회귀] 범위 HTML 내보내기가 범위 안 표 컨트롤을
+/// 포함해야 한다 — 빠지면 전체선택 복사가 첫 문단 텍스트만 싣는다(실사고).
+#[test]
+fn test_export_selection_html_includes_table_in_range() {
+    let mut doc = HwpDocument::create_empty();
+    doc.insert_text(0, 0, 0, "본문앞").unwrap();
+    let r = doc.create_table_native(0, 0, 3, 2, 2).unwrap();
+    let host: usize = {
+        let s = r.split("\"paraIdx\":").nth(1).unwrap();
+        s[..s.find([',', '}']).unwrap()].parse().unwrap()
+    };
+    // 셀에 내용을 넣어 셀 텍스트 직렬화까지 확인
+    doc.insert_text_in_cell_native(0, host, 0, 0, 0, 0, "셀본문").unwrap();
+
+    let last = doc.document().sections[0].paragraphs.len() - 1;
+    let html = doc
+        .export_selection_html_native(0, 0, 0, last, 100)
+        .unwrap();
+    assert!(html.contains("<table"), "범위 복사에 표 포함: {html}");
+    assert!(html.contains("셀본문"), "셀 텍스트 포함: {html}");
+    assert!(html.contains("본문앞"), "본문 텍스트 포함: {html}");
+    // border_fill_id 1-기반 off-by-one 회귀 — 기본 새 표는 실선 테두리가 CSS 로 나가야 한다
+    assert!(html.contains("border-top:"), "셀 테두리 CSS 포함: {html}");
+}
+
 #[test]
 fn test_export_control_html_table() {
     let mut doc = create_doc_with_table();
