@@ -9,7 +9,7 @@ use crate::model::event::DocumentEvent;
 use crate::model::page::ColumnDef;
 use crate::model::paragraph::Paragraph;
 use crate::model::shape::{ShapeObject, TextWrap, VertRelTo};
-use crate::renderer::composer::{compose_paragraph, reflow_line_segs, ComposedParagraph};
+use crate::renderer::composer::{compose_paragraph, compose_section, reflow_line_segs, ComposedParagraph};
 use crate::renderer::page_layout::PageLayoutInfo;
 use crate::renderer::style_resolver::{resolve_styles, ResolvedStyleSet};
 
@@ -1964,6 +1964,96 @@ impl DocumentCore {
         Ok(super::super::helpers::json_ok_with(&format!(
             "\"paraIdx\":{},\"charOffset\":0",
             new_para_idx
+        )))
+    }
+
+    /// 구역 나누기 (Alt+Shift+Enter) — 커서 위치부터 끝까지를 새 구역으로 분리한다.
+    ///
+    /// 한컴 정본: 새 구역은 이전 구역 설정(용지·여백·단)을 복제해 시작하고, 쪽 번호는
+    /// "이어서"(page_num=0). 새 구역 문단0에는 SectionDef 컨트롤을 명시적으로 심는다 —
+    /// 직렬화기는 문단0 컨트롤이 있으면 그것을 읽으므로(Issue #1915 폴백은 없을 때만)
+    /// Section.section_def 만 갈라 두면 저장에서 사라진다(바탕쪽과 같은 함정).
+    pub fn insert_section_break_native(
+        &mut self,
+        section_idx: usize,
+        para_idx: usize,
+        char_offset: usize,
+    ) -> Result<String, HwpError> {
+        use crate::model::document::Section;
+
+        if section_idx >= self.document.sections.len() {
+            return Err(HwpError::RenderError(format!(
+                "구역 인덱스 {} 범위 초과",
+                section_idx
+            )));
+        }
+        if para_idx >= self.document.sections[section_idx].paragraphs.len() {
+            return Err(HwpError::RenderError(format!(
+                "문단 인덱스 {} 범위 초과",
+                para_idx
+            )));
+        }
+
+        self.document.sections[section_idx].raw_stream = None;
+
+        // 커서 문단을 쪼개고, 뒷문단부터 구역 끝까지를 새 구역으로 옮긴다
+        let tail_para =
+            self.document.sections[section_idx].paragraphs[para_idx].split_at(char_offset);
+        let mut moved: Vec<Paragraph> = self.document.sections[section_idx]
+            .paragraphs
+            .split_off(para_idx + 1);
+        moved.insert(0, tail_para);
+
+        let mut new_def = self.document.sections[section_idx].section_def.clone();
+        new_def.page_num = 0; // 쪽 번호 이어서
+
+        // 문단0 정리: 원 구역에서 딸려 온 구역 컨트롤이 있으면 중복 방지로 제거 후
+        // 새 SectionDef 를 맨 앞에 심는다 (ColumnDef 는 딸려 왔으면 그대로 살린다 —
+        // 단 설정도 복제가 정본이다).
+        moved[0]
+            .controls
+            .retain(|c| !matches!(c, Control::SectionDef(_)));
+        moved[0]
+            .controls
+            .insert(0, Control::SectionDef(Box::new(new_def.clone())));
+
+        let new_section = Section {
+            section_def: new_def,
+            paragraphs: moved,
+            raw_stream: None,
+        };
+        self.document.sections.insert(section_idx + 1, new_section);
+
+        // 조판 상태 벡터 동기화 — 나머지 per-section 벡터는 paginate()가 길이를 맞춘다
+        self.composed[section_idx] = compose_section(&self.document.sections[section_idx]);
+        self.composed.insert(
+            section_idx + 1,
+            compose_section(&self.document.sections[section_idx + 1]),
+        );
+        if section_idx < self.dirty_sections.len() {
+            self.dirty_sections[section_idx] = true;
+        }
+        if section_idx + 1 <= self.dirty_sections.len() {
+            self.dirty_sections.insert(section_idx + 1, true);
+        }
+        if section_idx < self.dirty_paragraphs.len() {
+            self.dirty_paragraphs[section_idx] = None;
+        }
+        if section_idx + 1 <= self.dirty_paragraphs.len() {
+            self.dirty_paragraphs.insert(section_idx + 1, None);
+        }
+
+        self.invalidate_page_tree_cache();
+        self.paginate_if_needed();
+
+        self.event_log.push(DocumentEvent::ParagraphSplit {
+            section: section_idx,
+            para: para_idx,
+            offset: char_offset,
+        });
+        Ok(super::super::helpers::json_ok_with(&format!(
+            "\"sectionIdx\":{},\"paraIdx\":0,\"charOffset\":0",
+            section_idx + 1
         )))
     }
 

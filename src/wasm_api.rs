@@ -1737,6 +1737,22 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 구역 나누기 (Alt+Shift+Enter) — 커서부터 끝까지를 새 구역으로
+    #[wasm_bindgen(js_name = insertSectionBreak)]
+    pub fn insert_section_break(
+        &mut self,
+        section_idx: u32,
+        para_idx: u32,
+        char_offset: u32,
+    ) -> Result<String, JsValue> {
+        self.insert_section_break_native(
+            section_idx as usize,
+            para_idx as usize,
+            char_offset as usize,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// 새 번호 지정 컨트롤 삽입 (쪽 > 새 번호로 시작)
     #[wasm_bindgen(js_name = insertNewNumber)]
     pub fn insert_new_number(

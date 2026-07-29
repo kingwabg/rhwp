@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="793.7066666666667" height="1122.5066666666667" viewBox="0 0 793.7066666666667 1122.5066666666667">
+<defs>
+<clipPath id="body-clip-3"><rect x="111.38666666666667" y="130.26666666666668" width="641.9333333333334" height="880.8533333333334"/></clipPath>
+</defs>
+<rect x="0" y="0" width="793.7066666666667" height="1122.5066666666667" fill="#ffffff"/>
+<g clip-path="url(#body-clip-3)"><rect x="113.38666666666667" y="132.26666666666668" width="94.49333333333334" height="26.453333333333333" fill="#d0d0d0" stroke="#a0a0a0" stroke-width="0.5"/>
+<text x="160.63333333333333" y="145.49333333333334" font-size="12.0" fill="#808080" text-anchor="middle" dominant-baseline="central" font-family="'맑은 고딕',sans-serif">명령 단추</text>
+<rect x="115.38666666666667" y="194.78" width="13" height="13" fill="white" stroke="#606060" stroke-width="0.8"/>
+<polyline points="117.98666666666666,201.93 121.23666666666666,205.18 126.43666666666667,197.38" fill="none" stroke="#000000" stroke-width="1.5"/>
+<text x="131.38666666666666" y="201.28" font-size="12.0" fill="#000000" dominant-baseline="central" font-family="'맑은 고딕',sans-serif">선택 상자</text>
+<rect x="113.38666666666667" y="243.84000000000003" width="80.77333333333333" height="19.333333333333332" fill="white" stroke="#a0a0a0" stroke-width="0.8"/>
+<rect x="178.69333333333333" y="243.84000000000003" width="15.466666666666667" height="19.333333333333332" fill="#e0e0e0" stroke="#a0a0a0" stroke-width="0.5"/>
+<polygon points="182.56,251.57333333333335 190.29333333333335,251.57333333333335 186.42666666666668,255.44000000000003" fill="#404040"/>
+<text x="116.38666666666667" y="253.5066666666667" font-size="10.6" fill="#000000" dominant-baseline="central" font-family="'맑은 고딕',sans-serif">계절 선택</text>
+<circle cx="121.88666666666667" cy="305.73333333333335" r="6.5" fill="white" stroke="#606060" stroke-width="0.8"/>
+<text x="131.38666666666666" y="305.73333333333335" font-size="12.0" fill="#000000" dominant-baseline="central" font-family="'맑은 고딕',sans-serif">라디오 단추</text>
+<rect x="113.38666666666667" y="348.29333333333335" width="94.49333333333334" height="26.453333333333333" fill="white" stroke="#a0a0a0" stroke-width="0.8"/>
+<text x="113.38666666666667" y="415.41333333333336" font-family="함초롬바탕,&apos;Batang&apos;,&apos;바탕&apos;,&apos;Nanum Myeongjo&apos;,&apos;AppleMyungjo&apos;,&apos;Noto Serif KR&apos;,&apos;Noto Serif CJK KR&apos;,&apos;HCR Batang Ext-B&apos;,&apos;함초롬바탕 확장B&apos;,&apos;HCR Batang Ext&apos;,&apos;함초롬바탕 확장&apos;,&apos;HCR Batang&apos;,&apos;함초롬바탕&apos;,&apos;Source Han Serif K Old Hangul&apos;,serif" font-size="13.333333333333334" font-style="italic" fill="#ff0000">여</text>
+<text x="126.32000000000001" y="415.41333333333336" font-family="함초롬바탕,&apos;Batang&apos;,&apos;바탕&apos;,&apos;Nanum Myeongjo&apos;,&apos;AppleMyungjo&apos;,&apos;Noto Serif KR&apos;,&apos;Noto Serif CJK KR&apos;,&apos;HCR Batang Ext-B&apos;,&apos;함초롬바탕 확장B&apos;,&apos;HCR Batang Ext&apos;,&apos;함초롬바탕 확장&apos;,&apos;HCR Batang&apos;,&apos;함초롬바탕&apos;,&apos;Source Han Serif K Old Hangul&apos;,serif" font-size="13.333333333333334" font-style="italic" fill="#ff0000">기</text>
+<text x="139.25333333333333" y="415.41333333333336" font-family="함초롬바탕,&apos;Batang&apos;,&apos;바탕&apos;,&apos;Nanum Myeongjo&apos;,&apos;AppleMyungjo&apos;,&apos;Noto Serif KR&apos;,&apos;Noto Serif CJK KR&apos;,&apos;HCR Batang Ext-B&apos;,&apos;함초롬바탕 확장B&apos;,&apos;HCR Batang Ext&apos;,&apos;함초롬바탕 확장&apos;,&apos;HCR Batang&apos;,&apos;함초롬바탕&apos;,&apos;Source Han Serif K Old Hangul&apos;,serif" font-size="13.333333333333334" font-style="italic" fill="#ff0000">에</text>
+<text x="158.85333333333332" y="415.41333333333336" font-family="함초롬바탕,&apos;Batang&apos;,&apos;바탕&apos;,&apos;Nanum Myeongjo&apos;,&apos;AppleMyungjo&apos;,&apos;Noto Serif KR&apos;,&apos;Noto Serif CJK KR&apos;,&apos;HCR Batang Ext-B&apos;,&apos;함초롬바탕 확장B&apos;,&apos;HCR Batang Ext&apos;,&apos;함초롬바탕 확장&apos;,&apos;HCR Batang&apos;,&apos;함초롬바탕&apos;,&apos;Source Han Serif K Old Hangul&apos;,serif" font-size="13.333333333333334" font-style="italic" fill="#ff0000">입</text>
+<text x="171.78666666666666" y="415.41333333333336" font-family="함초롬바탕,&apos;Batang&apos;,&apos;바탕&apos;,&apos;Nanum Myeongjo&apos;,&apos;AppleMyungjo&apos;,&apos;Noto Serif KR&apos;,&apos;Noto Serif CJK KR&apos;,&apos;HCR Batang Ext-B&apos;,&apos;함초롬바탕 확장B&apos;,&apos;HCR Batang Ext&apos;,&apos;함초롬바탕 확장&apos;,&apos;HCR Batang&apos;,&apos;함초롬바탕&apos;,&apos;Source Han Serif K Old Hangul&apos;,serif" font-size="13.333333333333334" font-style="italic" fill="#ff0000">력</text>
+</g>
+</svg>
