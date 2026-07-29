@@ -46,24 +46,37 @@ pub fn build_track_sidecar(doc: &Document) -> Option<String> {
         })
         .collect();
     let mut marks: Vec<String> = Vec::new();
+    let push_mark = |marks: &mut Vec<String>, para: &crate::model::paragraph::Paragraph,
+                     tm: &TrackMark, sec_idx: usize, para_idx: usize,
+                     cell: Option<(usize, usize, usize)>| {
+        let start = para.char_offsets.iter().position(|&o| o >= tm.start_pos)
+            .unwrap_or(para.char_offsets.len());
+        let end = para.char_offsets.iter().position(|&o| o >= tm.end_pos)
+            .unwrap_or(para.char_offsets.len());
+        let cell_json = cell
+            .map(|(ci, cei, cpi)| format!(",\"ci\":{},\"cei\":{},\"cpi\":{}", ci, cei, cpi))
+            .unwrap_or_default();
+        marks.push(format!(
+            "{{\"sec\":{},\"para\":{},\"start\":{},\"end\":{},\"tc\":{}{}}}",
+            sec_idx, para_idx, start, end, tm.tc_id, cell_json
+        ));
+    };
     for (sec_idx, sec) in doc.sections.iter().enumerate() {
-        for (para_idx, para) in sec.paragraphs.iter().enumerate() {
+        for (para_idx, host) in sec.paragraphs.iter().enumerate() {
+            for (ctrl_idx, ctrl) in host.controls.iter().enumerate() {
+                let crate::model::control::Control::Table(t) = ctrl else { continue };
+                for (cell_idx, cell) in t.cells.iter().enumerate() {
+                    for (cpi, para) in cell.paragraphs.iter().enumerate() {
+                        for tm in &para.track_marks {
+                            push_mark(&mut marks, para, tm, sec_idx, para_idx,
+                                Some((ctrl_idx, cell_idx, cpi)));
+                        }
+                    }
+                }
+            }
+            let para = host;
             for tm in &para.track_marks {
-                // utf16 → 텍스트 문자 인덱스 (왕복 불변 좌표)
-                let start = para
-                    .char_offsets
-                    .iter()
-                    .position(|&o| o >= tm.start_pos)
-                    .unwrap_or(para.char_offsets.len());
-                let end = para
-                    .char_offsets
-                    .iter()
-                    .position(|&o| o >= tm.end_pos)
-                    .unwrap_or(para.char_offsets.len());
-                marks.push(format!(
-                    "{{\"sec\":{},\"para\":{},\"start\":{},\"end\":{},\"tc\":{}}}",
-                    sec_idx, para_idx, start, end, tm.tc_id
-                ));
+                push_mark(&mut marks, para, tm, sec_idx, para_idx, None);
             }
         }
     }
@@ -102,6 +115,38 @@ pub fn restore_track_sidecar(doc: &mut Document, json: &str) {
                 num_field(&obj, "tc"),
             ) else { continue };
             let (sec, para) = (sec as usize, para as usize);
+            // 셀 마크: ci/cei/cpi 가 있으면 표 셀 문단으로 복원
+            if let (Some(ci), Some(cei), Some(cpi)) =
+                (num_field(&obj, "ci"), num_field(&obj, "cei"), num_field(&obj, "cpi"))
+            {
+                let target = doc
+                    .sections
+                    .get_mut(sec)
+                    .and_then(|s| s.paragraphs.get_mut(para))
+                    .and_then(|host| host.controls.get_mut(ci as usize))
+                    .and_then(|ctrl| match ctrl {
+                        crate::model::control::Control::Table(t) => {
+                            t.cells.get_mut(cei as usize)
+                        }
+                        _ => None,
+                    })
+                    .and_then(|cell| cell.paragraphs.get_mut(cpi as usize));
+                if let Some(p) = target {
+                    let at = |idx: u32| -> u32 {
+                        let idx = idx as usize;
+                        if idx < p.char_offsets.len() {
+                            p.char_offsets[idx]
+                        } else {
+                            p.char_offsets.last().map_or(0, |&last| {
+                                let ch = p.text.chars().last().unwrap_or('\0');
+                                last + ch.len_utf16() as u32
+                            })
+                        }
+                    };
+                    p.track_marks.push(TrackMark { start_pos: at(start), end_pos: at(end), tc_id: tc });
+                }
+                continue;
+            }
             if let Some(p) = doc.sections.get_mut(sec).and_then(|s| s.paragraphs.get_mut(para)) {
                 // 텍스트 문자 인덱스 → 이 문서의 utf16 위치
                 let at = |idx: u32| -> u32 {

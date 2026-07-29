@@ -967,6 +967,14 @@ impl DocumentCore {
             self.paginate_if_needed();
         }
 
+        // [변경 추적] ON 이면 방금 삽입분을 Insert 마크로 (track.rs)
+        if self.track_enabled {
+            self.track_note_insert_in_cell(
+                section_idx, parent_para_idx, control_idx, cell_idx, cell_para_idx,
+                char_offset, text,
+            );
+        }
+
         let new_offset = char_offset + new_chars_count;
         self.event_log.push(DocumentEvent::CellTextChanged {
             section: section_idx,
@@ -996,6 +1004,17 @@ impl DocumentCore {
         char_offset: usize,
         count: usize,
     ) -> Result<String, HwpError> {
+        // [변경 추적] ON 이면 실삭제 대신 Delete 마크 (track.rs)
+        if self.track_enabled {
+            if let Some(done) = self.track_delete_in_cell(
+                section_idx, parent_para_idx, control_idx, cell_idx, cell_para_idx,
+                char_offset, count,
+            ) {
+                self.mark_cell_control_dirty(section_idx, parent_para_idx, control_idx);
+                self.mark_section_dirty(section_idx);
+                return Ok(done);
+            }
+        }
         // 셀 문단 접근 검증 및 텍스트 삭제
         let cell_para = self.get_cell_paragraph_mut(
             section_idx,
@@ -1348,7 +1367,7 @@ impl DocumentCore {
 
     // ─── Phase 3 네이티브 구현: 커서 이동 API ─────────────────
 
-    pub(crate) fn delete_range_native(
+    pub fn delete_range_native(
         &mut self,
         section_idx: usize,
         start_para: usize,
@@ -1357,6 +1376,19 @@ impl DocumentCore {
         end_offset: usize,
         cell_ctx: Option<(usize, usize, usize)>,
     ) -> Result<String, HwpError> {
+        // [변경 추적] ON 이면 실삭제 대신 걸친 문단마다 Delete 마크 (track.rs) —
+        // 문단 구조는 바꾸지 않는다(한컴처럼 삭제 표시 상태에서도 그대로 보인다).
+        if self.track_enabled {
+            if let Some(done) = self.track_delete_range(
+                section_idx, start_para, start_offset, end_para, end_offset, cell_ctx,
+            ) {
+                if let Some((ppi, ci, _)) = cell_ctx {
+                    self.mark_cell_control_dirty(section_idx, ppi, ci);
+                }
+                self.mark_section_dirty(section_idx);
+                return Ok(done);
+            }
+        }
         // Section raw 스트림 무효화 (재직렬화 유도)
         self.document.sections[section_idx].raw_stream = None;
         // DocInfo raw_stream은 유지 (전체 재직렬화 시 FIX-4 문제 발생)
