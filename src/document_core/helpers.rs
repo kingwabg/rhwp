@@ -525,6 +525,9 @@ pub(crate) fn parse_para_shape_mods(json: &str) -> crate::model::style::ParaShap
             "center" => Some(Alignment::Center),
             "justify" => Some(Alignment::Justify),
             "distribute" => Some(Alignment::Distribute),
+            // 나눔 정렬 — 내보내기(formatting.rs)는 "split"을 쓰는데 파서에 빠져 있어
+            // 적용이 불가능했다(2026-07-30 서식 전수 스윕에서 검출)
+            "split" => Some(Alignment::Split),
             _ => None,
         };
         if a.is_some() {
