@@ -262,6 +262,8 @@ fn parse_hwp_with_cfb(
         hwpx_aux_entries: Vec::new(),
         is_hwp3_variant: false,
         is_hwpx_variant,
+        track_changes: Vec::new(),
+        next_track_id: 1,
     };
 
     // 자동 번호 할당 (문서 전체에서 순차적으로)
@@ -548,6 +550,8 @@ fn parse_hwp_with_lenient(
         preview: None,
         bin_data_content,
         extra_streams: Vec::new(),
+        track_changes: Vec::new(),
+        next_track_id: 1,
         is_hwpx_variant: false,
         hwpx_aux_entries: Vec::new(),
         is_hwp3_variant: false,

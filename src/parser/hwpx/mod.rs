@@ -463,8 +463,18 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
         extra_streams: contract.streams,
         hwpx_aux_entries,
         is_hwp3_variant: false,
+        track_changes: Vec::new(),
+        next_track_id: 1,
         is_hwpx_variant: false,
     };
+
+    // 변경 추적 사이드카 복원 (있을 때만) — 스펙 track-changes.md
+    if let Ok(bytes) = reader.read_file_bytes(crate::model::document::TRACK_SIDECAR_PATH) {
+        if let Ok(json) = String::from_utf8(bytes) {
+            crate::serializer::track_sidecar::restore_track_sidecar(&mut doc, &json);
+        }
+    }
+
 
     // [Task #873] BinData Link 타입 의 외부 file path 영역 영역 Picture.external_path 영역
     // 전달. 이후 model::document::populate_external_images_from_dir (Task #741) 가 같은

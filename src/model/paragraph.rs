@@ -24,6 +24,9 @@ pub struct Paragraph {
     pub char_offsets: Vec<u32>,
     /// 글자 모양 변경 위치 목록
     pub char_shapes: Vec<CharShapeRef>,
+    /// 변경 추적 마크 (utf16 범위 → 변경 id). 비어 있으면 추적 없음.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub track_marks: Vec<TrackMark>,
     /// 줄 레이아웃 정보
     pub line_segs: Vec<LineSeg>,
     /// [양쪽 흐름] reflow 가 계산한 세그 계획 (cs_px, w_px, 같은줄 연속 여부) —
@@ -133,6 +136,18 @@ pub struct CharShapeRef {
     pub start_pos: u32,
     /// 글자 모양 ID
     pub char_shape_id: u32,
+}
+
+/// 변경 추적 마크 — 문단 안의 utf16 범위 하나가 어느 변경(tc_id)에 속하는지.
+/// 위치 이동 규칙은 CharShapeRef.start_pos 와 동일한 세 지점(insert/delete/split)에서 미러.
+#[derive(Debug, Clone, Default)]
+pub struct TrackMark {
+    /// 시작 위치 (utf16 코드 유닛)
+    pub start_pos: u32,
+    /// 끝 위치 (utf16, exclusive)
+    pub end_pos: u32,
+    /// Document.track_changes 의 id
+    pub tc_id: u32,
 }
 
 /// 줄 레이아웃 정보 (HWPTAG_PARA_LINE_SEG)
@@ -382,6 +397,22 @@ impl Paragraph {
         positions
     }
 
+    /// 논리 오프셋(인라인 컨트롤 포함) → 텍스트 문자 인덱스 (track 등 외부용)
+    pub fn logical_to_text_pos(&self, logical: usize) -> usize {
+        let control_positions = self.split_logical_control_positions();
+        self.split_text_pos_for_logical_offset(logical, &control_positions)
+    }
+
+    /// 텍스트 문자 인덱스 → 논리 오프셋 (역방향). 컨트롤 논리 위치의 고정점 계산.
+    pub fn text_to_logical_pos(&self, text_pos: usize) -> usize {
+        let control_positions = self.split_logical_control_positions();
+        let mut k = 0usize;
+        while k < control_positions.len() && control_positions[k] <= text_pos + k {
+            k += 1;
+        }
+        text_pos + k
+    }
+
     fn split_text_pos_for_logical_offset(
         &self,
         logical_offset: usize,
@@ -571,6 +602,19 @@ impl Paragraph {
                 cs.start_pos += utf16_delta;
             }
         }
+        // track_marks 이동 규칙 (end 는 exclusive):
+        //  - 마크 앞/시작점 삽입(start>=pos) → 통째로 오른쪽 이동
+        //  - 마크 내부 삽입(start<pos<end) → end 만 이동(마크가 늘어남)
+        //  - 마크 끝점 삽입(pos==end) → 불변 — 이어치기 확장은 추적 훅의 결정 사항이다
+        //    (여기서도 늘리면 훅의 인접 확장과 겹쳐 변경이 이중 기록된다. 실측 2026-07-30)
+        for tm in &mut self.track_marks {
+            if tm.start_pos >= utf16_insert_pos {
+                tm.start_pos += utf16_delta;
+            }
+            if tm.end_pos > utf16_insert_pos {
+                tm.end_pos += utf16_delta;
+            }
+        }
 
         // 4. line_segs: 삽입 지점 이후의 text_start를 시프트
         for ls in &mut self.line_segs {
@@ -664,6 +708,18 @@ impl Paragraph {
                 cs.start_pos = utf16_start;
             }
         }
+        // track_marks 도 같은 규칙 — 겹친 범위는 잘리고, 전부 삭제되면 빈 마크(start==end)
+        // 가 되며 호출부(track 훅)가 정리한다.
+        for tm in &mut self.track_marks {
+            for pos in [&mut tm.start_pos, &mut tm.end_pos] {
+                if *pos >= utf16_end {
+                    *pos -= utf16_delta;
+                } else if *pos > utf16_start {
+                    *pos = utf16_start;
+                }
+            }
+        }
+        self.track_marks.retain(|tm| tm.end_pos > tm.start_pos);
 
         // 4. line_segs: 삭제 범위 이후 → utf16_delta만큼 감소
         for ls in &mut self.line_segs {
@@ -746,6 +802,27 @@ impl Paragraph {
         self.char_offsets.truncate(split_pos);
 
         // 3. char_shapes 분할
+        // track_marks 분할 — 경계에 걸친 마크는 두 조각으로(같은 tc_id 유지)
+        let mut new_track_marks: Vec<TrackMark> = Vec::new();
+        {
+            let mut kept: Vec<TrackMark> = Vec::new();
+            for tm in self.track_marks.drain(..) {
+                if tm.end_pos <= utf16_split {
+                    kept.push(tm);
+                } else if tm.start_pos >= utf16_split {
+                    new_track_marks.push(TrackMark {
+                        start_pos: tm.start_pos - utf16_split,
+                        end_pos: tm.end_pos - utf16_split,
+                        tc_id: tm.tc_id,
+                    });
+                } else {
+                    kept.push(TrackMark { start_pos: tm.start_pos, end_pos: utf16_split, tc_id: tm.tc_id });
+                    new_track_marks.push(TrackMark { start_pos: 0, end_pos: tm.end_pos - utf16_split, tc_id: tm.tc_id });
+                }
+            }
+            self.track_marks = kept;
+        }
+
         let mut new_char_shapes: Vec<CharShapeRef> = Vec::new();
         // 분할 지점에서의 활성 스타일 찾기
         let mut active_style_id: u32 = self
@@ -907,6 +984,7 @@ impl Paragraph {
             text: new_text,
             char_offsets: new_char_offsets,
             char_shapes: new_char_shapes,
+            track_marks: new_track_marks,
             line_segs: new_line_segs,
             reflow_seg_plan: Vec::new(),
             range_tags: new_range_tags,

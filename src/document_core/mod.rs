@@ -99,6 +99,10 @@ pub struct DocumentCore {
     pub(crate) measured_tables: Vec<Vec<MeasuredTable>>,
     /// 구역별 dirty 플래그 (true = 재페이지네이션 필요)
     pub(crate) dirty_sections: Vec<bool>,
+    /// 변경 내용 추적 상태 (track.rs)
+    pub(crate) track_enabled: bool,
+    pub(crate) track_author: String,
+    pub(crate) track_date: String,
     /// 구역별 측정 캐시 (증분 측정용)
     pub(crate) measured_sections: Vec<MeasuredSection>,
     /// 구역별 문단 dirty 비트맵.
@@ -290,6 +294,9 @@ impl DocumentCore {
             respect_vpos_reset: false,
             measured_tables: Vec::new(),
             dirty_sections: Vec::new(),
+            track_enabled: false,
+            track_author: String::new(),
+            track_date: String::new(),
             measured_sections: Vec::new(),
             dirty_paragraphs: Vec::new(),
             para_column_map: Vec::new(),

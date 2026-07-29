@@ -505,6 +505,10 @@ impl DocumentCore {
                 rebuild_char_offsets(para);
             }
         }
+        // [변경 추적] ON 이면 방금 삽입분을 Insert 마크로 기록 (track.rs)
+        if self.track_enabled {
+            self.track_note_insert(section_idx, para_idx, char_offset, text);
+        }
 
         // line_segs 재계산 (리플로우) → vpos 재계산 → 재구성 → 재페이지네이션
         // 다단 문서에서 편집 후 문단이 다른 단으로 재배치될 수 있으므로
@@ -640,6 +644,13 @@ impl DocumentCore {
                 "char_offset {} 범위 초과 (문단 길이 {})",
                 char_offset, del_len
             )));
+        }
+
+        // [변경 추적] ON 이면 실삭제 대신 Delete 마크 — 자기 삽입분(Some=처리 끝)만 통과
+        if self.track_enabled {
+            if let Some(done) = self.track_delete(section_idx, para_idx, char_offset, count) {
+                return Ok(done);
+            }
         }
 
         // 편집 시 raw 스트림 무효화 (재직렬화 유도)

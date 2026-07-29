@@ -15,6 +15,28 @@ use super::*;
 /// 마커가 사라져 native HWPX로 취급된다.
 pub const HWP5_ORIGIN_HWPX_MARKER_PATH: &str = "META-INF/rhwp-hwp5-origin";
 
+/// 변경 추적 사이드카 경로 (HWPX zip 안 JSON). 한컴 표준 태그(insertBegin/End)는 v2 —
+/// 이 사이드카는 **우리 편집기 왕복**에서만 추적을 보존한다(한컴에서 열면 표시 없음,
+/// 한컴에서 저장하면 소실 — 한계는 track-changes.md 스펙에 명시).
+pub const TRACK_SIDECAR_PATH: &str = "Contents/officexTrack.json";
+
+/// 변경 추적 종류
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackKind {
+    Insert,
+    Delete,
+}
+
+/// 변경 추적 레코드 — 마크(Paragraph.track_marks)가 tc_id 로 가리킨다
+#[derive(Debug, Clone)]
+pub struct TrackChangeRec {
+    pub id: u32,
+    pub kind: TrackKind,
+    pub author: String,
+    /// ISO-8601 문자열(호스트가 넣어 준다 — wasm 에서 시계 접근 회피)
+    pub date: String,
+}
+
 /// 파서가 모델링하지 않는 원시 레코드 (라운드트립 보존용)
 #[derive(Debug, Clone, Default)]
 pub struct RawRecord {
@@ -59,6 +81,10 @@ pub struct Document {
     /// tolerance 2.0 vs 64.0px 등)를 HWPX 로 해석해야 같은 IR 이 같은 쪽수가 된다
     /// (roundtrip 자기정합). native HWP5 는 마커가 없어 불변.
     pub is_hwpx_variant: bool,
+    /// 변경 추적 레코드 목록 (사이드카로 왕복)
+    pub track_changes: Vec<TrackChangeRec>,
+    /// 다음 변경 id (1-base 증가)
+    pub next_track_id: u32,
 }
 
 /// 미리보기 데이터 (PrvImage, PrvText 스트림)

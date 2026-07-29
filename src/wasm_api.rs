@@ -1737,6 +1737,41 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 변경 내용 추적 켜기/끄기 (스펙 track-changes.md)
+    #[wasm_bindgen(js_name = setTrackChanges)]
+    pub fn set_track_changes(&mut self, enabled: bool, author: &str, date: &str) {
+        self.core.set_track_changes_native(enabled, author, date);
+    }
+
+    #[wasm_bindgen(js_name = isTrackChangesEnabled)]
+    pub fn is_track_changes_enabled_api(&self) -> bool {
+        self.core.is_track_changes_enabled()
+    }
+
+    /// 변경 목록 — [{id,kind,author,date,section,para,start,end,text}]
+    #[wasm_bindgen(js_name = getTrackChanges)]
+    pub fn get_track_changes(&self) -> String {
+        self.core.get_track_changes_native()
+    }
+
+    /// 변경 적용 — Insert 는 확정(마크 해제), Delete 는 실삭제
+    #[wasm_bindgen(js_name = acceptTrackChange)]
+    pub fn accept_track_change(&mut self, tc_id: u32) -> Result<String, JsValue> {
+        self.core.accept_track_change_native(tc_id).map_err(|e| e.into())
+    }
+
+    /// 변경 취소 — Insert 는 실삭제(입력 되돌림), Delete 는 마크 해제
+    #[wasm_bindgen(js_name = rejectTrackChange)]
+    pub fn reject_track_change(&mut self, tc_id: u32) -> Result<String, JsValue> {
+        self.core.reject_track_change_native(tc_id).map_err(|e| e.into())
+    }
+
+    /// 모두 적용/취소
+    #[wasm_bindgen(js_name = resolveAllTrackChanges)]
+    pub fn resolve_all_track_changes(&mut self, accept: bool) -> Result<String, JsValue> {
+        self.core.resolve_all_track_changes_native(accept).map_err(|e| e.into())
+    }
+
     /// 구역 나누기 (Alt+Shift+Enter) — 커서부터 끝까지를 새 구역으로
     #[wasm_bindgen(js_name = insertSectionBreak)]
     pub fn insert_section_break(

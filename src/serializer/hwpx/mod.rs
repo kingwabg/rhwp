@@ -173,6 +173,13 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
         z.write_deflated(HWP5_ORIGIN_HWPX_MARKER_PATH, marker)?;
     }
 
+    // 변경 추적 사이드카 — 마크·레코드를 JSON 으로 (스펙 track-changes.md).
+    // 우리 편집기 왕복 보존용. 한컴 표준 태그는 v2 — 이 파일은 한컴이 무시한다.
+    let track_json = crate::serializer::track_sidecar::build_track_sidecar(doc);
+    if let Some(json) = track_json {
+        z.write_deflated(crate::model::document::TRACK_SIDECAR_PATH, json.as_bytes())?;
+    }
+
     // 참조 정합성 단언 (Stage 1+)
     ctx.assert_all_refs_resolved()?;
 
