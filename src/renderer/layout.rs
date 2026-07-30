@@ -6603,6 +6603,18 @@ impl LayoutEngine {
                     // FullParagraph에서 빈 줄 진행을 생략한 대신, 표와 같은 줄에
                     // host 문단부호를 렌더링한다. 표 뒤 빈 문단은 그대로 남아
                     // 아래쪽 탈출 위치를 제공한다.
+                    // [자리차지 이동 2026-07-30] voff>0 으로 표가 흐름 아래로 이동한 경우,
+                    // 한컴(웹한글 스크린샷 오라클)은 앵커 조판부호·커서를 본문 흐름 위치에
+                    // 남기고 표 상자만 오프셋 위치에 그린다. 종전엔 마크가 table_y_start
+                    // (=lane_top=흐름y+voff)를 따라가 캐럿이 표 좌상단에 붙고, 흐름 자리
+                    // 클릭이 뒤 문단으로 갔다. voff==0 은 종전대로 표와 같은 줄.
+                    let marker_y = if is_para_topbottom_float(&t.common)
+                        && signed_hwpunit(t.common.vertical_offset) > 0
+                    {
+                        table_y_before
+                    } else {
+                        table_y_start
+                    };
                     push_empty_para_end_mark(
                         tree,
                         col_node,
@@ -6611,7 +6623,7 @@ impl LayoutEngine {
                         page_content.section_index,
                         para_index,
                         marker_x,
-                        table_y_start,
+                        marker_y,
                         self.dpi,
                     );
                 }

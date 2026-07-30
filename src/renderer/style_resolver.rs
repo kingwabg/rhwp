@@ -875,10 +875,12 @@ fn resolve_single_para_style(
         condense_min_space: ((ps.attr1 >> 9) & 0x7f).min(75) as u8,
         english_break_unit: ((ps.attr1 >> 5) & 0x03) as u8,
         korean_break_unit: ((ps.attr1 >> 7) & 0x01) as u8,
-        widow_orphan: (ps.attr1 >> 16) & 1 != 0 || (ps.attr2 >> 5) & 1 != 0,
-        keep_with_next: (ps.attr1 >> 17) & 1 != 0 || (ps.attr2 >> 6) & 1 != 0,
-        keep_lines: (ps.attr1 >> 18) & 1 != 0 || (ps.attr2 >> 7) & 1 != 0,
-        page_break_before: (ps.attr1 >> 19) & 1 != 0 || (ps.attr2 >> 8) & 1 != 0,
+        // 정본 = attr1 bit16-19 (HWP5 표 44). attr2 OR 폴백은 autoSpaceKrNum(표 45
+        // bit5) 충돌로 제거 — HWPX 파서도 attr1 로 통일(2026-07-30).
+        widow_orphan: (ps.attr1 >> 16) & 1 != 0,
+        keep_with_next: (ps.attr1 >> 17) & 1 != 0,
+        keep_lines: (ps.attr1 >> 18) & 1 != 0,
+        page_break_before: (ps.attr1 >> 19) & 1 != 0,
     }
 }
 

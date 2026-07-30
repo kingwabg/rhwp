@@ -776,11 +776,12 @@ impl DocumentCore {
                 };
                 // 원본 ParaShape에서 attr 비트 추출
                 let (a1, a2) = raw_ps.map(|r| (r.attr1, r.attr2)).unwrap_or((0, 0));
-                // 바이너리: attr1, HWPX: attr2 — OR 조합으로 양쪽 지원
-                let widow_orphan = ((a1 >> 16) & 1 != 0) || ((a2 >> 5) & 1 != 0);
-                let keep_with_next = ((a1 >> 17) & 1 != 0) || ((a2 >> 6) & 1 != 0);
-                let keep_lines = ((a1 >> 18) & 1 != 0) || ((a2 >> 7) & 1 != 0);
-                let page_break_before = ((a1 >> 19) & 1 != 0) || ((a2 >> 8) & 1 != 0);
+                // 문단 보호 4종 정본 = attr1 bit16-19 (HWP5 표 44 — HWPX 파서도 동일 비트로
+                // 통일, 2026-07-30). attr2 OR 폴백은 표 45 autoSpaceKrNum(bit5)과 충돌해 제거.
+                let widow_orphan = (a1 >> 16) & 1 != 0;
+                let keep_with_next = (a1 >> 17) & 1 != 0;
+                let keep_lines = (a1 >> 18) & 1 != 0;
+                let page_break_before = (a1 >> 19) & 1 != 0;
                 let font_line_height = (a1 >> 22) & 1 != 0;
                 let single_line = (a2 & 0x03) != 0;
                 // [서식 패리티 2026-07-30] autoSpacing 의 정본은 attr2 bit4/5 다.
@@ -794,6 +795,9 @@ impl DocumentCore {
                 let vertical_align = (a1 >> 20) & 0x03;
                 let english_break_unit = (a1 >> 5) & 0x03;
                 let korean_break_unit = (a1 >> 7) & 0x01;
+                // 줄 격자·공백 최소값 (HWP5 표 44: bit8 · bit9-15)
+                let snap_to_grid = (a1 >> 8) & 1 != 0;
+                let condense = (a1 >> 9) & 0x7f;
                 let border_connect = (a1 >> 28) & 1 != 0;
                 let border_ignore_margin = (a1 >> 29) & 1 != 0;
                 format!(
@@ -806,6 +810,7 @@ impl DocumentCore {
                         "\"fontLineHeight\":{},\"singleLine\":{},",
                         "\"autoSpaceKrEn\":{},\"autoSpaceKrNum\":{},\"verticalAlign\":{},",
                         "\"englishBreakUnit\":{},\"koreanBreakUnit\":{},",
+                        "\"snapToGrid\":{},\"condense\":{},",
                         "\"tabAutoLeft\":{},\"tabAutoRight\":{},\"tabStops\":[{}],\"defaultTabSpacing\":{},",
                         "{},\"borderSpacing\":[{},{},{},{}],",
                         "\"borderConnect\":{},\"borderIgnoreMargin\":{}}}"
@@ -823,6 +828,7 @@ impl DocumentCore {
                     font_line_height, single_line,
                     auto_space_kr_en, auto_space_kr_num, vertical_align,
                     english_break_unit, korean_break_unit,
+                    snap_to_grid, condense,
                     tab_auto_left, tab_auto_right, tab_stops_json, default_tab_spacing,
                     border_fill_json,
                     border_spacing[0], border_spacing[1], border_spacing[2], border_spacing[3],
@@ -840,6 +846,7 @@ impl DocumentCore {
                         "\"fontLineHeight\":false,\"singleLine\":false,",
                         "\"autoSpaceKrEn\":false,\"autoSpaceKrNum\":false,\"verticalAlign\":0,",
                         "\"englishBreakUnit\":0,\"koreanBreakUnit\":0,",
+                        "\"snapToGrid\":false,\"condense\":0,",
                         "\"tabAutoLeft\":false,\"tabAutoRight\":false,\"tabStops\":[],\"defaultTabSpacing\":{},",
                         "\"borderFillId\":0,",
                         "\"borderLeft\":{{\"type\":0,\"width\":0,\"color\":\"#000000\"}},",

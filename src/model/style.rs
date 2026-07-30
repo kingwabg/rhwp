@@ -899,6 +899,9 @@ pub struct ParaShapeMods {
     // 줄바꿈 모드
     pub english_break_unit: Option<u8>, // 0=단어, 1=하이픈, 2=글자
     pub korean_break_unit: Option<u8>,  // 0=어절, 1=글자
+    // 줄 격자·공백 최소값 (HWP5 표 44: attr1 bit8 · bit9-15)
+    pub snap_to_grid: Option<bool>,
+    pub condense: Option<u8>, // 0~75 (%)
     // 탭 설정 탭 속성
     pub tab_def_id: Option<u16>,
     // 번호/글머리표 ID
@@ -988,6 +991,13 @@ impl ParaShapeMods {
         }
         if let Some(v) = self.korean_break_unit {
             ps.attr1 = (ps.attr1 & !(0x01 << 7)) | ((v as u32 & 0x01) << 7);
+        }
+        if let Some(v) = self.snap_to_grid {
+            set_bit(&mut ps.attr1, 8, v);
+        }
+        if let Some(v) = self.condense {
+            // 공백 최소값 0~75% — HWPX 파서(condense.min(75), parser/hwpx/header.rs)와 같은 클램프
+            ps.attr1 = (ps.attr1 & !(0x7f << 9)) | ((v.min(75) as u32) << 9);
         }
         if let Some(v) = self.tab_def_id {
             ps.tab_def_id = v;

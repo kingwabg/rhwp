@@ -18,7 +18,7 @@ pub(crate) fn is_treat_as_char_object_control(ctrl: &Control) -> bool {
     }
 }
 
-fn is_logical_inline_control(ctrl: &Control) -> bool {
+pub(crate) fn is_logical_inline_control(ctrl: &Control) -> bool {
     is_treat_as_char_object_control(ctrl)
         || matches!(ctrl, Control::Footnote(_) | Control::Endnote(_))
 }
@@ -617,6 +617,13 @@ pub(crate) fn parse_para_shape_mods(json: &str) -> crate::model::style::ParaShap
     }
     if let Some(v) = json_i32(json, "koreanBreakUnit") {
         mods.korean_break_unit = Some(v as u8);
+    }
+    if let Some(v) = json_bool(json, "snapToGrid") {
+        mods.snap_to_grid = Some(v);
+    }
+    if let Some(v) = json_i32(json, "condense") {
+        // 공백 최소값 0~75% (HWP5 표 44 bit9-15)
+        mods.condense = Some(v.clamp(0, 75) as u8);
     }
     if let Some(v) = json_bool(json, "borderConnect") {
         mods.border_connect = Some(v);

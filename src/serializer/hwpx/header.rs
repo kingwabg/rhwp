@@ -1067,10 +1067,13 @@ fn write_para_pr<W: Write>(
     };
     // [#1986] breakLatinWord 는 IR 원문 보존값(없으면 KEEP_WORD 기본).
     let break_latin = ps.break_latin_word.as_deref().unwrap_or("KEEP_WORD");
-    let widow_orphan = ((ps.attr2 >> 5) & 1).to_string();
-    let keep_with_next = ((ps.attr2 >> 6) & 1).to_string();
-    let keep_lines = ((ps.attr2 >> 7) & 1).to_string();
-    let page_break_before = ((ps.attr2 >> 8) & 1).to_string();
+    // 문단 보호 4종 정본 = attr1 bit16-19 (HWP5 표 44) — 편집 경로(ParaShapeMods)·
+    // HWP5 파서·HWPX 파서가 모두 같은 비트를 쓴다. 종전 attr2 bit5-8 판독은
+    // 표 45 autoSpaceKrNum(bit5)과 충돌 + 편집분 소실.
+    let widow_orphan = ((ps.attr1 >> 16) & 1).to_string();
+    let keep_with_next = ((ps.attr1 >> 17) & 1).to_string();
+    let keep_lines = ((ps.attr1 >> 18) & 1).to_string();
+    let page_break_before = ((ps.attr1 >> 19) & 1).to_string();
     empty_tag(
         w,
         "hh:align",
@@ -1102,10 +1105,14 @@ fn write_para_pr<W: Write>(
         ],
     )?;
 
+    // HWP5 표 45: attr2 bit4=한글·영어, bit5=한글·숫자 자동 간격.
+    // 종전 "0" 상수 하드코딩으로 적용값·원본값이 왕복에서 소실됐다.
+    let e_asian_eng = ((ps.attr2 >> 4) & 1).to_string();
+    let e_asian_num = ((ps.attr2 >> 5) & 1).to_string();
     empty_tag(
         w,
         "hh:autoSpacing",
-        &[("eAsianEng", "0"), ("eAsianNum", "0")],
+        &[("eAsianEng", &e_asian_eng), ("eAsianNum", &e_asian_num)],
     )?;
 
     // margin + lineSpacing 은 한컴 원본과 동일하게 <hp:switch>(case/default)로 감싼다.
@@ -1884,10 +1891,9 @@ mod tests {
         // attr1/attr2 보존 비트에서 역매핑돼야 한다.
         let mut ps = ParaShape::default();
         ps.break_latin_word = Some("HYPHENATION".to_string());
-        ps.attr1 = (2 << 20) // vertical = CENTER
-            & !(1 << 7); // breakNonLatinWord = BREAK_WORD (bit7=0)
-        ps.attr2 = (1 << 5) // widowOrphan = 1
-            | (1 << 8); // pageBreakBefore = 1
+        ps.attr1 = (2 << 20) // vertical = CENTER (bit7=0 → breakNonLatinWord=BREAK_WORD)
+            | (1 << 16) // widowOrphan = 1 (HWP5 표 44)
+            | (1 << 19); // pageBreakBefore = 1
 
         let mut writer = Writer::new(Vec::new());
         write_para_pr(&mut writer, 1, &ps).expect("write paraPr");

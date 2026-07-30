@@ -24963,3 +24963,32 @@ fn issue2214_scoped_cache_coherence_preserves_transient_pagination() {
         assert_eq!(doc.page_count(), 115, "{label}: page count");
     }
 }
+
+/// [TAC 삽입 정합 2026-07-30] 표 뒤(논리 끝) insertTextLogical 이 컨트롤을 밀지 않는다.
+/// 실측 결함: '가나[표]' 논리 3에 X 삽입 시 컨트롤 앞 규약에 걸려 '가나X[표]'가 됐다.
+#[test]
+fn insert_text_logical_after_trailing_tac_table_keeps_control_position() {
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document().unwrap();
+    doc.insert_text_native(0, 0, 0, "가나").unwrap();
+    doc.create_table_ex_native(0, 0, 2, 1, 1, true, Some(&[3000]), None)
+        .unwrap();
+
+    let para = &doc.document.sections[0].paragraphs[0];
+    assert_eq!(
+        crate::document_core::helpers::logical_paragraph_length(para),
+        3,
+        "텍스트 2 + 표 1"
+    );
+
+    let r = doc.insert_text_logical(0, 0, 3, "X").unwrap();
+    assert!(r.contains("\"logicalOffset\":4"), "반환 캐럿 논리 4: {r}");
+
+    let para = &doc.document.sections[0].paragraphs[0];
+    assert_eq!(para.text, "가나X");
+    // 표는 여전히 논리 2 (X 앞) — getInlineControlIndexAtLogical 로 판정
+    let ci = doc.get_inline_control_index_at_logical(0, 0, 2).unwrap();
+    assert!(ci >= 0, "논리 2에 표가 있어야 함 (ci={ci})");
+    let ci3 = doc.get_inline_control_index_at_logical(0, 0, 3).unwrap();
+    assert_eq!(ci3, -1, "논리 3은 X(텍스트)여야 함");
+}

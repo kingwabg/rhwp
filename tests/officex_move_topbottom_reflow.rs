@@ -75,3 +75,49 @@ fn moving_topbottom_table_down_reflows_following_text() {
     // ④ 이동량 자체는 소비된다: 표 top 이 이동 전(≈281)보다 아래.
     assert!(tbl_top > 320, "표 top={tbl_top} — vertOffset 이 소비되지 않음");
 }
+
+/// [자리차지 이동 2026-07-30] 사용자 신고 ①② — 빈 문서에서 표를 만들어(빈 host 앵커)
+/// 아래로 이동하면 앵커 문단 캐럿이 표 좌상단으로 끌려갔다. 한컴 오라클(웹한글 실측):
+/// 앵커 조판부호·커서는 본문 흐름 위치에 남고 표 상자만 오프셋 위치에 그려진다.
+#[test]
+fn moving_empty_host_table_down_keeps_anchor_cursor_in_flow() {
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document().unwrap();
+    let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(
+        r#"{"sectionIdx":0,"paraIdx":0,"charOffset":0,"rowCount":2,"colCount":2,"treatAsChar":false}"#
+    ).unwrap()).unwrap();
+    let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+    doc.set_table_properties(0, pi, ci,
+        r#"{"treatAsChar":false,"textWrap":"TopAndBottom","vertRelTo":"Para","horzRelTo":"Column","vertOffset":0}"#
+    ).unwrap();
+
+    let rect_y = |doc: &HwpDocument| -> f64 {
+        let r: serde_json::Value =
+            serde_json::from_str(&doc.get_cursor_rect(0, pi, 0).unwrap()).unwrap();
+        r["y"].as_f64().unwrap()
+    };
+    let y_before = rect_y(&doc);
+
+    doc.move_table_offset(0, pi, ci, 0, 6000).unwrap();
+
+    // ① 이동 전후 앵커 캐럿 y 불변(±2px) — 흐름 위치 보존.
+    let y_after = rect_y(&doc);
+    assert!(
+        (y_after - y_before).abs() <= 2.0,
+        "앵커 캐럿이 흐름을 떠남: 이동 전 y={y_before}, 후 y={y_after}"
+    );
+
+    // ② 캐럿은 표 상자 위에 있다(표 좌상단에 붙지 않는다).
+    let tree = doc.build_page_render_tree(0).unwrap();
+    fn table_top(n: &RenderNode) -> Option<f64> {
+        if matches!(n.node_type, RenderNodeType::Table(_)) {
+            return Some(n.bbox.y);
+        }
+        n.children.iter().find_map(table_top)
+    }
+    let tbl_top = table_top(&tree.root).expect("표 노드 없음");
+    assert!(
+        y_after < tbl_top - 2.0,
+        "앵커 캐럿(y={y_after})이 표 상자(top={tbl_top}) 위에 있지 않음"
+    );
+}

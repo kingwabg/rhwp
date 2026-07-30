@@ -3354,10 +3354,10 @@ fn dump_controls(args: &[String]) {
                 );
                 println!(
                     "       keep: with_next={} keep_lines={} widow_orphan={} pbreak_before={} (attr1=0x{:08X} attr2=0x{:08X})",
-                    (ps.attr1 >> 17) & 1 != 0 || (ps.attr2 >> 6) & 1 != 0,
-                    (ps.attr1 >> 18) & 1 != 0 || (ps.attr2 >> 7) & 1 != 0,
-                    (ps.attr1 >> 16) & 1 != 0 || (ps.attr2 >> 5) & 1 != 0,
-                    (ps.attr1 >> 19) & 1 != 0 || (ps.attr2 >> 8) & 1 != 0,
+                    (ps.attr1 >> 17) & 1 != 0,
+                    (ps.attr1 >> 18) & 1 != 0,
+                    (ps.attr1 >> 16) & 1 != 0,
+                    (ps.attr1 >> 19) & 1 != 0,
                     ps.attr1, ps.attr2
                 );
                 if ps.border_fill_id > 0 {

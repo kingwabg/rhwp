@@ -1733,12 +1733,24 @@ impl DocumentCore {
             let control_positions = render_para
                 .map(find_logical_control_positions)
                 .unwrap_or_default();
+            // 논리 인라인(TAC) 컨트롤만 커서 슬롯을 갖는다 — 떠 있는 표도
+            // positions 에 자리값은 있지만 히트로 쓰면 앵커 문단 캐럿이 표 상자로
+            // 끌려간다(자리차지 이동 수리와 상충).
+            let inline_controls: Vec<bool> = render_para
+                .map(|p| {
+                    p.controls
+                        .iter()
+                        .map(crate::document_core::helpers::is_logical_inline_control)
+                        .collect()
+                })
+                .unwrap_or_default();
 
             fn visit(
                 node: &RenderNode,
                 sec: usize,
                 para: usize,
                 control_positions: &[usize],
+                inline_controls: &[bool],
                 offset: usize,
                 page: u32,
                 bias: CursorBias,
@@ -1750,6 +1762,40 @@ impl DocumentCore {
                         && eq.cell_index.is_none()
                     {
                         if let Some(ci) = eq.control_index {
+                            if let Some(pos) = control_positions.get(ci).copied() {
+                                if offset == pos || offset == pos + 1 {
+                                    let x = if offset == pos {
+                                        node.bbox.x
+                                    } else {
+                                        node.bbox.x + node.bbox.width
+                                    };
+                                    update_best_cursor(
+                                        best,
+                                        0,
+                                        CursorHit {
+                                            page,
+                                            x,
+                                            y: node.bbox.y,
+                                            h: node.bbox.height.max(10.0),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // [TAC 좌표계 2026-07-30] 글자취급 표도 수식처럼 컨트롤 논리 위치의
+                // 좌/우 모서리를 커서 히트로 제공한다 — 없으면 선택 rect 가 표 뒤
+                // 끝점(논리 pos+1)을 못 찾아 표 영역이 하이라이트에서 빠졌다(신고 ③).
+                // 셀 안 중첩 표는 para_index=None 으로 생성되어(table_cell_content.rs)
+                // 아래 Some 매칭에서 자연 배제된다.
+                if let RenderNodeType::Table(ref tn) = node.node_type {
+                    if tn.section_index == Some(sec) && tn.para_index == Some(para) {
+                        if let Some(ci) = tn
+                            .control_index
+                            .filter(|&ci| inline_controls.get(ci).copied().unwrap_or(false))
+                        {
                             if let Some(pos) = control_positions.get(ci).copied() {
                                 if offset == pos || offset == pos + 1 {
                                     let x = if offset == pos {
@@ -1809,6 +1855,7 @@ impl DocumentCore {
                         sec,
                         para,
                         control_positions,
+                        inline_controls,
                         offset,
                         page,
                         bias,
@@ -1823,6 +1870,7 @@ impl DocumentCore {
                 sec,
                 para,
                 &control_positions,
+                &inline_controls,
                 offset,
                 page,
                 bias,

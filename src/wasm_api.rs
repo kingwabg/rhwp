@@ -843,11 +843,32 @@ impl HwpDocument {
         {
             return Err(JsValue::from_str("인덱스 범위 초과"));
         }
-        let (text_offset, _) = crate::document_core::helpers::logical_to_text_offset(
+        let (text_offset, at_ctrl) = crate::document_core::helpers::logical_to_text_offset(
             &self.document.sections[sec].paragraphs[pi],
             logical_offset as usize,
         );
-        let result = self.insert_text_native(sec, pi, text_offset, text)?;
+        // [TAC 삽입 정합 2026-07-30] 변환이 (text_offset, true)면 삽입점이 인라인 컨트롤
+        // 바로 뒤다. text_offset 그대로 삽입하면 insert_text_at 의 "컨트롤 앞" 규약에
+        // 걸려 컨트롤이 오른쪽으로 밀린다(표 뒤 타이핑이 표 앞에 꽂히는 실측 결함).
+        // 후행 컨트롤(text_offset==text_len)은 insert_text_at 의 하이브리드 확장
+        // 오프셋(text_len + 소비한 후행 컨트롤 수)이 "컨트롤 뒤"를 정확히 표현한다.
+        // ponytail: 텍스트 중간의 컨트롤 뒤 삽입은 여전히 컨트롤 앞으로 감 —
+        // 스트림 좌표 삽입 코어 도입 시 승격.
+        let insert_offset = if at_ctrl {
+            let text_len = self.document.sections[sec].paragraphs[pi].text.chars().count();
+            if text_offset >= text_len {
+                let logical_at_text_end = crate::document_core::helpers::text_to_logical_offset(
+                    &self.document.sections[sec].paragraphs[pi],
+                    text_len,
+                );
+                text_len + (logical_offset as usize).saturating_sub(logical_at_text_end)
+            } else {
+                text_offset
+            }
+        } else {
+            text_offset
+        };
+        let result = self.insert_text_native(sec, pi, insert_offset, text)?;
         // 삽입 후 논리적 오프셋 반환
         let new_text_offset = text_offset + text.chars().count();
         let new_logical = crate::document_core::helpers::text_to_logical_offset(
@@ -910,6 +931,35 @@ impl HwpDocument {
             &self.document.sections[sec].paragraphs[pi],
             text_offset as usize,
         ) as u32)
+    }
+
+    /// 논리 오프셋 위치에 있는 인라인(글자취급) 컨트롤의 컨트롤 인덱스를 반환한다.
+    /// 그 위치가 텍스트 문자이거나 범위 밖이면 -1. (studio 가 표 뒤 Backspace/앞 Delete
+    /// 에서 "지울 대상이 컨트롤인지"를 판정해 deleteTableControl 등으로 라우팅하는 용도.)
+    #[wasm_bindgen(js_name = getInlineControlIndexAtLogical)]
+    pub fn get_inline_control_index_at_logical(
+        &self,
+        section_idx: u32,
+        para_idx: u32,
+        logical_offset: u32,
+    ) -> Result<i32, JsValue> {
+        let sec = section_idx as usize;
+        let pi = para_idx as usize;
+        if sec >= self.document.sections.len() || pi >= self.document.sections[sec].paragraphs.len()
+        {
+            return Err(JsValue::from_str("인덱스 범위 초과"));
+        }
+        let para = &self.document.sections[sec].paragraphs[pi];
+        let positions = crate::document_core::helpers::find_logical_control_positions(para);
+        let target = logical_offset as usize;
+        for (ci, ctrl) in para.controls.iter().enumerate() {
+            if crate::document_core::helpers::is_logical_inline_control(ctrl)
+                && positions.get(ci).copied() == Some(target)
+            {
+                return Ok(ci as i32);
+            }
+        }
+        Ok(-1)
     }
 
     /// 문단에서 텍스트를 삭제한다.
