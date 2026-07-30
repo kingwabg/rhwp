@@ -291,4 +291,9 @@
     크다. createTableEx 가 colWidths 를 무시해 재현도 불가했다(별건: 표 폭 지정 API 부재).
   · 계획 오버런 절단(`take(breaks.len())`): 잘린 뒤 남는 마지막 좌 조각은 fill 이 그 폭으로
     이미 텍스트를 채운 정합 상태라 실해가 없다고 판단 — 관측된 결함 없음.
-- **잔여**: EMPTY 세그 생산(fill 구조 변경 필요) · #4 대량 2세그 문서 검증 · 표 폭 지정 API.
+- **표 폭 지정 API 수리 완료**: createTableEx 의 colWidths/rowHeights 가 **떠 있는 표에서
+  통째로 버려지고 있었다** — create_table_ex_native 가 `treat_as_char=false` 이면 인자를 버리고
+  create_table_native 로 위임했고 그 함수는 단 폭 균등 분할만 했다. create_table_native_sized
+  를 신설해 열별 폭·행 높이를 반영(지정 없으면 종전 전폭 유지, 잘못된 값은 거부).
+  실측: colWidths [3000,5000] → tableWidth 8000, 열별 셀 폭이 실제로 다름.
+- **잔여**: EMPTY 세그 생산(fill 구조 변경 필요) · #4 대량 2세그 문서 검증.
