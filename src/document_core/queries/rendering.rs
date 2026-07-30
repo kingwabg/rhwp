@@ -2089,6 +2089,41 @@ impl DocumentCore {
         // FIX 3: raw_stream 무효화 → 직렬화 시 모델에서 재구성
         section.raw_stream = None;
 
+        // [용지 패리티 2026-07-30] **본문 폭이 바뀌면 문단 LineSeg 를 새 폭으로 재계산한다.**
+        // compose 는 저장된 LineSeg 를 그대로 쓰므로(formatting.rs 의 동일 처리 참조),
+        // 무효화하지 않으면 여백·용지 크기·방향을 바꿔도 줄나눔 폭이 옛 값에 얼어붙는다
+        // (실측: 여백 8504→20000, 세로→가로 전환에도 줄 수 4 불변 — 여백은 x 만 밀렸다).
+        {
+            let styles = resolve_styles(&self.document.doc_info, self.dpi);
+            let dpi = self.dpi;
+            let column_def = {
+                let s = &self.document.sections[section_idx];
+                DocumentCore::find_initial_column_def(&s.paragraphs)
+            };
+            let col_width = {
+                let s = &self.document.sections[section_idx];
+                let layout = PageLayoutInfo::from_page_def(&s.section_def.page_def, &column_def, dpi);
+                layout
+                    .column_areas
+                    .first()
+                    .map(|a| a.width)
+                    .unwrap_or(layout.body_area.width)
+            };
+            let para_count = self.document.sections[section_idx].paragraphs.len();
+            for pi in 0..para_count {
+                let ps_id = self.document.sections[section_idx].paragraphs[pi].para_shape_id;
+                let ps = styles.para_styles.get(ps_id as usize);
+                let ml = ps.map(|s| s.margin_left).unwrap_or(0.0);
+                let mr = ps.map(|s| s.margin_right).unwrap_or(0.0);
+                let available = (col_width - ml - mr).max(1.0);
+                let para = &mut self.document.sections[section_idx].paragraphs[pi];
+                para.line_segs.clear();
+                crate::renderer::composer::reflow_line_segs(
+                    para, available, &styles, dpi,
+                );
+            }
+        }
+
         // 재조판 + 재페이지네이션
         self.composed = self
             .document

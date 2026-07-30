@@ -1145,6 +1145,9 @@ pub enum NumberFormat {
     HangulNumber,
     /// 한자 一二三: 一, 二, 三
     HanjaNumber,
+    /// 한글 자모: ㄱ, ㄴ, ㄷ — 한컴 문단 번호 프리셋 4·6번이 쓰는 형식.
+    /// 없어서 숫자로 렌더되던 갭(2026-07-30 서식 패리티 스윕에서 검출).
+    HangulJamo,
 }
 
 impl NumberFormat {
@@ -1177,6 +1180,20 @@ pub fn format_number(number: u16, format: NumberFormat) -> String {
         NumberFormat::HangulGaNaDa => format_hangul_ganada(number),
         NumberFormat::HangulNumber => format_hangul_number(number),
         NumberFormat::HanjaNumber => format_hanja_number(number),
+        NumberFormat::HangulJamo => format_hangul_jamo(number),
+    }
+}
+
+/// 한글 자모 변환 (ㄱ~ㅎ 14자, 이후 순환하지 않고 숫자 — 한컴도 14 초과는 다르게 처리하나
+/// 실채록 범위 밖이라 숫자 폴백. 확인되면 여기만 고친다)
+fn format_hangul_jamo(n: u16) -> String {
+    const JAMO: [char; 14] = [
+        'ㄱ', 'ㄴ', 'ㄷ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅅ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ',
+    ];
+    if n >= 1 && n <= 14 {
+        JAMO[(n - 1) as usize].to_string()
+    } else {
+        n.to_string()
     }
 }
 

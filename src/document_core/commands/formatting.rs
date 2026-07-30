@@ -783,14 +783,15 @@ impl DocumentCore {
                 let page_break_before = ((a1 >> 19) & 1 != 0) || ((a2 >> 8) & 1 != 0);
                 let font_line_height = (a1 >> 22) & 1 != 0;
                 let single_line = (a2 & 0x03) != 0;
-                let auto_space_kr_en = ((a2 >> 4) & 1 != 0) || ((a1 >> 20) & 1 != 0);
-                let auto_space_kr_num = ((a2 >> 5) & 1 != 0) || ((a1 >> 21) & 1 != 0);
-                // verticalAlign: attr1 bits 20-21 (autoSpacing과 충돌 시 0)
-                let vertical_align = if !auto_space_kr_en && !auto_space_kr_num {
-                    (a1 >> 20) & 0x03
-                } else {
-                    0
-                };
+                // [서식 패리티 2026-07-30] autoSpacing 의 정본은 attr2 bit4/5 다.
+                // 옛 코드가 attr1 bit20/21(=verticalAlign)을 여기에 OR 하는 폴백을 둬서,
+                // verticalAlign 을 세우면 autoSpacing 이 참으로 읽히고 그 결과 아래 분기가
+                // verticalAlign 을 0 으로 지웠다(적용-판독 구조적 파손). 서로 다른 비트이므로
+                // 각자의 정본만 읽는다 — 적용 측(model/style.rs)도 이미 이 분리를 따른다.
+                let auto_space_kr_en = (a2 >> 4) & 1 != 0;
+                let auto_space_kr_num = (a2 >> 5) & 1 != 0;
+                // verticalAlign: attr1 bits 20-21
+                let vertical_align = (a1 >> 20) & 0x03;
                 let english_break_unit = (a1 >> 5) & 0x03;
                 let korean_break_unit = (a1 >> 7) & 0x01;
                 let border_connect = (a1 >> 28) & 1 != 0;
@@ -1376,9 +1377,33 @@ impl DocumentCore {
             mods.tab_def_id = Some(new_tab_id);
         }
 
-        // 테두리/배경 변경 처리: BorderFill 생성 → border_fill_id 세팅
+        // 테두리/배경 변경 처리: BorderFill 생성 → border_fill_id 세팅.
+        // [서식 패리티 2026-07-30] **현재 문단의 BorderFill 을 base 로 승계**한다. 예전엔
+        // 무조건 새 기본값에서 시작해, 배경 면 색만 바꿔도 4방향 테두리가 생기고
+        // 반대로 테두리만 바꾸면 배경이 날아갔다(문단 배경/테두리 독립 변경 불가).
         if json_has_border_keys(props_json) {
-            let bf_id = self.create_border_fill_from_json(props_json);
+            let cur_bf_id = {
+                let ps_id = self.document.sections[sec_idx].paragraphs[para_idx].para_shape_id;
+                self.document
+                    .doc_info
+                    .para_shapes
+                    .get(ps_id as usize)
+                    .map(|ps| ps.border_fill_id)
+                    .unwrap_or(0)
+            };
+            let base_bf = if cur_bf_id > 0 {
+                self.document
+                    .doc_info
+                    .border_fills
+                    .get((cur_bf_id - 1) as usize)
+                    .cloned()
+            } else {
+                None
+            };
+            let bf_id = match base_bf {
+                Some(bf) => self.create_border_fill_from_json_based(props_json, bf),
+                None => self.create_border_fill_from_json(props_json),
+            };
             mods.border_fill_id = Some(bf_id);
         }
         if let Some(arr) = parse_json_i16_array(props_json, "borderSpacing", 4) {

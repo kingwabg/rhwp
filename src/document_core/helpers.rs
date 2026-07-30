@@ -481,6 +481,11 @@ pub(crate) fn json_has_border_keys(json: &str) -> bool {
         || json.contains("\"borderTop\"")
         || json.contains("\"borderBottom\"")
         || json.contains("\"fillType\"")
+        // [서식 패리티 2026-07-30] 배경 계열 단독 적용이 조용한 no-op 이었다 — 면 색·무늬만
+        // 바꾸면 이 게이트를 통과하지 못해 BorderFill 이 만들어지지 않았다.
+        || json.contains("\"fillColor\"")
+        || json.contains("\"patternColor\"")
+        || json.contains("\"patternType\"")
 }
 
 /// JSON에서 중첩 오브젝트를 문자열로 추출한다. (예: "borderLeft":{"type":1,"width":0,"color":"#000"})

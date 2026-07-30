@@ -165,6 +165,11 @@ pub(crate) fn numbering_format_to_number_format(code: u8) -> NumFmt {
         4 => NumFmt::LatinUpper,    // A, B, C
         5 => NumFmt::LatinLower,    // a, b, c
         8 => NumFmt::HangulGaNaDa,  // 가, 나, 다
+        // 10 = 한글 자모(ㄱ,ㄴ,ㄷ) — studio 문단 번호 프리셋(NUM_FMT.HANGUL_JAMO)이 쓰는 코드.
+        // 매핑이 없어 Digit 폴백으로 숫자가 찍혔다(2026-07-30 한컴 프리셋 4·6번 패리티 실패).
+        // ⚠ 코드 체계 주의: 이 함수(문단 번호)와 NumberFormat::from_hwp_format(쪽 번호)의
+        // 코드 판이 다르다. 여기 값은 우리 writer 가 내보내는 코드 기준.
+        10 => NumFmt::HangulJamo,
         12 => NumFmt::HangulNumber, // 일, 이, 삼
         13 => NumFmt::HanjaNumber,  // 一, 二, 三
         _ => NumFmt::Digit,
@@ -478,9 +483,72 @@ pub(crate) fn layout_rect_to_bbox(rect: &LayoutRect) -> BoundingBox {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_bin_data, picture_display_size_hu};
+    use super::{expand_numbering_format, find_bin_data, picture_display_size_hu};
     use crate::model::bin_data::BinDataContent;
     use crate::model::image::Picture;
+    use crate::model::style::Numbering;
+
+    /// 한컴 「문단 번호 모양」 프리셋 오라클 — 수준별 마커가 한컴 미리보기와 같아야 한다.
+    /// 정본: mydocs/eng/plans/hancom-format-parity.md 「프리셋 정본」(2026-07-30 실채록).
+    /// number_format 코드는 studio NUM_FMT 과 같은 판(0=숫자,2=I,3=i,4=A,5=a,8=가,9=①,10=ㄱ).
+    fn marker(formats: [&str; 4], fmts: [u8; 4], level: usize, counters: [u32; 7]) -> String {
+        let mut numbering = Numbering::default();
+        for (i, f) in fmts.iter().enumerate() {
+            numbering.heads[i].number_format = *f;
+        }
+        expand_numbering_format(formats[level], &counters, &numbering, &[1; 7], level)
+    }
+
+    #[test]
+    fn hancom_para_num_presets_level_markers() {
+        let c = [1, 1, 1, 1, 1, 1, 1];
+
+        // 프리셋 1: 1. / 가. / 1) / 가)
+        let p1 = (["^1.", "^2.", "^3)", "^4)"], [0, 8, 0, 8]);
+        assert_eq!(marker(p1.0, p1.1, 0, c), "1.");
+        assert_eq!(marker(p1.0, p1.1, 1, c), "가.");
+        assert_eq!(marker(p1.0, p1.1, 2, c), "1)");
+        assert_eq!(marker(p1.0, p1.1, 3, c), "가)");
+
+        // 프리셋 2: (1) / (가) / (a)
+        let p2 = (["(^1)", "(^2)", "(^3)", "^4)"], [0, 8, 5, 0]);
+        assert_eq!(marker(p2.0, p2.1, 0, c), "(1)");
+        assert_eq!(marker(p2.0, p2.1, 1, c), "(가)");
+        assert_eq!(marker(p2.0, p2.1, 2, c), "(a)");
+
+        // 프리셋 4: ① / (ㄱ) — ①=1, ㄱㄴㄷ=10 (studio NUM_FMT 판)
+        let p4 = (["^1", "(^2)", "(^3)", "^4)"], [1, 10, 5, 0]);
+        assert_eq!(marker(p4.0, p4.1, 0, c), "①");
+        assert_eq!(marker(p4.0, p4.1, 1, c), "(ㄱ)");
+
+        // 프리셋 7: I. / A. / 1. / i)
+        let p7 = (["^1.", "^2.", "^3.", "^4)"], [2, 4, 0, 3]);
+        assert_eq!(marker(p7.0, p7.1, 0, c), "I.");
+        assert_eq!(marker(p7.0, p7.1, 1, c), "A.");
+        assert_eq!(marker(p7.0, p7.1, 3, c), "i)");
+
+        // 프리셋 8: i. / a. / (i)
+        let p8 = (["^1.", "^2.", "(^3)", "(^4)"], [3, 5, 3, 5]);
+        assert_eq!(marker(p8.0, p8.1, 0, c), "i.");
+        assert_eq!(marker(p8.0, p8.1, 1, c), "a.");
+        assert_eq!(marker(p8.0, p8.1, 2, c), "(i)");
+    }
+
+    /// 프리셋 10(다단계 누적형) — 1. / 1.1. / 1.1.1. / 1.1.1.1.
+    #[test]
+    fn hancom_multilevel_preset_accumulates() {
+        let fmts = ["^1.", "^1.^2.", "^1.^2.^3.", "^1.^2.^3.^4."];
+        let digits = [0u8; 4];
+        let c = [1, 1, 1, 1, 1, 1, 1];
+        assert_eq!(marker(fmts, digits, 0, c), "1.");
+        assert_eq!(marker(fmts, digits, 1, c), "1.1.");
+        assert_eq!(marker(fmts, digits, 2, c), "1.1.1.");
+        assert_eq!(marker(fmts, digits, 3, c), "1.1.1.1.");
+
+        // 카운터 진행 — 2번째 절의 3번째 항목
+        let c2 = [2, 3, 1, 1, 1, 1, 1];
+        assert_eq!(marker(fmts, digits, 1, c2), "2.3.");
+    }
 
     fn mk(id: u16, ext: &str) -> BinDataContent {
         BinDataContent {
