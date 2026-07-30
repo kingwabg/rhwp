@@ -650,6 +650,73 @@ impl Paragraph {
         self.char_count += new_chars.len() as u32;
     }
 
+    /// 인라인 컨트롤 하나를 제거하고 char_offsets 의 8-unit 갭을 회수한다.
+    ///
+    /// [범위 삭제 2026-07-30] 종전엔 이 로직이 delete_table_control_native 안에만 있어
+    /// 표 걸친 선택 삭제(delete_range)가 텍스트만 지우고 컨트롤을 남겼다(한컴은 함께 지운다
+    /// — 부록2 O8). 컨트롤 종류를 가리지 않으므로 그림·수식도 같은 경로를 쓴다.
+    /// 반환값: 제거 성공 여부.
+    pub fn remove_inline_control_at(&mut self, control_idx: usize) -> bool {
+        if control_idx >= self.controls.len() {
+            return false;
+        }
+        // 컨트롤이 차지하는 갭의 시작 위치(utf16)를 찾는다 — serialize_para_text 와 같은 어법.
+        let text_chars: Vec<char> = self.text.chars().collect();
+        let mut ci = 0usize;
+        let mut prev_end: u32 = 0;
+        let mut gap_start: Option<u32> = None;
+        'outer: for i in 0..text_chars.len() {
+            let offset = if i < self.char_offsets.len() {
+                self.char_offsets[i]
+            } else {
+                prev_end
+            };
+            while prev_end + 8 <= offset && ci < self.controls.len() {
+                if ci == control_idx {
+                    gap_start = Some(prev_end);
+                    break 'outer;
+                }
+                ci += 1;
+                prev_end += 8;
+            }
+            let char_size: u32 = if text_chars[i] == '\t' {
+                8
+            } else if text_chars[i].len_utf16() == 2 {
+                2
+            } else {
+                1
+            };
+            prev_end = offset + char_size;
+        }
+        if gap_start.is_none() {
+            // 텍스트 뒤에 배치된 후행 컨트롤
+            while ci < self.controls.len() {
+                if ci == control_idx {
+                    gap_start = Some(prev_end);
+                    break;
+                }
+                ci += 1;
+                prev_end += 8;
+            }
+        }
+        if let Some(gs) = gap_start {
+            let threshold = gs + 8;
+            for offset in self.char_offsets.iter_mut() {
+                if *offset >= threshold {
+                    *offset -= 8;
+                }
+            }
+        }
+        self.controls.remove(control_idx);
+        if control_idx < self.ctrl_data_records.len() {
+            self.ctrl_data_records.remove(control_idx);
+        }
+        if self.char_count >= 8 {
+            self.char_count -= 8;
+        }
+        true
+    }
+
     /// char_offset 위치에서 count개의 문자를 삭제한다.
     ///
     /// char_offset은 Rust 문자(char) 인덱스이다 (바이트 인덱스가 아님).

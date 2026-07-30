@@ -1367,6 +1367,96 @@ impl DocumentCore {
 
     // ─── Phase 3 네이티브 구현: 커서 이동 API ─────────────────
 
+    /// 논리 좌표(텍스트 문자 + 인라인 컨트롤 각 1칸)로 범위를 삭제한다.
+    ///
+    /// [범위 삭제 2026-07-30] delete_range_native 는 텍스트만 지워서 표를 걸친 선택을
+    /// 지워도 표가 남았다. 한컴은 선택 삭제 시 **확인 없이 표까지 함께** 지운다(부록2 O8).
+    /// 여기서 논리 범위에 걸친 인라인 컨트롤을 먼저 제거한 뒤 텍스트 좌표로 위임한다.
+    /// 셀 컨텍스트는 셀용 논리 규격이 없어 종전 경로 그대로(변환 없이 위임).
+    pub fn delete_range_logical_native(
+        &mut self,
+        section_idx: usize,
+        start_para: usize,
+        start_logical: usize,
+        end_para: usize,
+        end_logical: usize,
+        cell_ctx: Option<(usize, usize, usize)>,
+    ) -> Result<String, HwpError> {
+        if cell_ctx.is_some() {
+            return self.delete_range_native(
+                section_idx,
+                start_para,
+                start_logical,
+                end_para,
+                end_logical,
+                cell_ctx,
+            );
+        }
+        if section_idx >= self.document.sections.len() {
+            return Err(HwpError::RenderError(format!(
+                "구역 인덱스 {} 범위 초과",
+                section_idx
+            )));
+        }
+        let para_count = self.document.sections[section_idx].paragraphs.len();
+        if start_para >= para_count || end_para >= para_count || start_para > end_para {
+            return Err(HwpError::RenderError("문단 범위가 올바르지 않습니다".to_string()));
+        }
+
+        // 논리→텍스트 변환은 컨트롤 제거 **전에** — 제거해도 텍스트 좌표는 불변이지만
+        // 논리 좌표는 밀리므로 순서가 중요하다.
+        let to_text = |para: &Paragraph, off: usize| -> usize {
+            crate::document_core::helpers::logical_to_text_offset(para, off).0
+        };
+        let start_text = to_text(
+            &self.document.sections[section_idx].paragraphs[start_para],
+            start_logical,
+        );
+        let end_text = to_text(
+            &self.document.sections[section_idx].paragraphs[end_para],
+            end_logical,
+        );
+
+        // 범위에 걸친 인라인 컨트롤을 뒤에서부터 제거(인덱스 밀림 방지).
+        // 중간 문단은 통째로 사라지므로 손댈 필요가 없다.
+        let mut targets: Vec<(usize, usize)> = Vec::new();
+        {
+            let sec = &self.document.sections[section_idx];
+            let mut collect = |pi: usize, lo: Option<usize>, hi: Option<usize>| {
+                let para = &sec.paragraphs[pi];
+                let positions = crate::document_core::helpers::find_logical_control_positions(para);
+                for (ci, ctrl) in para.controls.iter().enumerate() {
+                    if !crate::document_core::helpers::is_logical_inline_control(ctrl) {
+                        continue;
+                    }
+                    let Some(&pos) = positions.get(ci) else { continue };
+                    if lo.map_or(true, |l| pos >= l) && hi.map_or(true, |h| pos < h) {
+                        targets.push((pi, ci));
+                    }
+                }
+            };
+            if start_para == end_para {
+                collect(start_para, Some(start_logical), Some(end_logical));
+            } else {
+                collect(start_para, Some(start_logical), None);
+                collect(end_para, None, Some(end_logical));
+            }
+        }
+        targets.sort_by(|a, b| b.cmp(a));
+        for (pi, ci) in targets {
+            self.document.sections[section_idx].paragraphs[pi].remove_inline_control_at(ci);
+        }
+
+        self.delete_range_native(
+            section_idx,
+            start_para,
+            start_text,
+            end_para,
+            end_text,
+            None,
+        )
+    }
+
     pub fn delete_range_native(
         &mut self,
         section_idx: usize,

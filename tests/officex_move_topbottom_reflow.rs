@@ -121,3 +121,56 @@ fn moving_empty_host_table_down_keeps_anchor_cursor_in_flow() {
         "앵커 캐럿(y={y_after})이 표 상자(top={tbl_top}) 위에 있지 않음"
     );
 }
+
+/// [한컴 O6 판정식 2026-07-30] 이동된 자리차지 앵커 문단은 **자기 줄을 차지**하고
+/// 뒤 문단은 그 아래 줄에서 시작한다(웹한글 라벨 실험: `AAA↵` / `[표]BBB↵` / 표 상자).
+/// 종전 결함은 앵커 캐럿이 표 상자로 끌려가 뒤 문단과 순서가 뒤집힌 것 — marker_y 수리로
+/// 충족됐고, 이 테스트가 회귀를 막는다.
+#[test]
+fn moved_anchor_paragraph_keeps_its_own_line_above_following_text() {
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document().unwrap();
+    let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(
+        r#"{"sectionIdx":0,"paraIdx":0,"charOffset":0,"rowCount":2,"colCount":2,"treatAsChar":false}"#
+    ).unwrap()).unwrap();
+    let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+    doc.set_table_properties(0, pi, ci,
+        r#"{"treatAsChar":false,"textWrap":"TopAndBottom","vertRelTo":"Para","horzRelTo":"Column","vertOffset":0}"#
+    ).unwrap();
+    let pc = doc.get_paragraph_count(0).unwrap();
+    let last = pc - 1;
+    doc.insert_text(0, last, 0, "BBB").unwrap();
+    doc.move_table_offset(0, pi, ci, 0, 6000).unwrap();
+
+    let rect = |p: u32| -> (f64, f64) {
+        let r: serde_json::Value =
+            serde_json::from_str(&doc.get_cursor_rect(0, p, 0).unwrap()).unwrap();
+        (r["y"].as_f64().unwrap(), r["height"].as_f64().unwrap())
+    };
+    let (anchor_y, anchor_h) = rect(pi);
+    let (next_y, _) = rect(pi + 1);
+
+    // ① 문서 순서 = 화면 순서: 앵커 줄이 뒤 문단보다 위.
+    assert!(
+        anchor_y < next_y,
+        "앵커 줄(y={anchor_y})이 뒤 문단(y={next_y})보다 아래 — 순서 역전"
+    );
+    // ② 앵커가 자기 줄을 차지한다: 뒤 문단이 앵커 줄 높이만큼 아래에서 시작(겹침 금지).
+    assert!(
+        next_y >= anchor_y + anchor_h - 1.0,
+        "뒤 문단(y={next_y})이 앵커 줄(y={anchor_y} h={anchor_h}) 안에서 시작 — 겹침"
+    );
+    // ③ 두 줄 모두 표 상자 위에 있다(표만 오프셋 위치).
+    let tree = doc.build_page_render_tree(0).unwrap();
+    fn table_top(n: &RenderNode) -> Option<f64> {
+        if matches!(n.node_type, RenderNodeType::Table(_)) {
+            return Some(n.bbox.y);
+        }
+        n.children.iter().find_map(table_top)
+    }
+    let tbl = table_top(&tree.root).expect("표 노드 없음");
+    assert!(
+        next_y < tbl,
+        "뒤 문단(y={next_y})이 표 상자(top={tbl}) 아래 — 흐름이 표를 못 건너뜀"
+    );
+}

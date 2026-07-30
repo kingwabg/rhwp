@@ -5492,6 +5492,31 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 논리 좌표(인라인 컨트롤=1칸)로 본문 선택 영역을 삭제한다 — 걸친 표·그림도 함께.
+    ///
+    /// 한컴 오라클(부록2 O8): 선택 삭제는 확인 없이 표까지 지운다. 커서 오프셋은 논리
+    /// 좌표라 deleteRange(텍스트 좌표)에 그대로 넘기면 표가 남고 범위도 어긋난다.
+    /// 반환: JSON `{"ok":true,"paraIdx":N,"charOffset":N}`
+    #[wasm_bindgen(js_name = deleteRangeLogical)]
+    pub fn delete_range_logical(
+        &mut self,
+        section_idx: u32,
+        start_para_idx: u32,
+        start_logical_offset: u32,
+        end_para_idx: u32,
+        end_logical_offset: u32,
+    ) -> Result<String, JsValue> {
+        self.delete_range_logical_native(
+            section_idx as usize,
+            start_para_idx as usize,
+            start_logical_offset as usize,
+            end_para_idx as usize,
+            end_logical_offset as usize,
+            None,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// 셀 내 선택 영역을 삭제한다.
     ///
     /// 반환: JSON `{"ok":true,"paraIdx":N,"charOffset":N}`

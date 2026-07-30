@@ -6608,7 +6608,17 @@ impl LayoutEngine {
                     // 남기고 표 상자만 오프셋 위치에 그린다. 종전엔 마크가 table_y_start
                     // (=lane_top=흐름y+voff)를 따라가 캐럿이 표 좌상단에 붙고, 흐름 자리
                     // 클릭이 뒤 문단으로 갔다. voff==0 은 종전대로 표와 같은 줄.
-                    let marker_y = if is_para_topbottom_float(&t.common)
+                    // [어울림 2026-07-30 채록] 배치를 어울림(Square)으로 바꿔도 한컴은
+                    // 조판부호·앵커 줄을 흐름 위치에 그대로 둔다(부록2 O7). 단 옆 흐름
+                    // 계약이 흐름을 table_y_before 로 유지하는 건 **부분폭** square 뿐이라
+                    // (아래 y_offset 분기와 같은 판정) 전폭은 종전대로 둔다.
+                    let square_side_flow = super::float_placement::is_para_square_family_float(
+                        &t.common,
+                    ) && {
+                        let w_px = hwpunit_to_px(t.common.width as i32, self.dpi);
+                        col_area.width - w_px >= 40.0
+                    };
+                    let marker_y = if (is_para_topbottom_float(&t.common) || square_side_flow)
                         && signed_hwpunit(t.common.vertical_offset) > 0
                     {
                         table_y_before

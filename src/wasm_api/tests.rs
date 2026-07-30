@@ -24992,3 +24992,62 @@ fn insert_text_logical_after_trailing_tac_table_keeps_control_position() {
     let ci3 = doc.get_inline_control_index_at_logical(0, 0, 3).unwrap();
     assert_eq!(ci3, -1, "논리 3은 X(텍스트)여야 함");
 }
+
+/// [범위 삭제 2026-07-30] 한컴 O8 — 표를 걸친 선택을 지우면 표도 함께 사라진다.
+#[test]
+fn delete_range_logical_removes_spanned_inline_table() {
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document().unwrap();
+    doc.insert_text_native(0, 0, 0, "가나").unwrap();
+    doc.create_table_ex_native(0, 0, 2, 1, 1, true, Some(&[3000]), None)
+        .unwrap();
+    doc.insert_text_logical(0, 0, 3, "다").unwrap();
+
+    let inline_count = |d: &HwpDocument| -> usize {
+        d.document.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .filter(|c| crate::document_core::helpers::is_logical_inline_control(c))
+            .count()
+    };
+    assert_eq!(doc.document.sections[0].paragraphs[0].text, "가나다");
+    assert_eq!(inline_count(&doc), 1, "인라인 표 1개");
+    let para = &doc.document.sections[0].paragraphs[0];
+    assert_eq!(
+        crate::document_core::helpers::logical_paragraph_length(para),
+        4
+    );
+
+    // 논리 1~4 선택(나 + 표 + 다) 삭제 → 표가 사라지고 '가'만 남는다.
+    doc.delete_range_logical(0, 0, 1, 0, 4).unwrap();
+    assert_eq!(doc.document.sections[0].paragraphs[0].text, "가", "텍스트 잔여");
+    assert_eq!(inline_count(&doc), 0, "표가 남았다 — O8 위반");
+    assert_eq!(
+        crate::document_core::helpers::logical_paragraph_length(
+            &doc.document.sections[0].paragraphs[0]
+        ),
+        1
+    );
+}
+
+/// 선택이 표를 안 건드리면 표는 보존된다(과삭제 방지).
+#[test]
+fn delete_range_logical_keeps_table_outside_selection() {
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document().unwrap();
+    doc.insert_text_native(0, 0, 0, "가나").unwrap();
+    doc.create_table_ex_native(0, 0, 2, 1, 1, true, Some(&[3000]), None)
+        .unwrap();
+    doc.insert_text_logical(0, 0, 3, "다라").unwrap();
+
+    // 논리 3~5(표 뒤 '다라')만 삭제
+    doc.delete_range_logical(0, 0, 3, 0, 5).unwrap();
+    let para = &doc.document.sections[0].paragraphs[0];
+    assert_eq!(para.text, "가나");
+    let inline = para
+        .controls
+        .iter()
+        .filter(|c| crate::document_core::helpers::is_logical_inline_control(c))
+        .count();
+    assert_eq!(inline, 1, "선택 밖 표까지 지워졌다");
+}
