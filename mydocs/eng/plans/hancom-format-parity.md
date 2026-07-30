@@ -94,6 +94,19 @@
 호출해 *자동 갱신 부재를 은폐*했다. 판정식에 "커서를 건드리지 않은 용지 변경에도 캐럿 좌표가
 갱신된다"를 추가해 은폐를 제거했다 — **측정 설계가 결함을 가릴 수 있다**는 교훈.
 
+### 4차 수리 (2026-07-30, HIGH 정리)
+| 갭 | 수리 | 판정 |
+|---|---|---|
+| 스타일 적용에 「덮어 쓸까요?」 확인·덮어쓰기 경로 자체가 없음 — 직접 문단서식이 있으면 새 스타일의 문단 모양이 조용히 무시됨 | `apply_style_native_ex(…, overwrite)` 신설 + wasm `applyStyle(…, overwrite?)` + F6 대화상자에 한컴 문구 확인 배선 | 엔진 회귀 `style_apply_overwrite_flag_controls_para_shape`('아니오'=보존/'예'=스타일 모양) green |
+| HWP 저장에서 updateStyle·deleteStyle 유실 | 두 곳에 `raw_stream_dirty = true` (updateStyleShapes 는 이미 세우고 있었다) | T1 green |
+| deleteStyle 이 표 셀 문단 style_id 를 미보정 | 재귀 보정(`fix_style_ids`)으로 셀 안 문단까지 | T1 green |
+| HWPX 번호 정의가 numFormat="DIGIT" 하드코딩 + 형식 문자열 미방출 → 왕복에서 번호 종류·형식 소실 | 파서 역매핑(`numbering_format_name`) + 형식 문자열을 paraHead 텍스트로 방출 | 회귀 `write_header_numbering_keeps_format_and_kind` green |
+| 좌측 삽입 팔레트 제거(사용자 지시) | 마운트·모듈·CSS·사문 헬퍼 정리 | 실측: 좌레일 0, 편집영역 996px |
+| TAC 표 세로 이동 후 커서 문단 미보정 | `engine/table-move-cursor.ts` + 단위 6종 | 6 pass |
+| moveTo 오프셋 클램프 부재 | 단일 관문에서 클램프 | 스윕 D축(218→168) |
+| 개체 탈출이 컨테이너 이탈 | ref 의 셀·머리말 좌표로 복귀 | 스윕 E축 신설 |
+| 편집 용지 적용 범위 사문화 · F7 이 항상 구역 0 | 옵션 3종(현재 구역 기본)+실제 분기 · 커서 구역 통일 | tsc·회귀 green |
+
 **미수리 HIGH (다음 회차 착수 순서)**
 1. 편집 용지 「적용 범위」 select 완전 사문화 — 만들고 onConfirm 이 읽지 않음, '현재 구역' 옵션
    자체 부재, 기본값이 라벨과 반대 (page-setup-dialog.ts:193,229).

@@ -251,6 +251,56 @@ fn issue_1470_style_update_reflows_and_keeps_margin_unit() {
     );
 }
 
+/// [스타일 패리티 2026-07-30] 한컴 「본문을 [X] 스타일 모양으로 덮어 쓸까요?」의 두 갈래.
+/// '아니오'(=overwrite false)는 직접 문단서식을 보존, '예'(=true)는 스타일 모양으로 덮는다.
+/// 예전엔 '예' 경로가 없어 직접 서식이 있는 문단에 스타일을 적용하면 문단 모양이 무시됐다.
+#[test]
+fn style_apply_overwrite_flag_controls_para_shape() {
+    use crate::model::style::{CharShape, ParaShape, Style};
+
+    let mut mk = || {
+        let mut doc = HwpDocument::create_empty();
+        doc.document.doc_info.char_shapes = vec![CharShape::default(), CharShape::default()];
+        doc.document.doc_info.para_shapes = vec![
+            ParaShape::default(),
+            ParaShape { margin_left: 1000, ..Default::default() },
+            ParaShape { margin_left: 7777, ..Default::default() }, // 직접 서식
+        ];
+        doc.document.doc_info.styles = vec![
+            Style { para_shape_id: 0, char_shape_id: 0, ..Default::default() },
+            Style { para_shape_id: 1, char_shape_id: 1, ..Default::default() },
+        ];
+        doc.insert_text_native(0, 0, 0, "가나다").expect("텍스트");
+        // 직접 문단서식: 스타일 0 의 psid(0) 과 다른 2 번을 물려 둔다
+        let para = &mut doc.document.sections[0].paragraphs[0];
+        para.style_id = 0;
+        para.para_shape_id = 2;
+        doc
+    };
+
+    // '아니오' — 직접 서식 보존(종전 동작)
+    let mut keep = mk();
+    keep.apply_style_native(0, 0, 1).expect("스타일 적용(보존)");
+    assert_eq!(keep.document.sections[0].paragraphs[0].style_id, 1, "스타일 id 는 바뀐다");
+    assert_eq!(
+        keep.document.sections[0].paragraphs[0].para_shape_id, 2,
+        "'아니오' 는 직접 문단서식을 보존한다"
+    );
+
+    // '예' — 스타일 문단모양으로 덮어쓰기
+    let mut over = mk();
+    over
+        .apply_style_native_ex(0, 0, 1, true)
+        .expect("스타일 적용(덮어쓰기)");
+    let psid = over.document.sections[0].paragraphs[0].para_shape_id;
+    assert_ne!(psid, 2, "'예' 는 직접 문단서식을 버린다");
+    assert_eq!(
+        over.document.doc_info.para_shapes[psid as usize].margin_left,
+        1000,
+        "'예' 는 스타일의 문단모양(margin_left 1000)을 따른다"
+    );
+}
+
 #[test]
 fn issue_1470_style_apply_preserves_direct_char_shape() {
     use crate::model::paragraph::CharShapeRef;

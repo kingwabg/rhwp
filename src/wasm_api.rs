@@ -5900,6 +5900,9 @@ impl HwpDocument {
         }
         // raw_data 무효화 (수정됨)
         style.raw_data = None;
+        // [스타일 패리티 2026-07-30] **HWP(.hwp) 저장은 doc_info raw_stream 을 재사용**하므로
+        // 이 플래그를 세우지 않으면 스타일 수정이 통째로 유실됐다(updateStyleShapes 는 이미 세운다).
+        self.core.document.doc_info.raw_stream_dirty = true;
         true
     }
 
@@ -6135,13 +6138,25 @@ impl HwpDocument {
         }
         // 스타일 삭제 (인덱스 기반이므로 뒤의 ID가 변경됨에 주의)
         self.core.document.doc_info.styles.remove(style_id as usize);
-        // 삭제된 ID보다 큰 style_id를 가진 문단들 보정
-        for section in &mut self.core.document.sections {
-            for para in &mut section.paragraphs {
+        // 삭제된 ID보다 큰 style_id를 가진 문단들 보정.
+        // [스타일 패리티 2026-07-30] 예전엔 **본문 문단만** 순회해서 표 셀 문단의 style_id 가
+        // 한 칸씩 어긋난 채 남았다(엉뚱한 스타일을 가리킴). 셀 안 문단까지 같이 보정한다.
+        fn fix_style_ids(paras: &mut [crate::model::paragraph::Paragraph], sid: u8) {
+            for para in paras.iter_mut() {
                 if para.style_id > sid {
                     para.style_id -= 1;
                 }
+                for ctrl in &mut para.controls {
+                    if let crate::model::control::Control::Table(t) = ctrl {
+                        for cell in &mut t.cells {
+                            fix_style_ids(&mut cell.paragraphs, sid);
+                        }
+                    }
+                }
             }
+        }
+        for section in &mut self.core.document.sections {
+            fix_style_ids(&mut section.paragraphs, sid);
         }
         // next_style_id 보정
         for s in &mut self.core.document.doc_info.styles {
@@ -6151,6 +6166,9 @@ impl HwpDocument {
                 s.next_style_id -= 1;
             }
         }
+        // [스타일 패리티 2026-07-30] HWP 저장이 raw_stream 을 재사용하므로 반드시 세운다 —
+        // 없으면 스타일 삭제가 저장 파일에 반영되지 않는다.
+        self.core.document.doc_info.raw_stream_dirty = true;
         // 스타일 캐시 갱신
         self.core.styles = crate::renderer::style_resolver::resolve_styles(
             &self.core.document.doc_info,
@@ -6429,15 +6447,23 @@ impl HwpDocument {
     }
 
     /// 스타일을 적용한다 (본문 문단).
+    /// `overwrite`(선택): 참이면 문단의 직접 서식까지 스타일 모양으로 덮어쓴다 —
+    /// 한컴 「본문을 [X] 스타일 모양으로 덮어 쓸까요?」의 '예'. 생략/거짓은 종전 동작(보존).
     #[wasm_bindgen(js_name = applyStyle)]
     pub fn apply_style(
         &mut self,
         sec_idx: u32,
         para_idx: u32,
         style_id: u32,
+        overwrite: Option<bool>,
     ) -> Result<String, JsValue> {
         self.core
-            .apply_style_native(sec_idx as usize, para_idx as usize, style_id as usize)
+            .apply_style_native_ex(
+                sec_idx as usize,
+                para_idx as usize,
+                style_id as usize,
+                overwrite.unwrap_or(false),
+            )
             .map_err(|e| e.into())
     }
 

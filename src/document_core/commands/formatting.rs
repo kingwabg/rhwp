@@ -1857,6 +1857,20 @@ impl DocumentCore {
         para_idx: usize,
         style_id: usize,
     ) -> Result<String, HwpError> {
+        self.apply_style_native_ex(sec_idx, para_idx, style_id, false)
+    }
+
+    /// 스타일 적용 — `overwrite` 가 참이면 문단의 **직접 서식까지 스타일 모양으로 덮어쓴다**
+    /// (한컴 「본문을 [X] 스타일 모양으로 덮어 쓸까요?」의 '예'). 거짓이면 종전처럼 직접 서식을
+    /// 보존한다(= '아니오'). 예전엔 '예' 경로가 없어서, 직접 서식이 있는 문단에 스타일을
+    /// 적용하면 문단 모양이 조용히 무시됐다(2026-07-30 조사 확정 갭).
+    pub fn apply_style_native_ex(
+        &mut self,
+        sec_idx: usize,
+        para_idx: usize,
+        style_id: usize,
+        overwrite: bool,
+    ) -> Result<String, HwpError> {
         let style = self
             .document
             .doc_info
@@ -1910,7 +1924,8 @@ impl DocumentCore {
         }
 
         let new_para_shape_id = match old_style.as_ref() {
-            Some(old) if current_psid != old.para_shape_id => current_psid,
+            // 직접 서식(문단모양이 옛 스타일과 다름)이 있어도 overwrite 면 스타일 모양으로 덮는다
+            Some(old) if !overwrite && current_psid != old.para_shape_id => current_psid,
             _ => self.resolve_style_para_shape_id(style_id, current_psid),
         };
 
