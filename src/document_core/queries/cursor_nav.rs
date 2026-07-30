@@ -1980,6 +1980,28 @@ impl DocumentCore {
             visit(node, sec, para, line_idx, page)
         }
 
+        /// [양쪽 흐름 2026-07-30] 그 줄 세그의 실제 x 범위(좌단, 우단).
+        /// 선택 rect 가 단 전체 폭을 칠하던 결함 수리에 쓴다 — 좌·우 두 조각으로 갈라진
+        /// 줄에서는 단 좌단~우단이 아니라 **자기 조각 안**만 칠해야 한다(부록4 갭 #2).
+        fn find_body_line_box(
+            node: &RenderNode,
+            sec: usize,
+            para: usize,
+            line_idx: usize,
+        ) -> Option<(f64, f64)> {
+            if let RenderNodeType::TextLine(ref line) = node.node_type {
+                if line.section_index == Some(sec)
+                    && line.para_index == Some(para)
+                    && line.line_index.map(|idx| idx as usize) == Some(line_idx)
+                {
+                    return Some((node.bbox.x, node.bbox.x + node.bbox.width));
+                }
+            }
+            node.children
+                .iter()
+                .find_map(|child| find_body_line_box(child, sec, para, line_idx))
+        }
+
         // ── 페이지별 렌더 트리 캐시 (최대 2페이지) ──
         let mut tree_cache: Vec<(u32, crate::renderer::render_tree::PageRenderTree)> = Vec::new();
 
@@ -2152,8 +2174,32 @@ impl DocumentCore {
                         // 같은 문단 내 강제 줄바꿈: 줄 끝까지 선택되고 다음 줄 시작이 sel_end이면 확장
                         (range_end == sel_end && range_end >= line_char_end && line_idx + 1 < line_count));
 
+                    // [양쪽 흐름 2026-07-30] 어울림 표 옆에서 한 줄이 좌·우 두 조각으로
+                    // 갈라진 경우(= 같은 vertical_pos 를 공유하는 세그 쌍), 선택 rect 를
+                    // 단 좌단~우단이 아니라 **자기 조각 경계**로 제한한다. 종전엔 전폭을
+                    // 칠해 하이라이트가 표를 덮었다(부록4 갭 #2). 갈라지지 않은 줄은
+                    // 종전 그대로(단 영역) — 들여쓰기 포함 하이라이트 동작 보존.
+                    let is_split_line = cell_ctx.is_none() && {
+                        let segs = &para.line_segs;
+                        segs.get(line_idx).map_or(false, |cur| {
+                            (line_idx > 0
+                                && segs
+                                    .get(line_idx - 1)
+                                    .map_or(false, |p| p.vertical_pos == cur.vertical_pos))
+                                || segs
+                                    .get(line_idx + 1)
+                                    .map_or(false, |n| n.vertical_pos == cur.vertical_pos)
+                        })
+                    };
                     let (area_left, area_right) = if cell_ctx.is_none() {
-                        find_column_area(rh.page, rh.x)
+                        let seg_box = if is_split_line {
+                            tree_cache.iter().find_map(|(_, tree)| {
+                                find_body_line_box(&tree.root, section_idx, para_idx, line_idx)
+                            })
+                        } else {
+                            None
+                        };
+                        seg_box.unwrap_or_else(|| find_column_area(rh.page, rh.x))
                     } else {
                         (0.0, 0.0)
                     };

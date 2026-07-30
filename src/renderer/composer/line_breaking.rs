@@ -1117,14 +1117,24 @@ pub(crate) struct ReflowBand {
     pub flow: crate::model::shape::TextFlow,
 }
 
-/// 밴드 옆 공간 선택 — 한컴 "본문 위치"를 따른다(최소 40px).
+/// 옆 조각으로 인정하는 최소 폭(px).
+///
+/// [2026-07-30 한컴 실측] samples/pic2.hwpx 의 linesegarray 는 좌 조각 **horzsize=2570HU
+/// = 34.3px@96dpi** 를 유지한다(그 폭에 글이 안 들어가는 줄은 세그를 없애지 않고
+/// flags 에 EMPTY(0x10000)를 얹어 남긴다). 종전 40px 은 근거 없는 값이라 34~40px 구간의
+/// 옆 흐름을 통째로 포기했다 — 실측 하한으로 내린다.
+/// ⚠ 우리 fill 은 빈 세그를 생산할 수 없어(줄 시작 토큰 강제 배치) 이 하한 미달이면
+/// 여전히 한쪽 흐름으로 접는다. 시각 결과는 한컴의 EMPTY 세그와 같다(부록4 갭 #1).
+pub const MIN_SIDE_PX: f64 = 34.0;
+
+/// 밴드 옆 공간 선택 — 한컴 "본문 위치"를 따른다(최소 MIN_SIDE_PX).
 /// 반환 (cs_px, w_px): 줄 시작 오프셋(컬럼 로컬)과 가용 폭.
 ///
 /// - 왼쪽(LeftOnly): 개체 왼쪽에만 글 · 오른쪽(RightOnly): 오른쪽에만
 /// - 큰 쪽(LargestOnly): 넓은 쪽 하나(동률은 오른쪽)
-/// - 양쪽(BothSides): 한 줄을 좌·우 두 세그로 쪼개야 하는데 LINE_SEG 재생 소비가
-///   줄당 세그 1개 전제라 **큰 쪽으로 폴백**(한계 기록 — capability-map §3).
-pub(crate) fn side_pick_for_band(
+/// - 양쪽(BothSides): 좌·우 두 세그로 쪼갠다 — 그 분기는 segs_for_top 이 먼저 처리하므로
+///   이 함수에 오는 BothSides 는 **한쪽이 하한 미달**인 경우뿐이고 큰 쪽으로 접는다.
+pub fn side_pick_for_band(
     full_w_px: f64,
     x0: f64,
     x1: f64,
@@ -1133,8 +1143,8 @@ pub(crate) fn side_pick_for_band(
     use crate::model::shape::TextFlow;
     let left_room = x0.max(0.0);
     let right_room = (full_w_px - x1).max(0.0);
-    let left = || (left_room >= 40.0).then_some((0.0, left_room));
-    let right = || (right_room >= 40.0).then_some((x1, right_room));
+    let left = || (left_room >= MIN_SIDE_PX).then_some((0.0, left_room));
+    let right = || (right_room >= MIN_SIDE_PX).then_some((x1, right_room));
     match flow {
         TextFlow::LeftOnly => left(),
         TextFlow::RightOnly => right(),
@@ -1340,8 +1350,8 @@ pub(crate) fn reflow_line_segs_with_bands(
                     let left = b.x0_px.max(0.0);
                     let right = (available_width_px - b.x1_px).max(0.0);
                     if matches!(b.flow, crate::model::shape::TextFlow::BothSides)
-                        && left >= 40.0
-                        && right >= 40.0
+                        && left >= MIN_SIDE_PX
+                        && right >= MIN_SIDE_PX
                     {
                         return vec![(0.0, left, false), (b.x1_px, right, true)];
                     }
@@ -1482,16 +1492,27 @@ pub(crate) fn reflow_line_segs_with_bands(
             let _ = seg;
         }
         // 누적을 처음부터 다시: cont 세그는 이전 vpos 복사, 아니면 누적 후 진행.
+        // 아울러 **세그 태그를 한컴 인코딩으로** 맞춘다(2026-07-30 samples/pic2.hwpx 실측):
+        // 한 줄이 2세그면 좌=FIRST-only(0x20000) · 우=LAST-only(0x40000). 종전엔 둘 다
+        // 원본 태그(보통 SINGLE=FIRST|LAST=0x60000)를 복사해 "단일 세그 줄"이라 거짓
+        // 저장했다 — HWPX/HWP5 왕복에서 한컴이 줄 구조를 오해할 수 있다(부록4 갭 #3).
         let mut vpos2 = vpos_start;
         let mut prev_vpos = vpos_start;
         for (i, seg) in new_line_segs.iter_mut().enumerate() {
             let cont = plan.get(i).map(|p| p.2).unwrap_or(false);
+            let next_is_cont = plan.get(i + 1).map(|p| p.2).unwrap_or(false);
             if cont {
                 seg.vertical_pos = prev_vpos;
+                // 줄의 마지막 세그 — FIRST 를 떼고 LAST 만 남긴다
+                seg.tag = (seg.tag & !LineSeg::TAG_FIRST_SEGMENT) | LineSeg::TAG_LAST_SEGMENT;
             } else {
                 seg.vertical_pos = vpos2;
                 prev_vpos = vpos2;
                 vpos2 += seg.line_height + seg.line_spacing;
+                if next_is_cont {
+                    // 줄의 첫 세그이고 뒤에 짝이 있다 — LAST 를 떼고 FIRST 만
+                    seg.tag = (seg.tag & !LineSeg::TAG_LAST_SEGMENT) | LineSeg::TAG_FIRST_SEGMENT;
+                }
             }
         }
         vpos = vpos2;

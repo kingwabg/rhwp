@@ -878,6 +878,26 @@ impl HwpDocument {
         Ok(format!("{{\"ok\":true,\"logicalOffset\":{}}}", new_logical))
     }
 
+    /// [진단] 문단 line_segs 의 (vertical_pos, column_start, tag) 3튜플 배열(JSON).
+    ///
+    /// 양쪽 흐름의 좌·우 세그가 같은 vpos 를 공유하고 태그가 한컴 인코딩
+    /// (좌=FIRST-only, 우=LAST-only)인지 테스트에서 확인하는 용도.
+    #[wasm_bindgen(js_name = debugLineSegTags)]
+    pub fn debug_line_seg_tags(&self, section_idx: u32, para_idx: u32) -> Result<String, JsValue> {
+        let sec = section_idx as usize;
+        let pi = para_idx as usize;
+        if sec >= self.document.sections.len() || pi >= self.document.sections[sec].paragraphs.len()
+        {
+            return Err(JsValue::from_str("인덱스 범위 초과"));
+        }
+        let items: Vec<String> = self.document.sections[sec].paragraphs[pi]
+            .line_segs
+            .iter()
+            .map(|s| format!("[{},{},{}]", s.vertical_pos, s.column_start, s.tag))
+            .collect();
+        Ok(format!("[{}]", items.join(",")))
+    }
+
     /// 문단의 논리적 길이를 반환한다 (텍스트 문자 + 인라인 컨트롤 수).
     #[wasm_bindgen(js_name = getLogicalLength)]
     pub fn get_logical_length(&self, section_idx: u32, para_idx: u32) -> Result<u32, JsValue> {
