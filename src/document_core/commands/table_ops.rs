@@ -89,11 +89,15 @@ impl DocumentCore {
                         matches!(ctrl, Control::Table(t)
                             if !t.common.treat_as_char
                                 && matches!(t.common.text_wrap, TextWrap::Square | TextWrap::Tight | TextWrap::Through)
-                                && matches!(t.common.vert_rel_to, VertRelTo::Para)
-                                // [2026-07-30] 가로 기준은 무엇이든 무방 — 밴드 x 는 렌더
-                                // 트리 bbox 에서 뽑아 기준 무관하게 정확하다. 배치 UX 가
-                                // 가로 기준을 종이(Paper)로 저장하면서 필터에 걸려 어울림
-                                // rewrap 이 통째로 죽었던 실사고(사용자 신고)의 수리.
+                                // [2026-07-30] 가로·세로 기준은 무엇이든 무방 — 밴드 좌표는
+                                // 렌더 트리 bbox(x 는 단 로컬, y 는 절대 흐름)에서 뽑으므로
+                                // 기준 무관하게 정확하다. 가로를 종이(Paper)로 저장하는
+                                // 배치 UX 때문에 rewrap 이 통째로 죽은 실사고를 먼저 고쳤고,
+                                // 세로도 같은 계통임을 실측으로 확인했다: 표를 같은 위치
+                                // (y≈180)에 두어도 vertRelTo=Paper/Page 면 2조각이 0이 되어
+                                // 텍스트가 표 밑에 깔렸다(부록4 갭 #5).
+                                && matches!(t.common.vert_rel_to,
+                                    VertRelTo::Para | VertRelTo::Paper | VertRelTo::Page)
                                 && matches!(t.common.horz_rel_to,
                                     HorzRelTo::Column | HorzRelTo::Para | HorzRelTo::Paper | HorzRelTo::Page))
                     })

@@ -328,3 +328,31 @@ fn selection_rects_respect_bothsides_fragments() {
     }
     assert_eq!(covering, 0, "선택 하이라이트 {covering}개가 표를 덮는다");
 }
+
+/// [세로 기준 2026-07-30] 어울림 rewrap 이 세로 기준(문단/종이/쪽) 무관하게 동작한다.
+/// 실측 결함: 표를 같은 위치(y≈180)에 두어도 vertRelTo=Paper/Page 면 2조각이 0이 되어
+/// 텍스트가 표 밑에 깔렸다 — 가로 기준 실사고(07-30)와 같은 계통(부록4 갭 #5).
+#[test]
+fn square_rewrap_works_for_every_vert_basis() {
+    // (세로 기준, 표를 본문 3째 줄 높이에 놓는 이동량) — 기준마다 원점이 다르다.
+    for (vrel, dv) in [("Para", -4500), ("Paper", 13425), ("Page", 3525)] {
+        let (mut doc, host) = doc_with_long_para();
+        let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(&format!(
+            r#"{{"sectionIdx":0,"paraIdx":{host},"charOffset":0,"rowCount":2,"colCount":2,"treatAsChar":false,"colWidths":[3000,3000]}}"#
+        )).unwrap()).unwrap();
+        let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+        doc.delete_table_column(0, pi, ci, 1).unwrap();
+        doc.set_table_properties(0, pi, ci, &format!(
+            r#"{{"treatAsChar":false,"textWrap":"Square","textFlow":"BothSides","vertRelTo":"{vrel}","horzRelTo":"Column","vertOffset":0,"horzOffset":0}}"#
+        )).unwrap();
+        doc.move_table_offset(0, pi, ci, 9000, dv).unwrap();
+
+        let lines = body_lines(&doc);
+        let split = lines.windows(2).filter(|w| w[0].1 == w[1].1).count();
+        assert!(
+            split >= 1,
+            "vertRelTo={vrel} 에서 2조각이 없다 — 옆 흐름 미발화: {lines:?}"
+        );
+        assert_eq!(overlap_count(&doc, pi, ci), 0, "vertRelTo={vrel} 겹침");
+    }
+}
