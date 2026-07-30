@@ -356,3 +356,72 @@ fn square_rewrap_works_for_every_vert_basis() {
         assert_eq!(overlap_count(&doc, pi, ci), 0, "vertRelTo={vrel} 겹침");
     }
 }
+
+/// [다중 밴드 2026-07-30] 표 두 개가 같은 줄에 걸치면 조각이 3개(좌·사이·우)가 된다.
+/// 종전엔 첫 겹침 밴드에서 즉시 return 해 **둘째 표 위로 글이 덮였다**(부록4 갭 #6).
+#[test]
+fn two_tables_on_same_line_produce_three_fragments() {
+    let (mut doc, host) = doc_with_long_para();
+    // 표 A: 왼쪽에서 약간 안쪽 · 표 B: 그 오른쪽 — 둘 다 같은 줄 높이(dv 동일)
+    // 3칸 표에서 2칸을 지워 폭을 1/3(≈186px)로 — 본문(567px)에 조각 3개가 들어가야 한다.
+    let narrow = |doc: &mut HwpDocument, host: usize, dh: i32, dv: i32| -> (u32, u32) {
+        let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(&format!(
+            r#"{{"sectionIdx":0,"paraIdx":{host},"charOffset":0,"rowCount":2,"colCount":3,"treatAsChar":false}}"#
+        )).unwrap()).unwrap();
+        let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+        doc.delete_table_column(0, pi, ci, 2).unwrap();
+        doc.delete_table_column(0, pi, ci, 1).unwrap();
+        doc.set_table_properties(0, pi, ci,
+            r#"{"treatAsChar":false,"textWrap":"Square","textFlow":"BothSides","vertRelTo":"Para","horzRelTo":"Column","vertOffset":0,"horzOffset":0}"#
+        ).unwrap();
+        doc.move_table_offset(0, pi, ci, dh, dv).unwrap();
+        (pi, ci)
+    };
+    let (pa, ca) = narrow(&mut doc, host, 3750, -4500);
+    let host2 = doc.get_paragraph_count(0).unwrap() as usize - 1;
+    let (pb, cb) = narrow(&mut doc, host2, 21000, -4500);
+    // 두 표를 같은 줄 높이로 맞춘다(앵커 문단이 달라 기본 y 가 어긋난다).
+    let ya = {
+        let v: serde_json::Value =
+            serde_json::from_str(&doc.get_table_bbox(0, pa, ca).unwrap()).unwrap();
+        v["y"].as_f64().unwrap()
+    };
+    let yb = {
+        let v: serde_json::Value =
+            serde_json::from_str(&doc.get_table_bbox(0, pb, cb).unwrap()).unwrap();
+        v["y"].as_f64().unwrap()
+    };
+    doc.move_table_offset(0, pb, cb, 0, ((ya - yb) * 75.0) as i32).unwrap();
+    let bba: serde_json::Value =
+        serde_json::from_str(&doc.get_table_bbox(0, pa, ca).unwrap()).unwrap();
+    let bbb: serde_json::Value =
+        serde_json::from_str(&doc.get_table_bbox(0, pb, cb).unwrap()).unwrap();
+    eprintln!(
+        "표A x={:.0}~{:.0} y={:.0} / 표B x={:.0}~{:.0} y={:.0}",
+        bba["x"].as_f64().unwrap(),
+        bba["x"].as_f64().unwrap() + bba["width"].as_f64().unwrap(),
+        bba["y"].as_f64().unwrap(),
+        bbb["x"].as_f64().unwrap(),
+        bbb["x"].as_f64().unwrap() + bbb["width"].as_f64().unwrap(),
+        bbb["y"].as_f64().unwrap()
+    );
+    let lines = body_lines(&doc);
+    eprintln!("줄 {lines:?}");
+
+    // 두 표가 정말 같은 줄 높이에 있을 때만 다중 조각을 요구한다(배치 클램프 방어).
+    let same_row = (bba["y"].as_f64().unwrap() - bbb["y"].as_f64().unwrap()).abs() < 5.0;
+    if same_row {
+        let mut by_y: std::collections::BTreeMap<i32, usize> = Default::default();
+        for &(_, y, _) in &lines {
+            *by_y.entry(y).or_insert(0) += 1;
+        }
+        let max_frags = by_y.values().copied().max().unwrap_or(0);
+        assert!(
+            max_frags >= 3,
+            "표 2개가 걸친 줄인데 조각이 {max_frags}개뿐 — 다중 밴드 미지원: {lines:?}"
+        );
+    }
+    // 어느 경우든 본문이 표를 덮지 않는다.
+    assert_eq!(overlap_count(&doc, pa, ca), 0, "표A 겹침");
+    assert_eq!(overlap_count(&doc, pb, cb), 0, "표B 겹침");
+}

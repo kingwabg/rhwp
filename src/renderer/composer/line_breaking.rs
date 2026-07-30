@@ -1345,24 +1345,56 @@ pub(crate) fn reflow_line_segs_with_bands(
         // (왼쪽 세그 + 오른쪽 세그 — 같은 y 를 공유). fill 에는 각 세그가 "연속된
         // 좁은 줄"로 공급되고, 기록 단계(아래)가 같은 vertical_pos 로 묶는다.
         let segs_for_top = |top: f64, adv: f64| -> Vec<(f64, f64, bool)> {
-            for b in bands {
-                if top + adv > b.top_px + 0.5 && top + 0.5 < b.bottom_px {
-                    let left = b.x0_px.max(0.0);
-                    let right = (available_width_px - b.x1_px).max(0.0);
-                    if matches!(b.flow, crate::model::shape::TextFlow::BothSides)
-                        && left >= MIN_SIDE_PX
-                        && right >= MIN_SIDE_PX
-                    {
-                        return vec![(0.0, left, false), (b.x1_px, right, true)];
-                    }
-                    return match side_pick_for_band(available_width_px, b.x0_px, b.x1_px, b.flow)
-                    {
-                        Some((cs, w)) => vec![(cs, w, false)],
-                        None => vec![(0.0, available_width_px, false)],
-                    };
-                }
+            // 이 시각 줄과 겹치는 밴드를 **전부** 모은다(종전엔 첫 밴드에서 즉시 return 해
+            // 표가 둘 이상 걸친 줄에서 둘째 표 위로 글이 덮였다 — 부록4 갭 #6).
+            let mut hits: Vec<&ReflowBand> = bands
+                .iter()
+                .filter(|b| top + adv > b.top_px + 0.5 && top + 0.5 < b.bottom_px)
+                .collect();
+            if hits.is_empty() {
+                return vec![(0.0, available_width_px, false)];
             }
-            vec![(0.0, available_width_px, false)]
+            hits.sort_by(|a, b| {
+                a.x0_px
+                    .partial_cmp(&b.x0_px)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            // 겹침 밴드가 전부 "양쪽"이면 밴드 **사이·바깥**의 빈 구간을 모두 조각으로.
+            // 밴드 1개면 종전과 같은 좌·우 2조각이 나온다(일반화이지 동작 변경이 아니다).
+            if hits
+                .iter()
+                .all(|b| matches!(b.flow, crate::model::shape::TextFlow::BothSides))
+            {
+                let mut segs: Vec<(f64, f64, bool)> = Vec::new();
+                let mut cursor = 0.0f64;
+                for b in &hits {
+                    let gap = b.x0_px.max(cursor) - cursor;
+                    if gap >= MIN_SIDE_PX {
+                        segs.push((cursor, gap, !segs.is_empty()));
+                    }
+                    cursor = cursor.max(b.x1_px);
+                }
+                let tail = (available_width_px - cursor).max(0.0);
+                if tail >= MIN_SIDE_PX {
+                    segs.push((cursor, tail, !segs.is_empty()));
+                }
+                if segs.len() >= 2 {
+                    return segs;
+                }
+                if let Some(&(cs, w, _)) = segs.first() {
+                    return vec![(cs, w, false)];
+                }
+                // 어느 구간도 하한을 못 넘었다 — 전폭(줄은 layout 이 밴드 아래로 민다)
+                return vec![(0.0, available_width_px, false)];
+            }
+
+            // 그 외(왼쪽/오른쪽/큰 쪽 혼재)는 종전대로 첫 밴드 기준 단일 조각.
+            let b = hits[0];
+            match side_pick_for_band(available_width_px, b.x0_px, b.x1_px, b.flow) {
+                Some((cs, w)) => vec![(cs, w, false)],
+                None => vec![(0.0, available_width_px, false)],
+            }
         };
         let mut breaks = fill_lines(
             &tokens,
@@ -1403,7 +1435,14 @@ pub(crate) fn reflow_line_segs_with_bands(
                 condense_min_space,
                 Some(&|i: usize| widths.get(i).map(|(_, w, _)| *w)),
             );
-            let converged = next.len() == breaks.len();
+            // 수렴 판정: 줄 수 + **세그 계획**이 모두 같아야 한다. 종전엔 줄 수만 봐서
+            // 폭·시작 오프셋이 바뀌었는데 줄 수가 우연히 같으면 한 패스 뒤처진 계획으로
+            // 확정됐다(부록4 갭 #6).
+            let plan_same = final_plan.len() == plan.len()
+                && final_plan.iter().zip(plan.iter()).all(|(a, b)| {
+                    (a.0 - b.0).abs() < 0.01 && (a.1 - b.1).abs() < 0.01 && a.2 == b.2
+                });
+            let converged = next.len() == breaks.len() && plan_same;
             breaks = next;
             final_plan = plan;
             if converged {
