@@ -55,6 +55,19 @@ impl DocumentCore {
         if self.suppress_square_reflow {
             return;
         }
+        // [어울림 수렴 2026-07-30] 좁힘 결정은 "현재 렌더 위치" 기준인데, 좁힌 결과가
+        // 문단을 표 옆으로 되돌려 최종 배치가 결정 시점과 어긋난다(닭-달걀 — 특히 표를
+        // **위로** 끌어 앞 문단들과 겹치는 케이스에서 좁힘이 엉뚱한 줄에 붙고 정작 밴드
+        // 안 줄이 전폭으로 남았다, 실측). 고정점까지 최대 3회 반복 — 각 패스가 line_segs
+        // 를 실제로 바꿨을 때만 계속한다(대부분 1회, 겹침 케이스 2회 수렴).
+        for _ in 0..3 {
+            if !self.reflow_paras_for_square_bands_once(section_idx) {
+                break;
+            }
+        }
+    }
+
+    fn reflow_paras_for_square_bands_once(&mut self, section_idx: usize) -> bool {
         use crate::model::shape::{HorzRelTo, TextWrap, VertRelTo};
         use crate::renderer::render_tree::{RenderNode, RenderNodeType};
         let dpi = self.dpi;
@@ -64,7 +77,7 @@ impl DocumentCore {
         // 없으면) 아무것도 안 한다. 흔적 원복을 위해 흔적 여부는 아래에서 함께 본다.
         let square_hosts: Vec<usize> = {
             let Some(section) = self.document.sections.get(section_idx) else {
-                return;
+                return false;
             };
             section
                 .paragraphs
@@ -77,7 +90,12 @@ impl DocumentCore {
                             if !t.common.treat_as_char
                                 && matches!(t.common.text_wrap, TextWrap::Square | TextWrap::Tight | TextWrap::Through)
                                 && matches!(t.common.vert_rel_to, VertRelTo::Para)
-                                && matches!(t.common.horz_rel_to, HorzRelTo::Column | HorzRelTo::Para))
+                                // [2026-07-30] 가로 기준은 무엇이든 무방 — 밴드 x 는 렌더
+                                // 트리 bbox 에서 뽑아 기준 무관하게 정확하다. 배치 UX 가
+                                // 가로 기준을 종이(Paper)로 저장하면서 필터에 걸려 어울림
+                                // rewrap 이 통째로 죽었던 실사고(사용자 신고)의 수리.
+                                && matches!(t.common.horz_rel_to,
+                                    HorzRelTo::Column | HorzRelTo::Para | HorzRelTo::Paper | HorzRelTo::Page))
                     })
                 })
                 .map(|(pi, _)| pi)
@@ -151,12 +169,12 @@ impl DocumentCore {
             }
         }
         if probe.col_w <= 0.0 {
-            return;
+            return false;
         }
         // 밴드 flow 보강: square_hosts 문단의 표 모델에서 본문위치를 읽는다.
         {
             let Some(section) = self.document.sections.get(section_idx) else {
-                return;
+                return false;
             };
             let mut flows: Vec<crate::model::shape::TextFlow> = Vec::new();
             for &host in &square_hosts {
@@ -178,7 +196,7 @@ impl DocumentCore {
         }
 
         let Some(section) = self.document.sections.get_mut(section_idx) else {
-            return;
+            return false;
         };
         let full_hu = (probe.col_w * 7200.0 / dpi) as i32;
         let mut changed = false;
@@ -236,6 +254,11 @@ impl DocumentCore {
             let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
             let margin_right = para_style.map(|s| s.margin_right).unwrap_or(0.0);
             let available_width = (probe.col_w - margin_left - margin_right).max(1.0);
+            let before: Vec<(u32, i32, i32)> = para
+                .line_segs
+                .iter()
+                .map(|s| (s.text_start, s.column_start, s.segment_width))
+                .collect();
             crate::renderer::composer::reflow_line_segs_with_bands(
                 para,
                 available_width,
@@ -244,12 +267,20 @@ impl DocumentCore {
                 ptop,
                 &bands,
             );
-            changed = true;
+            let after: Vec<(u32, i32, i32)> = para
+                .line_segs
+                .iter()
+                .map(|s| (s.text_start, s.column_start, s.segment_width))
+                .collect();
+            if before != after {
+                changed = true;
+            }
         }
         if changed {
             self.document.sections[section_idx].raw_stream = None;
             self.recompose_section(section_idx);
         }
+        changed
     }
 
     fn refresh_table_host_line_segs(&mut self, section_idx: usize, parent_para_idx: usize) {
@@ -2095,10 +2126,22 @@ impl DocumentCore {
             table.raw_ctrl_data.push(0);
         }
 
-        let is_treat_as_char = (table.attr & 0x01) != 0;
+        // attr bit0 은 일부 생성 경로에서 미동기 — 모델 정본(common.treat_as_char)과 OR.
+        let is_treat_as_char = (table.attr & 0x01) != 0 || table.common.treat_as_char;
+
+        // [2026-07-30 사용자 결정] 글자처럼취급 표는 드래그 이동 불가 — 한컴에 없는 기능.
+        // 종전엔 v_offset 누적 + 문단 경계에서 paragraphs.swap 으로 "문단 사이 이동"을
+        // 흉내냈지만(구 다중 경계 루프), 한컴은 인라인 표를 드래그로 재배치하지 않는다.
+        // 오프셋도 건드리지 않는 완전 무동작으로 통일한다(위치를 바꾸려면 글자취급 해제).
+        if is_treat_as_char {
+            return Ok(format!(
+                "{{\"ok\":true,\"ppi\":{},\"ci\":{}}}",
+                parent_para_idx, control_idx
+            ));
+        }
 
         // vertical_offset: CommonObjAttr::V_OFFSET (i32 LE)
-        let mut new_v = if delta_v != 0 {
+        if delta_v != 0 {
             let cur_v = i32::from_le_bytes(
                 table.raw_ctrl_data[common_obj_offsets::V_OFFSET]
                     .try_into()
@@ -2107,14 +2150,7 @@ impl DocumentCore {
             let nv = cur_v.wrapping_add(delta_v);
             table.raw_ctrl_data[common_obj_offsets::V_OFFSET].copy_from_slice(&nv.to_le_bytes());
             table.common.vertical_offset = nv as u32;
-            nv
-        } else {
-            i32::from_le_bytes(
-                table.raw_ctrl_data[common_obj_offsets::V_OFFSET]
-                    .try_into()
-                    .unwrap(),
-            )
-        };
+        }
 
         // horizontal_offset: CommonObjAttr::H_OFFSET (i32 LE)
         if delta_h != 0 {
@@ -2128,50 +2164,7 @@ impl DocumentCore {
             table.common.horizontal_offset = new_h as u32;
         }
 
-        // treat_as_char 표: 문단 경계를 넘으면 문단 이동 (다중 경계 루프)
-        let mut result_ppi = parent_para_idx;
-        if is_treat_as_char && delta_v != 0 {
-            let para_count = self.document.sections[section_idx].paragraphs.len();
-
-            // 아래로: v_offset >= line_height이면 반복적으로 다음 문단과 교환
-            while result_ppi + 1 < para_count {
-                let lh = self.document.sections[section_idx].paragraphs[result_ppi]
-                    .line_segs
-                    .first()
-                    .map(|ls| ls.line_height)
-                    .unwrap_or(1000);
-                if new_v < lh {
-                    break;
-                }
-                new_v -= lh;
-                self.document.sections[section_idx]
-                    .paragraphs
-                    .swap(result_ppi, result_ppi + 1);
-                result_ppi += 1;
-            }
-
-            // 위로: v_offset < 0이면 반복적으로 이전 문단과 교환
-            while new_v < 0 && result_ppi > 0 {
-                let prev_lh = self.document.sections[section_idx].paragraphs[result_ppi - 1]
-                    .line_segs
-                    .first()
-                    .map(|ls| ls.line_height)
-                    .unwrap_or(1000);
-                new_v += prev_lh;
-                self.document.sections[section_idx]
-                    .paragraphs
-                    .swap(result_ppi - 1, result_ppi);
-                result_ppi -= 1;
-            }
-
-            // 최종 v_offset 갱신
-            if result_ppi != parent_para_idx {
-                let tbl = self.get_table_mut(section_idx, result_ppi, control_idx)?;
-                tbl.raw_ctrl_data[common_obj_offsets::V_OFFSET]
-                    .copy_from_slice(&new_v.to_le_bytes());
-                tbl.common.vertical_offset = new_v as u32;
-            }
-        }
+        let result_ppi = parent_para_idx;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
