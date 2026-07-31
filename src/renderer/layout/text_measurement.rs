@@ -528,15 +528,9 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                 font_size,
             ) {
                 w
-            } else if cluster_len[i] > 1 || is_cjk_char(c) || is_fullwidth_symbol(c) {
-                font_size
-            } else if is_narrow_punctuation(c) || is_narrow_paren_for_font(&style.font_family, c) {
-                // Task #257: 콤마·중점 등은 실제 글리프 폭이 반각보다 뚜렷이
-                // 좁음. 폴백 경로에서 font_size * 0.5 를 쓰면 PDF 대비 뒤
-                // 글자가 2~3px 우측으로 밀림. 0.3 으로 분기.
-                font_size * 0.3
             } else {
-                font_size * 0.5
+                // Task #257(narrow punct 0.3em) 포함 — 사다리는 fallback_char_width 한 곳뿐이다.
+                fallback_char_width(&style.font_family, c, cluster_len[i] > 1, font_size)
             };
             // Task #352: 3+ 연속 dash 시퀀스(빈칸/leader) 는 좁은 폭으로 재산출.
             // HY신명조 등 한글 폰트 메트릭의 ASCII '-' 폭(0.83 em) 부풀림 회피.
@@ -1030,10 +1024,9 @@ mod wasm_internals {
         // 개요번호 시작 x 가 ~9~10px 어긋났다. native compute_char_positions 와 동일한
         // 휴리스틱(공백·일반 0.5em, CJK·fullwidth em, narrow_punct 0.3em)으로 폰트 무관
         // 통일한다. PR #1026 의 narrow_punct 분기는 위에서 이미 처리(보존).
-        if super::is_cjk_char(c) || super::is_fullwidth_symbol(c) {
-            return font_size;
-        }
-        font_size * 0.5
+        // ⚠ 여기서도 같은 사다리를 쓴다 — 브라우저가 실제로 타는 경로가 이쪽이라,
+        //   native 만 고치면 화면은 그대로다(이모지 겹침 실사고 2026-07-31).
+        super::fallback_char_width(font_family, c, false, font_size)
     }
 
     /// 한글 '가' 대리 측정값 (HWP 단위, 정수)
