@@ -25,6 +25,39 @@ pub trait TextMeasurer {
 ///
 /// 한글 자모 조합(초+중+종)을 1개 클러스터로 묶는다.
 /// cluster_len[i] > 0: 클러스터 시작 (길이), 0: 클러스터 내부 (이전 문자와 동일 위치)
+/// 이모지는 **전각(1em)** 으로 잰다.
+///
+/// 왜: 문서 글꼴에 이모지 글리프가 없으면 브라우저/시스템 컬러 이모지가 대신 그려지는데,
+/// 그 글리프는 거의 항상 1em 이다. 그런데 폴백 폭이 0.5em 이라 연속으로 놓으면 글자가
+/// 서로 겹치고 **뒤 글자를 덮어버렸다**(2026-07-31 실측: "앞 😀😀😀 뒤" → " 뒤" 사라짐).
+/// 사이에 다른 글자가 끼면 티가 안 나서 오래 남아 있던 결함이다.
+///
+/// ⚠ 이 판정은 `measure_char_width_embedded` 가 **실패한 뒤에만** 쓰인다 — 문서 글꼴이
+/// 그 글자를 실제로 가지고 있으면 그 폭이 이긴다. 그래서 ★·✓ 같은 기호를 좁게 가진
+/// 한글 글꼴을 망치지 않는다.
+fn is_emoji_wide(c: char) -> bool {
+    matches!(c as u32,
+        0x1F300..=0x1FAFF   // 그림문자·사람·동물·음식·기호 본진
+        | 0x1F000..=0x1F02F // 마작
+        | 0x1F0A0..=0x1F0FF // 트럼프
+        | 0x1F100..=0x1F1FF // 괄호 문자·지역 표시(국기)
+        | 0x2600..=0x27BF   // 기타 기호·딩벳(☀ ✅ ✈ …)
+        | 0x2B00..=0x2BFF   // 화살표·별
+        | 0x3030 | 0x303D | 0x3297 | 0x3299
+    )
+}
+
+/// 이모지 결합용 문자 — 앞 글자에 붙어 그려지므로 폭 0.
+/// (변이 선택자·ZWJ·피부색 수정자·keycap 결합자)
+fn is_emoji_zero_width(c: char) -> bool {
+    matches!(c as u32,
+        0xFE0E | 0xFE0F       // 변이 선택자 15/16
+        | 0x200D              // ZWJ (가족·직업 조합)
+        | 0x1F3FB..=0x1F3FF   // 피부색 수정자
+        | 0x20E3              // keycap 결합자
+    )
+}
+
 fn build_cluster_len(chars: &[char]) -> Vec<u8> {
     let char_count = chars.len();
     let mut cluster_len = vec![0u8; char_count];
@@ -1681,6 +1714,10 @@ pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f6
         if c == '\u{F081C}' {
             return 0.0;
         }
+        // 이모지 결합 문자는 앞 글자에 붙어 그려진다 — 폭을 따로 세면 그만큼 밀린다.
+        if is_emoji_zero_width(c) {
+            return 0.0;
+        }
         let base_w_raw = if let Some(w) = (c == '\u{318D}')
             .then(|| area_dot_fallback_width(&style.font_family, font_size))
             .flatten()
@@ -1690,7 +1727,11 @@ pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f6
             measure_char_width_embedded(&style.font_family, style.bold, style.italic, c, font_size)
         {
             w
-        } else if cluster_len[i] > 1 || is_cjk_char(c) || is_fullwidth_symbol(c) {
+        } else if cluster_len[i] > 1
+            || is_cjk_char(c)
+            || is_fullwidth_symbol(c)
+            || is_emoji_wide(c)
+        {
             font_size
         } else if is_narrow_punctuation(c) || is_narrow_paren_for_font(&style.font_family, c) {
             // Task #257: 콤마·중점 등 narrow glyph 폴백 폭 (0.5 → 0.3).
@@ -2685,4 +2726,64 @@ mod tests {
     // HWP5 의 `tab_extended[0]` 가 이미 right-tab 결과 위치 (= 우측 끝 - 한컴_seg_w)
     // 로 저장되어 있어 LEFT fallback 이 인코딩 의도와 정합. 본 테스트는 합성 데이터
     // 기반의 잘못된 가정 (RIGHT 정확 매치) 을 검증하던 것이라 삭제.
+
+    /// 이모지 폭 회귀 — 연속 이모지가 겹쳐 뒤 글자를 덮던 결함(2026-07-31 실측).
+    ///
+    /// 증상: "앞 😀😀😀 뒤" → 이모지 셋이 겹쳐 그려지고 " 뒤" 가 사라졌다.
+    /// 원인: 문서 글꼴에 이모지 글리프가 없어 폴백 폭 0.5em 이 쓰였는데, 실제로 그려지는
+    /// 컬러 이모지 글리프는 1em 이다. 사이에 다른 글자가 끼면 티가 안 나 오래 남았다.
+    #[test]
+    fn emoji_falls_back_to_full_width() {
+        let style = TextStyle {
+            font_family: "함초롬바탕".to_string(),
+            font_size: 20.0,
+            ..Default::default()
+        };
+        // 글꼴에 없는 이모지는 전각(1em) — 반각(0.5em)이면 겹친다
+        for e in ["😀", "🎉", "✅", "🏫", "⭐"] {
+            let w = estimate_text_width_unrounded(e, &style);
+            assert!(
+                (w - 20.0).abs() < 0.01,
+                "{e} 폭이 전각이 아니다: {w}px (기대 20px)"
+            );
+        }
+        // 연속 이모지는 개수만큼 늘어난다(하나로 뭉개지지 않는다)
+        let one = estimate_text_width_unrounded("😀", &style);
+        let three = estimate_text_width_unrounded("😀😀😀", &style);
+        assert!(
+            (three - one * 3.0).abs() < 0.01,
+            "연속 이모지 폭이 누적되지 않는다: 1개 {one}px, 3개 {three}px"
+        );
+    }
+
+    /// 결합 문자(변이 선택자·ZWJ·피부색)는 앞 글자에 붙어 그려지므로 폭 0.
+    #[test]
+    fn emoji_joiners_have_zero_width() {
+        let style = TextStyle {
+            font_family: "함초롬바탕".to_string(),
+            font_size: 20.0,
+            ..Default::default()
+        };
+        let plain = estimate_text_width_unrounded("✅", &style);
+        // U+FE0F(변이 선택자)를 붙여도 폭이 그대로여야 한다
+        let with_vs = estimate_text_width_unrounded("✅\u{FE0F}", &style);
+        assert!(
+            (with_vs - plain).abs() < 0.01,
+            "변이 선택자가 폭을 더한다: {plain}px → {with_vs}px"
+        );
+    }
+
+    /// ⚠ 글꼴이 가진 글자는 이 폴백이 건드리지 않는다 — ★·✓ 를 좁게 가진 글꼴을 망치면 안 된다.
+    #[test]
+    fn emoji_fallback_does_not_touch_normal_text() {
+        let style = TextStyle {
+            font_family: "함초롬바탕".to_string(),
+            font_size: 20.0,
+            ..Default::default()
+        };
+        let hangul = estimate_text_width_unrounded("가", &style);
+        let latin = estimate_text_width_unrounded("a", &style);
+        assert!(hangul > 0.0 && latin > 0.0);
+        assert!(latin < hangul, "라틴 글자가 전각이 되면 안 된다: a={latin}px, 가={hangul}px");
+    }
 }
