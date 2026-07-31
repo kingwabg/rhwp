@@ -741,6 +741,31 @@ impl DocumentCore {
         self.table_transpose_clipboard.is_some()
     }
 
+    /// 한 구역의 표를 전부 열거한다 — `[{"para":N,"controlIdx":N,"rowCount":N,"colCount":N}]`
+    ///
+    /// 왜 필요한가: 형제 API(getTableDimensions·getTableCellBboxes)는 **표 위치를 이미 알 때**
+    /// 쓰는 것들이라, 문서 전체를 훑는 쪽(서식 규정 검사 등)은 문단×컨트롤을 무작정 찔러
+    /// 예외로 판별해야 했다 — 느리고, "표 아님"과 "범위 초과"를 구분하지 못한다.
+    pub fn get_tables_native(&self, section_idx: usize) -> Result<String, HwpError> {
+        let section = self
+            .document
+            .sections
+            .get(section_idx)
+            .ok_or_else(|| HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx)))?;
+        let mut out: Vec<String> = Vec::new();
+        for (pi, para) in section.paragraphs.iter().enumerate() {
+            for (ci, ctrl) in para.controls.iter().enumerate() {
+                if let Control::Table(t) = ctrl {
+                    out.push(format!(
+                        "{{\"para\":{},\"controlIdx\":{},\"rowCount\":{},\"colCount\":{}}}",
+                        pi, ci, t.row_count, t.col_count
+                    ));
+                }
+            }
+        }
+        Ok(format!("[{}]", out.join(",")))
+    }
+
     pub(crate) fn get_table_dimensions_native(
         &self,
         section_idx: usize,

@@ -2568,6 +2568,15 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 구역 안의 표를 전부 열거한다(문서 전체를 훑는 검사용).
+    ///
+    /// 반환: JSON `[{"para":N,"controlIdx":N,"rowCount":N,"colCount":N}]`
+    #[wasm_bindgen(js_name = getTables)]
+    pub fn get_tables(&self, section_idx: u32) -> Result<String, JsValue> {
+        self.get_tables_native(section_idx as usize)
+            .map_err(|e| e.into())
+    }
+
     /// 표 셀의 행/열/병합 정보를 반환한다.
     ///
     /// 반환: JSON `{"row":N,"col":N,"rowSpan":N,"colSpan":N}`
