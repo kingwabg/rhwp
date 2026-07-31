@@ -570,6 +570,16 @@ fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
             utf16_end,
             para.text.chars().count(),
         );
+        // 마지막 줄은 **문단 텍스트 끝까지**다 — utf16 변환을 거치지 않는다.
+        //
+        // 위에서 마지막 줄의 끝을 `para.char_count` 로 잡는데, 그 값은 UTF-16 오프셋으로
+        // 해석된다. 편집으로 만들어진 문단은 거기에 **글자 수**가 들어 있어, 이모지처럼
+        // UTF-16 에서 2칸인 글자가 있으면 그 개수만큼 줄이 짧게 끊겼다 —
+        // "앞 😀😀😀 뒤" 에서 " 뒤" 가 줄 밖으로 밀려 사라지고 캐럿이 줄 머리로
+        // 되돌아갔다(2026-07-31 실측). BMP 문자만 있으면 두 값이 같아 오래 안 드러났다.
+        if line_idx + 1 == line_seg_count {
+            text_end = para.text.chars().count();
+        }
         if text_end < text_start {
             text_end = text_start;
         }

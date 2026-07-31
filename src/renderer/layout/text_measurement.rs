@@ -25,6 +25,27 @@ pub trait TextMeasurer {
 ///
 /// 한글 자모 조합(초+중+종)을 1개 클러스터로 묶는다.
 /// cluster_len[i] > 0: 클러스터 시작 (길이), 0: 클러스터 내부 (이전 문자와 동일 위치)
+/// 글꼴에 글리프가 없을 때의 **폴백 폭 사다리** — 폭 계산과 캐럿 위치가 같은 답을 내야 한다.
+///
+/// ⚠ 이 사다리는 한때 `estimate_text_width_unrounded` 와 `compute_char_positions` 에
+/// **따로 복사돼 있었다**. 그래서 이모지 폭을 한쪽만 고쳤더니 줄바꿈은 바뀌고 캐럿은
+/// 그대로여서 글자가 겹쳤다(2026-07-31 실측). 한 곳에서만 고치게 여기로 모은다.
+pub(crate) fn fallback_char_width(
+    font_family: &str,
+    c: char,
+    cluster_wide: bool,
+    font_size: f64,
+) -> f64 {
+    if cluster_wide || is_cjk_char(c) || is_fullwidth_symbol(c) || is_emoji_wide(c) {
+        font_size
+    } else if is_narrow_punctuation(c) || is_narrow_paren_for_font(font_family, c) {
+        // Task #257: 콤마·중점 등 narrow glyph 폴백 폭 (0.5 → 0.3).
+        font_size * 0.3
+    } else {
+        font_size * 0.5
+    }
+}
+
 /// 이모지는 **전각(1em)** 으로 잰다.
 ///
 /// 왜: 문서 글꼴에 이모지 글리프가 없으면 브라우저/시스템 컬러 이모지가 대신 그려지는데,
@@ -351,6 +372,10 @@ fn compute_char_positions_walk(
         }
         // [Issue #677] HWP PUA 채움 문자 (U+F081C) — 시각 폭 0 (한컴 PDF 정합).
         if c == '\u{F081C}' {
+            return 0.0;
+        }
+        // 이모지 결합 문자(변이 선택자·ZWJ·피부색)는 앞 글자에 붙어 그려진다 — 폭 0.
+        if is_emoji_zero_width(c) {
             return 0.0;
         }
         let char_px_raw = char_px_raw(i, c, &chars, &cluster_len);
@@ -702,13 +727,8 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                 font_size,
             ) {
                 w
-            } else if cluster_len[i] > 1 || is_cjk_char(c) || is_fullwidth_symbol(c) {
-                font_size
-            } else if is_narrow_punctuation(c) || is_narrow_paren_for_font(&style.font_family, c) {
-                // Task #257: 콤마·중점 등 narrow glyph 폴백 폭 (0.5 → 0.3).
-                font_size * 0.3
             } else {
-                font_size * 0.5
+                fallback_char_width(&style.font_family, c, cluster_len[i] > 1, font_size)
             }
         };
         // [#2132] 인라인 탭 divergent 경로 훅 — HWP5 raw ext 인코딩 legacy 해석 유지
@@ -1727,17 +1747,8 @@ pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f6
             measure_char_width_embedded(&style.font_family, style.bold, style.italic, c, font_size)
         {
             w
-        } else if cluster_len[i] > 1
-            || is_cjk_char(c)
-            || is_fullwidth_symbol(c)
-            || is_emoji_wide(c)
-        {
-            font_size
-        } else if is_narrow_punctuation(c) || is_narrow_paren_for_font(&style.font_family, c) {
-            // Task #257: 콤마·중점 등 narrow glyph 폴백 폭 (0.5 → 0.3).
-            font_size * 0.3
         } else {
-            font_size * 0.5
+            fallback_char_width(&style.font_family, c, cluster_len[i] > 1, font_size)
         };
         // Task #352: 3+ 연속 dash leader 좁은 base 0.3 em + 라인 슬랙 분배.
         let is_leader = is_dash_leader_run(&chars, i);
@@ -2785,5 +2796,35 @@ mod tests {
         let latin = estimate_text_width_unrounded("a", &style);
         assert!(hangul > 0.0 && latin > 0.0);
         assert!(latin < hangul, "라틴 글자가 전각이 되면 안 된다: a={latin}px, 가={hangul}px");
+    }
+
+    /// 캐럿 위치도 이모지를 전각으로 잡아야 한다 — 폭 계산과 **같은 답**이어야 겹치지 않는다.
+    /// (실측 2026-07-31: 폴백 사다리가 두 곳에 복사돼 있어 한쪽만 고쳤더니 캐럿이 반각으로
+    ///  남아 이모지가 서로 겹치고 뒤 글자를 덮었다)
+    #[test]
+    fn caret_positions_match_emoji_full_width() {
+        let style = TextStyle {
+            font_family: "함초롬바탕".to_string(),
+            font_size: 20.0,
+            ..Default::default()
+        };
+        let m = EmbeddedTextMeasurer;
+        let pos = m.compute_char_positions("앞 😀😀😀 뒤", &style);
+        // 이모지 3개의 전진폭(인덱스 2→3, 3→4, 4→5)이 각각 1em 이어야 한다
+        for i in 2..5 {
+            let step = pos[i + 1] - pos[i];
+            assert!(
+                (step - 20.0).abs() < 0.01,
+                "이모지 {}번째 전진폭이 전각이 아니다: {step}px (기대 20px) / 전체 {pos:?}",
+                i - 1
+            );
+        }
+        // 전체 폭도 측정 함수와 어긋나면 안 된다(두 경로가 같은 답)
+        let total = *pos.last().unwrap();
+        let measured = estimate_text_width_unrounded("앞 😀😀😀 뒤", &style);
+        assert!(
+            (total - measured).abs() < 0.01,
+            "캐럿 경로와 측정 경로가 다르다: 캐럿 {total}px vs 측정 {measured}px"
+        );
     }
 }
