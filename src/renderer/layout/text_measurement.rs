@@ -36,7 +36,10 @@ pub(crate) fn fallback_char_width(
     cluster_wide: bool,
     font_size: f64,
 ) -> f64 {
-    if cluster_wide || is_cjk_char(c) || is_fullwidth_symbol(c) || is_emoji_wide(c) {
+    if is_emoji_presentation(c) {
+        // 컬러 이모지는 시스템 글꼴이 그린다 — 1em 으로 잡으면 뒤 글자를 덮는다
+        font_size * EMOJI_ADVANCE_EM
+    } else if cluster_wide || is_cjk_char(c) || is_fullwidth_symbol(c) || is_emoji_wide(c) {
         font_size
     } else if is_narrow_punctuation(c) || is_narrow_paren_for_font(font_family, c) {
         // Task #257: 콤마·중점 등 narrow glyph 폴백 폭 (0.5 → 0.3).
@@ -67,6 +70,49 @@ fn is_emoji_wide(c: char) -> bool {
         | 0x3030 | 0x303D | 0x3297 | 0x3299
     )
 }
+
+/// **컬러 이모지로 그려지는** 글자인가 (유니코드 Emoji_Presentation=Yes).
+///
+/// 왜 `is_emoji_wide` 와 따로 두나(2026-08-01 실측):
+/// 같은 U+2600–27BF 블록 안에서도 ✅(U+2705)는 컬러 이모지로 **1.28em** 이고
+/// ✈(U+2708)·★·☀ 는 문서 글꼴의 흑백 기호로 **0.97em** 이다. 블록으로는 못 가른다 —
+/// 가르는 건 Emoji_Presentation 속성이다(변이 선택자 FE0F 없이도 컬러로 뜨는 글자).
+/// 아래 목록은 그 속성의 실제 범위다(추측 아님).
+///
+/// ⚠ 이 판정이 틀리면 두 방향으로 깨진다: 컬러인데 좁게 잡으면 **뒤 글자를 덮고**,
+///   흑백인데 넓게 잡으면 **글자 사이가 벌어진다**. 둘 다 실측으로 확인할 것.
+fn is_emoji_presentation(c: char) -> bool {
+    matches!(c as u32,
+        0x231A..=0x231B | 0x23E9..=0x23EC | 0x23F0 | 0x23F3
+        | 0x25FD..=0x25FE | 0x2614..=0x2615 | 0x2648..=0x2653 | 0x267F
+        | 0x2693 | 0x26A1 | 0x26AA..=0x26AB | 0x26BD..=0x26BE
+        | 0x26C4..=0x26C5 | 0x26CE | 0x26D4 | 0x26EA | 0x26F2..=0x26F3
+        | 0x26F5 | 0x26FA | 0x26FD | 0x2705 | 0x270A..=0x270B | 0x2728
+        | 0x274C | 0x274E | 0x2753..=0x2755 | 0x2757 | 0x2795..=0x2797
+        | 0x27B0 | 0x27BF | 0x2B1B..=0x2B1C | 0x2B50 | 0x2B55
+        | 0x1F004 | 0x1F0CF | 0x1F18E | 0x1F191..=0x1F19A
+        | 0x1F1E6..=0x1F1FF // 지역 표시(국기)
+        | 0x1F201 | 0x1F21A | 0x1F22F | 0x1F232..=0x1F236 | 0x1F238..=0x1F23A
+        | 0x1F250..=0x1F251 | 0x1F300..=0x1F320 | 0x1F32D..=0x1F335
+        | 0x1F337..=0x1F37C | 0x1F37E..=0x1F393 | 0x1F3A0..=0x1F3CA
+        | 0x1F3CF..=0x1F3D3 | 0x1F3E0..=0x1F3F0 | 0x1F3F4 | 0x1F3F8..=0x1F43E
+        | 0x1F440 | 0x1F442..=0x1F4FC | 0x1F4FF..=0x1F53D | 0x1F54B..=0x1F54E
+        | 0x1F550..=0x1F567 | 0x1F57A | 0x1F595..=0x1F596 | 0x1F5A4
+        | 0x1F5FB..=0x1F64F | 0x1F680..=0x1F6C5 | 0x1F6CC | 0x1F6D0..=0x1F6D2
+        | 0x1F6D5..=0x1F6D7 | 0x1F6EB..=0x1F6EC | 0x1F6F4..=0x1F6FC
+        | 0x1F7E0..=0x1F7EB | 0x1F90C..=0x1F93A | 0x1F93C..=0x1F945
+        | 0x1F947..=0x1F9FF | 0x1FA70..=0x1FAFF
+    )
+}
+
+/// 컬러 이모지의 가로 폭 배율 — 문서 글꼴이 아니라 **시스템 컬러 이모지 글꼴**이 그린다.
+///
+/// 실측(2026-08-01, 10pt=13.3px): 😀🎉🧑👍✅ 전부 17px = **1.28em**.
+/// 우리는 1.0em(13.3px)으로 잡고 있어 글자가 좁아 보였다("한컴은 괜찮게 나오는데
+/// 우리 이모지는 너비가 작아 보여" — 사용자 지적).
+/// ⚠ 값이 플랫폼마다 다르다 — WASM 에서는 아래 measure_char_width_hwp 가 브라우저에
+///   직접 물어 이 상수를 덮는다. 이 상수는 native(브라우저 없음) 폴백이다.
+pub(crate) const EMOJI_ADVANCE_EM: f64 = 1.28;
 
 /// 이모지 결합용 문자 — 앞 글자에 붙어 그려지므로 폭 0.
 /// (변이 선택자·ZWJ·피부색 수정자·keycap 결합자)
@@ -1022,6 +1068,11 @@ mod wasm_internals {
         // 폰트는 브라우저 fallback 폰트로 측정되어 폰트별로 폭이 달라(예: 나눔바른
         // 고딕 ≠ 맑은 고딕) 목차 페이지의 선두 공백 CharShape 가 인접 문단과 다를 때
         // 개요번호 시작 x 가 ~9~10px 어긋났다. native compute_char_positions 와 동일한
+        // ⚠ 컬러 이모지는 JS 브릿지로 재면 **안 된다**. 브릿지는 1000px 로 재서 배율을
+        //   얻는데, Chrome 은 큰 크기에서 컬러 이모지 글꼴을 쓰지 못하고 .notdef(1em)을
+        //   돌려준다. 실측(2026-08-01, 함초롬바탕 😀):
+        //     13.3px → 1.278em (진짜)   50·100·200·400·1000px → 1.0em (거짓)
+        //   그래서 아래 fallback_char_width 의 상수(EMOJI_ADVANCE_EM)로 간다.
         // 휴리스틱(공백·일반 0.5em, CJK·fullwidth em, narrow_punct 0.3em)으로 폰트 무관
         // 통일한다. PR #1026 의 narrow_punct 분기는 위에서 이미 처리(보존).
         // ⚠ 여기서도 같은 사다리를 쓴다 — 브라우저가 실제로 타는 경로가 이쪽이라,
@@ -1627,6 +1678,13 @@ fn measure_char_width_embedded(
     c: char,
     font_size: f64,
 ) -> Option<f64> {
+    // ⚠ 컬러 이모지는 **문서 글꼴이 그리지 않는다** — 시스템 이모지 글꼴이 그린다.
+    //   그런데 내장 메트릭이 .notdef 폭(1em)을 돌려주는 바람에 여기서 답이 정해져
+    //   폴백 사다리(1.28em)까지 가지도 못했다(2026-08-01 실측: 😀 13.3px, 실제 17px).
+    //   여기서 None 을 내면 모든 호출부(폭·캐럿·wasm·native)가 한꺼번에 고쳐진다.
+    if is_emoji_presentation(c) {
+        return None;
+    }
     // CSS font-family 체인에서 첫 번째 폰트명으로 메트릭 조회
     let primary_name = font_family.split(',').next().unwrap_or(font_family).trim();
     // [#2156] 함초롬바탕 비한글 문자 — Haansoft Batang 메트릭 대체 (한글 동작).
@@ -2735,7 +2793,10 @@ mod tests {
     ///
     /// 증상: "앞 😀😀😀 뒤" → 이모지 셋이 겹쳐 그려지고 " 뒤" 가 사라졌다.
     /// 원인: 문서 글꼴에 이모지 글리프가 없어 폴백 폭 0.5em 이 쓰였는데, 실제로 그려지는
-    /// 컬러 이모지 글리프는 1em 이다. 사이에 다른 글자가 끼면 티가 안 나 오래 남았다.
+    /// 컬러 이모지 글리프는 더 넓다. 사이에 다른 글자가 끼면 티가 안 나 오래 남았다.
+    ///
+    /// [2026-08-01 후속] 1em 도 여전히 좁았다 — 브라우저 실측으로 컬러 이모지의 전진폭은
+    /// **1.28em**(10pt=13.3px 에서 17px)이었다. 흑백 기호(★ ☀ ✈)는 0.97em 이라 그대로 둔다.
     #[test]
     fn emoji_falls_back_to_full_width() {
         let style = TextStyle {
@@ -2743,12 +2804,21 @@ mod tests {
             font_size: 20.0,
             ..Default::default()
         };
-        // 글꼴에 없는 이모지는 전각(1em) — 반각(0.5em)이면 겹친다
+        // 컬러 이모지(Emoji_Presentation=Yes)는 1.28em
+        let emoji_w = 20.0 * EMOJI_ADVANCE_EM;
         for e in ["😀", "🎉", "✅", "🏫", "⭐"] {
             let w = estimate_text_width_unrounded(e, &style);
             assert!(
-                (w - 20.0).abs() < 0.01,
-                "{e} 폭이 전각이 아니다: {w}px (기대 20px)"
+                (w - emoji_w).abs() < 0.01,
+                "{e} 폭이 컬러 이모지 폭이 아니다: {w}px (기대 {emoji_w}px)"
+            );
+        }
+        // 흑백 기호는 문서 글꼴이 그린다 — 넓히면 글자 사이가 벌어진다
+        for sym in ["★", "☀", "✈", "▶", "♥"] {
+            let w = estimate_text_width_unrounded(sym, &style);
+            assert!(
+                w <= 20.0 + 0.01,
+                "{sym} 은 흑백 기호라 1em 을 넘으면 안 된다: {w}px"
             );
         }
         // 연속 이모지는 개수만큼 늘어난다(하나로 뭉개지지 않는다)
@@ -2803,12 +2873,13 @@ mod tests {
         };
         let m = EmbeddedTextMeasurer;
         let pos = m.compute_char_positions("앞 😀😀😀 뒤", &style);
-        // 이모지 3개의 전진폭(인덱스 2→3, 3→4, 4→5)이 각각 1em 이어야 한다
+        // 이모지 3개의 전진폭(인덱스 2→3, 3→4, 4→5)이 각각 1.28em 이어야 한다
+        let emoji_w = 20.0 * EMOJI_ADVANCE_EM;
         for i in 2..5 {
             let step = pos[i + 1] - pos[i];
             assert!(
-                (step - 20.0).abs() < 0.01,
-                "이모지 {}번째 전진폭이 전각이 아니다: {step}px (기대 20px) / 전체 {pos:?}",
+                (step - emoji_w).abs() < 0.01,
+                "이모지 {}번째 전진폭이 어긋난다: {step}px (기대 {emoji_w}px) / 전체 {pos:?}",
                 i - 1
             );
         }
