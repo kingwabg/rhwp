@@ -1822,19 +1822,20 @@ impl DocumentCore {
                 table.local_resize_cols.push(col);
             }
         }
-        for (row, (count, delta_sum)) in width_delta_by_row {
-            if count >= 2
-                && (delta_sum == 0 || force_local_resize)
-                && !table.local_resize_rows.contains(&row)
-            {
+        for (row, (count, _delta_sum)) in width_delta_by_row {
+            // ⚠ 종전 조건은 `delta_sum == 0 || force_local_resize` 였다 —
+            //   그런데 **정상 열 드래그가 바로 합 0**이다(표 폭을 지키려고 +d/−d 를
+            //   짝으로 보낸다). 그래서 모든 행이 '독립 폭'으로 등록됐고,
+            //   resolve_column_widths 가 그런 행을 열 폭 계산에서 통째로 빼는 바람에
+            //   열이 0에서 출발해 격자가 붕괴했다(2026-08-01 실측 187→24px).
+            //   독립 폭은 **호출자가 localResize 로 요청할 때만**이다(Shift 드래그).
+            if count >= 2 && force_local_resize && !table.local_resize_rows.contains(&row) {
                 table.local_resize_rows.push(row);
             }
         }
-        for (col, (count, delta_sum)) in height_delta_by_col {
-            if count >= 2
-                && (delta_sum == 0 || force_local_resize)
-                && !table.local_resize_cols.contains(&col)
-            {
+        for (col, (count, _delta_sum)) in height_delta_by_col {
+            // 세로도 같은 이유 — 행 경계선 드래그의 합 0 은 정상이다
+            if count >= 2 && force_local_resize && !table.local_resize_cols.contains(&col) {
                 table.local_resize_cols.push(col);
             }
         }
@@ -3160,6 +3161,66 @@ mod tests {
     use crate::model::shape::common_obj_offsets;
     use crate::parser::control::parse_common_obj_attr;
     use crate::DocumentCore;
+
+    /// [officex] 열 경계선 드래그가 **격자를 무너뜨리면 안 된다**.
+    ///
+    /// 증상(2026-08-01 사용자 신고 "표 경계선 이동이 또 이상해졌어"): 3×3 표에서 첫
+    /// 세로선을 오른쪽으로 끌면 열이 187·187·187px → **24·24·512px** 로 붕괴했다.
+    ///
+    /// 원인: 정상적인 열 드래그는 각 행에 (+d, −d) 두 갱신을 보낸다 — 표 폭을
+    /// 유지하려면 합이 **0이어야** 한다. 그런데 `count>=2 && delta_sum==0` 을
+    /// "이 행은 독립 폭(local_resize)" 신호로 읽어 모든 행을 등록했고,
+    /// resolve_column_widths 는 local_resize 행을 **열 폭 계산에서 통째로 제외**한다.
+    /// 결국 모든 행이 빠져 열 폭이 0에서 출발했다.
+    ///
+    /// 독립 폭은 **호출자가 localResize 로 요청할 때만**이다(Shift 드래그).
+    #[test]
+    fn column_drag_keeps_grid_and_does_not_mark_rows_local() {
+        let mut core = DocumentCore::new_empty();
+        let mut section = crate::model::document::Section::default();
+        section.section_def.page_def = crate::model::page::PageDef::a4_default();
+        section
+            .paragraphs
+            .push(crate::model::paragraph::Paragraph::new_empty());
+        let mut document = crate::model::document::Document::default();
+        document.sections.push(section);
+        core.set_document(document);
+        core.create_blank_document_native().expect("blank");
+        let created = core.create_table_native(0, 0, 0, 3, 3).expect("table");
+        let v: serde_json::Value = serde_json::from_str(&created).expect("json");
+        let pi = v["paraIdx"].as_u64().expect("paraIdx") as usize;
+        let ci = v["controlIdx"].as_u64().expect("controlIdx") as usize;
+
+        let before = {
+            let t = core.get_table_mut(0, pi, ci).expect("table");
+            t.get_column_widths()
+        };
+        assert_eq!(before.len(), 3, "3열이어야 한다");
+
+        // 첫 세로선을 오른쪽으로: 각 행마다 (col0 +d, col1 −d) — 합 0 이 정상이다
+        let d = 3060;
+        let updates = format!(
+            "[{{\"cellIdx\":0,\"widthDelta\":{d}}},{{\"cellIdx\":1,\"widthDelta\":{md}}},\
+             {{\"cellIdx\":3,\"widthDelta\":{d}}},{{\"cellIdx\":4,\"widthDelta\":{md}}},\
+             {{\"cellIdx\":6,\"widthDelta\":{d}}},{{\"cellIdx\":7,\"widthDelta\":{md}}}]",
+            d = d,
+            md = -d,
+        );
+        core.resize_table_cells_native(0, pi, ci, &updates).expect("resize");
+
+        let t = core.get_table_mut(0, pi, ci).expect("table");
+        assert!(
+            t.local_resize_rows.is_empty(),
+            "정상 열 드래그는 행을 독립 폭으로 만들지 않는다: {:?}",
+            t.local_resize_rows
+        );
+        let after = t.get_column_widths();
+        assert_eq!(
+            (after[0] as i64, after[1] as i64, after[2] as i64),
+            (before[0] as i64 + d as i64, before[1] as i64 - d as i64, before[2] as i64),
+            "열 폭이 끈 만큼만 옮겨져야 한다 (전 {before:?} → 후 {after:?})"
+        );
+    }
 
     /// [officex] resizeTableCells 규약 핀 — 절대 'width'/'height' 키는 조용히 무시되지
     /// 않고 거부된다. 종전엔 0 델타로 접혀 {ok:true} 만 나가서 "리사이즈가 안 먹는다"로
