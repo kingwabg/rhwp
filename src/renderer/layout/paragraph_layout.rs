@@ -825,6 +825,37 @@ pub(crate) fn right_tab_block_width(
     w
 }
 
+/// 정렬에 따라 어떤 간격을 벌릴지 — (낱말 사이 분배, 글자 사이 분배).
+///
+/// 한/글 정의: 양쪽 = 낱말 사이·마지막 줄 제외 / 나눔 = 낱말 사이·마지막 줄 포함 /
+/// 배분 = 글자 사이까지·마지막 줄 포함.
+/// 떼어 둔 이유: 나눔이 배분과 같아진 사고(2026-08-01)를 단위 테스트가 잡게 하려고.
+fn align_spacing_flags(alignment: Alignment, is_last_line: bool, forced_break: bool) -> (bool, bool) {
+    let needs_justify = (alignment == Alignment::Justify && !is_last_line && !forced_break)
+        || (alignment == Alignment::Split && !forced_break);
+    let needs_distribute = alignment == Alignment::Distribute;
+    (needs_justify, needs_distribute)
+}
+
+#[cfg(test)]
+mod align_flag_tests {
+    use super::align_spacing_flags;
+    use crate::model::style::Alignment;
+
+    /// 나눔은 양쪽·배분 **어느 쪽과도 달라야** 한다.
+    #[test]
+    fn split_differs_from_justify_and_distribute() {
+        // 마지막 줄이 아닐 때: 양쪽·나눔은 낱말 분배, 배분은 글자 분배
+        assert_eq!(align_spacing_flags(Alignment::Justify, false, false), (true, false));
+        assert_eq!(align_spacing_flags(Alignment::Split, false, false), (true, false));
+        assert_eq!(align_spacing_flags(Alignment::Distribute, false, false), (false, true));
+        // 마지막 줄: 양쪽만 손을 뗀다 — 나눔·배분은 계속 맞춘다
+        assert_eq!(align_spacing_flags(Alignment::Justify, true, false), (false, false));
+        assert_eq!(align_spacing_flags(Alignment::Split, true, false), (true, false));
+        assert_eq!(align_spacing_flags(Alignment::Distribute, true, false), (false, true));
+    }
+}
+
 /// [Task #2067] 정렬(양쪽/배분/나눔)·오버플로우·셀 underflow 에 따른 여분 간격 계산.
 /// 반환 = (extra_word_sp, extra_char_sp, extra_dash_sp). Task #352 dash leader 분배 포함.
 #[allow(clippy::too_many_arguments)]
@@ -3402,11 +3433,19 @@ impl LayoutEngine {
             // 머리말/꼬리말은 내부 문단 인덱스를 `usize::MAX - i`로 넘긴다.
             // HWP3 머리말 단일 줄 Justify도 한컴처럼 머리말 폭까지 공간을 벌려야 한다.
             let is_header_footer_para = para_index >= usize::MAX - 1024;
-            let needs_justify = alignment == Alignment::Justify
-                && (!is_last_line_of_para || is_header_footer_para)
-                && !has_forced_break;
-            let needs_distribute = alignment == Alignment::Distribute
-                || (alignment == Alignment::Split && !is_last_line_of_para && !has_forced_break);
+            // 정렬 3종의 차이(한/글 정의):
+            //   양쪽 = 낱말 사이만 벌려 좌우 맞춤, **마지막 줄 제외**
+            //   나눔 = 낱말 사이만 벌려 좌우 맞춤, **마지막 줄 포함**
+            //   배분 = **글자 사이까지** 벌려 좌우 맞춤, 마지막 줄 포함
+            // ⚠ 종전에는 나눔을 배분과 같은 분배(글자 사이)로 태우고 마지막 줄만
+            //   빼고 있었다 — 그래서 첫 줄에서 배분과 **완전히 같아** 보였다
+            //   (2026-08-01 실측: 첫줄끝·공백폭·글자폭 세 값이 배분과 일치).
+            //   판정 자체는 split_align_flags() 로 떼어 두어 단위 테스트가 잡는다.
+            let (needs_justify, needs_distribute) = align_spacing_flags(
+                alignment,
+                is_last_line_of_para && !is_header_footer_para,
+                has_forced_break,
+            );
 
             let has_tabs = comp_line.runs.iter().any(|r| r.text.contains('\t'));
             let total_char_count: usize = comp_line
