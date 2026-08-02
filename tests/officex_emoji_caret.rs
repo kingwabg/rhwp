@@ -31,19 +31,40 @@ fn caret_advances_monotonically_across_emoji() {
     }
 }
 
-/// 이모지 줄과 같은 자리에 전각 한글을 넣은 줄이 거의 같은 좌표여야 한다
-/// (= 이모지를 전각으로 재고, 줄이 끝까지 살아 있다).
+/// 이모지 줄과 전각 한글 줄의 **글자 자리 수**가 같아야 한다(= 줄이 끝까지 살아 있다).
+///
+/// 폭까지 같기를 요구하던 판정은 폐기했다: 컬러 이모지는 전각(1.0em)이 아니라
+/// **1.28em** 이 정본이다(adb4cdc37, 오라클 = canvas measureText 10pt→17px).
+/// 종전 단언은 그 수리 이전의 의도를 굳혀 둔 것이라 수리와 충돌했다.
 #[test]
-fn emoji_line_matches_cjk_line() {
+fn emoji_line_keeps_all_caret_slots() {
     let emoji = caret_xs("앞 😀😀😀 뒤");
     let cjk = caret_xs("앞 가나다 뒤");
     assert_eq!(emoji.len(), cjk.len(), "글자 수가 달라졌다: {emoji:?} vs {cjk:?}");
-    for (i, (a, b)) in emoji.iter().zip(cjk.iter()).enumerate() {
+    // 앞머리("앞 ")는 이모지와 무관하니 좌표가 같아야 한다 — 줄 시작이 밀리면 다른 결함이다.
+    for i in 0..3 {
         assert!(
-            (a - b).abs() < 2.0,
-            "{i}번째 캐럿이 어긋난다: 이모지 {a} vs 한글 {b}\n  {emoji:?}\n  {cjk:?}"
+            (emoji[i] - cjk[i]).abs() < 0.5,
+            "이모지 앞 구간이 어긋난다: {i}번째 {} vs {}\n  {emoji:?}\n  {cjk:?}",
+            emoji[i],
+            cjk[i]
         );
     }
+}
+
+/// 컬러 이모지는 전각보다 **넓다**(1.28em) — 화면에 그려지는 폭에 맞춘 정본(adb4cdc37).
+/// 흑백 기호(✈ 등)는 이 대상이 아니라 전각 근처를 유지한다.
+#[test]
+fn color_emoji_is_wider_than_cjk() {
+    let emoji = caret_xs("앞 😀😀😀 뒤");
+    let cjk = caret_xs("앞 가나다 뒤");
+    let emoji_adv = emoji[3] - emoji[2];
+    let cjk_adv = cjk[3] - cjk[2];
+    let ratio = emoji_adv / cjk_adv;
+    assert!(
+        (1.2..=1.4).contains(&ratio),
+        "컬러 이모지 폭이 전각의 1.28배 근처여야 한다 (실측 {ratio:.3}배: 이모지 {emoji_adv:.1}px vs 한글 {cjk_adv:.1}px)"
+    );
 }
 
 /// 이모지가 줄 끝에 있어도 마지막 글자까지 좌표가 나와야 한다(줄이 짧게 끊기지 않는다).
