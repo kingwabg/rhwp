@@ -117,15 +117,18 @@ pub(crate) fn is_emoji_presentation(c: char) -> bool {
 ///   직접 물어 이 상수를 덮는다. 이 상수는 native(브라우저 없음) 폴백이다.
 pub(crate) const EMOJI_ADVANCE_EM: f64 = 1.0;
 
-/// 컬러 이모지 글리프를 본문 글자 높이에 맞추는 축소 배율.
+/// 컬러 이모지 글리프를 본문 글자에 맞추는 축소 배율 — **폭** 기준.
 ///
-/// 실측(2026-08-02, 13.333px, canvas measureText): 이모지 잉크 20px(asc 15 + desc 5),
-/// 한글 12.53px(asc 10.52 + desc 2.01) → 12.53 / 20 ≈ 0.63.
-pub(crate) const EMOJI_GLYPH_SCALE: f64 = 0.63;
+/// 실측(13.333px, canvas measureText): 이모지 잉크 17w × 20h, 한글 '가' 12.9w × 12.5h.
+/// 이모지는 세로로 긴 비율이라 **높이**를 맞추면(0.63) 폭이 10.0 으로 쪼그라들어 글자
+/// 옆에서 작아 보인다(2026-08-03 사용자 지적 "이모지 크기가 좀 작다"). 글자 옆에서
+/// 크기로 읽히는 건 폭이므로 폭을 한글 한 칸에 맞춘다: 12.9 / 17 ≈ 0.76 → 13.0w × 16h.
+pub(crate) const EMOJI_GLYPH_SCALE: f64 = 0.76;
 
-/// 축소해도 baseline 아래로 3.15px(=5 × 0.63) 남으므로 한글 descent(2.01px)에 맞춰
-/// 들어올린다: (3.15 − 2.01) / 13.333 ≈ 0.085em. 이래야 이모지 바닥이 글자 바닥과 같다.
-pub(crate) const EMOJI_BASELINE_LIFT_EM: f64 = 0.085;
+/// 축소 후 baseline 아래로 3.8px(=5 × 0.76) 남으므로 한글 descent(2.0px)에 맞춰
+/// 들어올린다: (3.8 − 2.0) / 13.333 ≈ 0.135em. 이래야 이모지 바닥이 글자 바닥과 같다.
+/// (남는 높이 차 3.5px 는 baseline 위로 — 줄 간격 안쪽 여유에 들어간다.)
+pub(crate) const EMOJI_BASELINE_LIFT_EM: f64 = 0.135;
 
 /// 원본 크기 기준 이모지 잉크 폭 배율 — 축소한 글리프를 진행폭 안에서 가운데 둘 때 쓴다.
 pub(crate) const EMOJI_INK_EM: f64 = 1.28;
