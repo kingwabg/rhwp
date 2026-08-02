@@ -278,6 +278,47 @@ impl DocumentCore {
     }
 
     /// 표의 행/열/셀 수를 반환한다 (네이티브).
+    /// 표 **밖에서 들어올 때** 어느 칸으로 들어갈지 — 캐럿 x 가 걸친 열을 고른다.
+    ///
+    /// 한컴·워드 정합: ↓ 는 첫 행에서, ↑ 는 마지막 행에서 **같은 기준**으로 열을 고른다.
+    /// 그래야 내려간 길과 올라온 길이 서로 뒤집은 모양이 된다(종전엔 ↓ 가 첫 셀, ↑ 가
+    /// 마지막 셀로 고정돼 좌우가 뒤바뀌었다 — 2026-08-02 사용자 지적).
+    ///
+    /// 판정: 각 열 첫 문단의 캐럿 x 를 재서, preferred_x 보다 왼쪽에서 시작하는 열 중
+    /// 가장 오른쪽 것. preferred_x 가 표 왼쪽 밖이면 첫 열.
+    fn pick_cell_in_row_by_x(
+        &self,
+        sec: usize,
+        host_para: usize,
+        ctrl_idx: usize,
+        table: &crate::model::table::Table,
+        row: u16,
+        preferred_x: f64,
+    ) -> usize {
+        let mut chosen: Option<usize> = None;
+        for col in 0..table.col_count {
+            let Some(ci) = table.cell_index_at(row, col) else {
+                continue;
+            };
+            let ctx = Some((host_para, ctrl_idx, ci, 0));
+            let Ok((_, x, _, _)) = self.get_cursor_rect_values(sec, 0, 0, ctx) else {
+                continue;
+            };
+            if chosen.is_none() {
+                chosen = Some(ci); // 첫 열은 기본값 — preferred_x 가 표 왼쪽 밖일 때
+            }
+            if x <= preferred_x + 0.5 {
+                chosen = Some(ci);
+            } else {
+                break; // 열은 왼→오 이므로 한 번 넘어서면 더 볼 것 없다
+            }
+        }
+        chosen.unwrap_or_else(|| {
+            // 좌표를 못 재면 방향에 맞는 모서리로 (종전 동작)
+            table.cell_index_at(row, 0).unwrap_or(0)
+        })
+    }
+
     pub(crate) fn move_vertical_native(
         &self,
         sec: usize,
@@ -1346,22 +1387,28 @@ impl DocumentCore {
         if let Some(ctrl_idx) = has_table_control(para_ref) {
             if let Some(Control::Table(ref table)) = para_ref.controls.get(ctrl_idx) {
                 if delta > 0 {
-                    // ArrowDown → 첫 셀(0,0)의 첫 줄
-                    if let Some(first_cell) = table.cells.first() {
-                        if !first_cell.paragraphs.is_empty() {
-                            let cell_para = &first_cell.paragraphs[0];
+                    // ArrowDown → **첫 행에서 캐럿 x 가 걸친 열**의 첫 줄.
+                    // 종전엔 무조건 첫 셀(1행 1열)로 들어가, 마지막 셀로 들어오는 ↑ 와
+                    // 짝이 안 맞았다(2026-08-02 사용자 지적: 표 위아래 이동이 다르다).
+                    let entry = self
+                        .pick_cell_in_row_by_x(sec, target_para, ctrl_idx, table, 0, preferred_x);
+                    if let Some(cell) = table.cells.get(entry) {
+                        if !cell.paragraphs.is_empty() {
+                            let cell_para = &cell.paragraphs[0];
                             let range = Self::get_line_char_range(cell_para, 0);
-                            let cell_ctx = Some((target_para, ctrl_idx, 0, 0));
+                            let cell_ctx = Some((target_para, ctrl_idx, entry, 0));
                             let offset = self
                                 .find_char_at_x_on_line(sec, 0, cell_ctx, range, preferred_x)
                                 .unwrap_or(0);
                             return Ok((sec, 0, offset, cell_ctx));
                         }
                     }
-                    return Ok((sec, 0, 0, Some((target_para, ctrl_idx, 0, 0))));
+                    return Ok((sec, 0, 0, Some((target_para, ctrl_idx, entry, 0))));
                 } else {
-                    // ArrowUp → 마지막 셀의 마지막 줄
-                    let last_cell_idx = table.cells.len().saturating_sub(1);
+                    // ArrowUp → **마지막 행에서 캐럿 x 가 걸친 열**의 마지막 줄 (↓ 와 대칭)
+                    let last_row = table.row_count.saturating_sub(1);
+                    let last_cell_idx = self
+                        .pick_cell_in_row_by_x(sec, target_para, ctrl_idx, table, last_row, preferred_x);
                     if let Some(last_cell) = table.cells.get(last_cell_idx) {
                         let last_cpi = last_cell.paragraphs.len().saturating_sub(1);
                         if let Some(cell_para) = last_cell.paragraphs.get(last_cpi) {
@@ -1378,7 +1425,6 @@ impl DocumentCore {
                             return Ok((sec, last_cpi, offset, cell_ctx));
                         }
                     }
-                    let last_cell_idx = table.cells.len().saturating_sub(1);
                     return Ok((sec, 0, 0, Some((target_para, ctrl_idx, last_cell_idx, 0))));
                 }
             }
@@ -1563,6 +1609,19 @@ impl DocumentCore {
             // 문서 끝 — 표 마지막 위치 유지
             Ok((sec, 0, 0, None))
         } else {
+            // 위로 나가면 **표 앞 문단**으로. 종전엔 표를 품은 문단(ppi) 자신에 섰는데,
+            // 아래로 나갈 때는 ppi+1 로 건너뛰므로 위아래가 짝이 안 맞았다 — 표 위에서
+            // ↑ 를 누르면 같은 자리에 한 번 더 서는 유령 정거장이 생겼다(2026-08-02).
+            if ppi > 0 {
+                return self.enter_paragraph(sec, ppi - 1, delta, preferred_x);
+            }
+            if sec > 0 {
+                let prev_len = self.document.sections[sec - 1].paragraphs.len();
+                if prev_len > 0 {
+                    return self.enter_paragraph(sec - 1, prev_len - 1, delta, preferred_x);
+                }
+            }
+            // 문서 처음 — 표 위치 유지
             Ok((sec, ppi, 0, None))
         }
     }
