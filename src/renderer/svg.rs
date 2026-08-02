@@ -2907,6 +2907,31 @@ impl Renderer for SvgRenderer {
                 continue;
             }
             let char_x = x + char_positions[*char_idx];
+
+            // 컬러 이모지: 캔버스와 같은 산식으로 글자 높이에 맞춰 줄이고 바닥을 맞춘다
+            // (web_canvas.rs 의 같은 분기 참조 — 화면만 고치면 인쇄가 어긋난다).
+            if let Some(ch) = cluster_str.chars().next() {
+                if crate::renderer::layout::text_measurement::is_emoji_presentation(ch) {
+                    use crate::renderer::layout::text_measurement::{
+                        EMOJI_BASELINE_LIFT_EM, EMOJI_GLYPH_SCALE, EMOJI_INK_EM,
+                    };
+                    let advance = cluster_advance(*char_idx, cluster_str);
+                    let scaled = font_size * EMOJI_GLYPH_SCALE;
+                    let ink_w = scaled * EMOJI_INK_EM;
+                    let dx = ((advance - ink_w) / 2.0).max(0.0);
+                    self.output.push_str(&format!(
+                        "<text x=\"{:.4}\" y=\"{:.4}\" font-family=\"{}\" font-size=\"{:.4}\" fill=\"{}\">{}</text>\n",
+                        char_x + dx,
+                        y - font_size * EMOJI_BASELINE_LIFT_EM,
+                        font_family,
+                        scaled,
+                        color,
+                        escape_xml(cluster_str),
+                    ));
+                    continue;
+                }
+            }
+
             let length_attrs =
                 svg_text_length_attrs(cluster_str, cluster_advance(*char_idx, cluster_str), ratio);
             let common_attrs = attrs_for_cluster(cluster_str, &color);

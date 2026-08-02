@@ -52,18 +52,21 @@ fn emoji_line_keeps_all_caret_slots() {
     }
 }
 
-/// 컬러 이모지는 전각보다 **넓다**(1.28em) — 화면에 그려지는 폭에 맞춘 정본(adb4cdc37).
-/// 흑백 기호(✈ 등)는 이 대상이 아니라 전각 근처를 유지한다.
+/// 컬러 이모지는 한글 글자처럼 **한 em 칸**을 쓴다(2026-08-02 결정).
+///
+/// 이력: 2026-08-01 에 잉크 폭 실측(1.28em)에 맞춰 진행폭을 키웠다가, 높이를 안 건드려
+/// 이모지가 줄 아래로 처지는 결함이 드러났다. 이제 글리프를 글자 높이에 맞춰 줄여
+/// 그리므로(EMOJI_GLYPH_SCALE) 진행폭도 한글과 같은 한 em 으로 되돌렸다.
 #[test]
-fn color_emoji_is_wider_than_cjk() {
+fn color_emoji_occupies_one_em_like_cjk() {
     let emoji = caret_xs("앞 😀😀😀 뒤");
     let cjk = caret_xs("앞 가나다 뒤");
     let emoji_adv = emoji[3] - emoji[2];
     let cjk_adv = cjk[3] - cjk[2];
     let ratio = emoji_adv / cjk_adv;
     assert!(
-        (1.2..=1.4).contains(&ratio),
-        "컬러 이모지 폭이 전각의 1.28배 근처여야 한다 (실측 {ratio:.3}배: 이모지 {emoji_adv:.1}px vs 한글 {cjk_adv:.1}px)"
+        (0.95..=1.10).contains(&ratio),
+        "컬러 이모지 진행폭이 한글 한 칸과 같아야 한다 (실측 {ratio:.3}배: 이모지 {emoji_adv:.1}px vs 한글 {cjk_adv:.1}px)"
     );
 }
 

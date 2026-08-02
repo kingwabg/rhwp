@@ -2309,6 +2309,41 @@ impl Renderer for WebCanvasRenderer {
                     continue;
                 }
 
+                // 컬러 이모지: 시스템 이모지 글꼴이 그리는데 그 글리프가 본문 글자보다
+                // 1.6배 크고 baseline 아래로 2.5배 깊어(잉크 20px vs 한글 12.53px) 줄
+                // 아래로 처져 보였다(2026-08-02 사용자 지적). 글자 높이에 맞춰 줄이고
+                // 바닥을 한글 descent 에 맞춰 들어올린다 — 진행폭(1em) 안에서 가운데.
+                if crate::renderer::layout::text_measurement::is_emoji_presentation(ch) {
+                    use crate::renderer::layout::text_measurement::{
+                        EMOJI_BASELINE_LIFT_EM, EMOJI_GLYPH_SCALE, EMOJI_INK_EM,
+                    };
+                    let advance = {
+                        let end = *char_idx + cluster_str.chars().count();
+                        if end < char_positions.len() {
+                            char_positions[end] - char_positions[*char_idx]
+                        } else {
+                            font_size
+                        }
+                    };
+                    let scaled = font_size * EMOJI_GLYPH_SCALE;
+                    let ink_w = scaled * EMOJI_INK_EM;
+                    let dx = ((advance - ink_w) / 2.0).max(0.0);
+                    self.ctx.save();
+                    let emoji_font = format!(
+                        "{}{}{:.3}px {}",
+                        font_style, font_weight, scaled, font_family
+                    );
+                    self.ctx.set_font(&emoji_font);
+                    let _ = self.ctx.fill_text(
+                        cluster_str,
+                        char_x + dx,
+                        y - font_size * EMOJI_BASELINE_LIFT_EM,
+                    );
+                    self.ctx.restore();
+                    self.ctx.set_font(&font);
+                    continue;
+                }
+
                 // 반각 강제 구두점: 폰트 글리프가 전각이지만 반각 공간에 배치
                 let needs_halfwidth_scale = (matches!(ch, '\u{2018}'..='\u{2027}' | '\u{00B7}')
                     || is_halfwidth_cjk_quote(ch))

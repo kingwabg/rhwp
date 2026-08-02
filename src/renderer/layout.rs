@@ -1362,7 +1362,7 @@ mod shape_layout;
 mod table_cell_content;
 mod table_layout;
 mod table_partial;
-mod text_measurement;
+pub(crate) mod text_measurement;
 mod utils;
 
 pub(crate) use paragraph_layout::ensure_min_baseline;
