@@ -45,6 +45,46 @@ fn body_available_width_for_para_shape(
     (col_width - margin_left - margin_right).max(1.0)
 }
 
+/// 문단의 flow 끝 좌표 (last seg 의 vpos + line_height + line_spacing, HWPUNIT).
+fn paragraph_flow_end_vpos(para: &Paragraph) -> Option<i32> {
+    para.line_segs
+        .last()
+        .map(|seg| seg.vertical_pos + seg.line_height + seg.line_spacing)
+}
+
+/// 서식 변경(줄간격·자간·글자크기 등)으로 문단 flow 높이가 변한 뒤, 후속 문단들의
+/// 저장 vertical_pos 를 델타만큼 이동한다 — 텍스트 편집 경로의 vpos 유지 관례
+/// (text_editing.rs `seg.vertical_pos += delta`)와 동일. 이게 빠지면 typeset 이
+/// stale 절대 vpos 로 페이지를 나눠 줄간격/자간 변경이 페이지 수에 반영되지 않는다
+/// (2026-08-02 root-cause: 짧은 문단 다수 문서에서 줄간격 100↔200% 모두 동일 쪽수).
+///
+/// 저장 vpos 되감김(다음 first < 이전 first — 쪽나눔/단 인코딩) 경계 이후는 페이지
+/// 신호이므로 건드리지 않는다 (recalculate_cell_paragraph_vpos 의 정지 규칙과 동일).
+fn shift_following_paragraph_vpos(paragraphs: &mut [Paragraph], para_idx: usize, delta: i32) {
+    if delta == 0 {
+        return;
+    }
+    // 되감김 경계는 이동 전 원좌표로 탐지한다.
+    let stop = paragraphs
+        .windows(2)
+        .enumerate()
+        .skip(para_idx)
+        .find_map(|(idx, pair)| {
+            let previous = pair[0].line_segs.first()?.vertical_pos;
+            let current_seg = pair[1].line_segs.first()?;
+            let is_synthetic = current_seg.tag
+                & crate::model::paragraph::LineSeg::TAG_IMPLEMENTATION_PROPERTY
+                != 0;
+            (current_seg.vertical_pos < previous && !is_synthetic).then_some(idx + 1)
+        })
+        .unwrap_or(paragraphs.len());
+    for para in paragraphs[para_idx + 1..stop].iter_mut() {
+        for seg in para.line_segs.iter_mut() {
+            seg.vertical_pos += delta;
+        }
+    }
+}
+
 impl DocumentCore {
     pub fn get_char_properties_at_native(
         &self,
@@ -1087,7 +1127,16 @@ impl DocumentCore {
             let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
             let margin_right = para_style.map(|s| s.margin_right).unwrap_or(0.0);
             let available_width = (col_width - margin_left - margin_right).max(1.0);
-            // 원본 LineSeg 무효화 → reflow가 max_font_size에서 새로 계산
+            // 원본 LineSeg 무효화 → reflow가 max_font_size에서 새로 계산.
+            // clear 로 orig 가 사라지면 reflow 가 문단 원점을 0 으로 리셋하므로,
+            // 원점(first vpos)을 보존했다가 복원한다 — 안 하면 문단 자신과 후속
+            // 문단의 절대 vpos 체인이 무너져 조판이 어긋난다.
+            let old_first = self.document.sections[sec_idx].paragraphs[para_idx]
+                .line_segs
+                .first()
+                .map(|s| s.vertical_pos);
+            let old_end =
+                paragraph_flow_end_vpos(&self.document.sections[sec_idx].paragraphs[para_idx]);
             self.document.sections[sec_idx].paragraphs[para_idx]
                 .line_segs
                 .clear();
@@ -1097,6 +1146,25 @@ impl DocumentCore {
                 &styles,
                 self.dpi,
             );
+            if let Some(base) = old_first {
+                if base != 0 {
+                    for seg in self.document.sections[sec_idx].paragraphs[para_idx]
+                        .line_segs
+                        .iter_mut()
+                    {
+                        seg.vertical_pos += base;
+                    }
+                }
+            }
+            let new_end =
+                paragraph_flow_end_vpos(&self.document.sections[sec_idx].paragraphs[para_idx]);
+            if let (Some(o), Some(n)) = (old_end, new_end) {
+                shift_following_paragraph_vpos(
+                    &mut self.document.sections[sec_idx].paragraphs,
+                    para_idx,
+                    n - o,
+                );
+            }
         }
 
         self.document.sections[sec_idx].raw_stream = None;
@@ -1161,7 +1229,16 @@ impl DocumentCore {
         {
             let para = &mut self.document.sections[sec_idx].paragraphs[para_idx];
             para.apply_char_shape_range(start_offset, end_offset, char_shape_id);
+            let old_end = paragraph_flow_end_vpos(para);
             reflow_line_segs(para, available_width, &styles, self.dpi);
+            let new_end = paragraph_flow_end_vpos(para);
+            if let (Some(o), Some(n)) = (old_end, new_end) {
+                shift_following_paragraph_vpos(
+                    &mut self.document.sections[sec_idx].paragraphs,
+                    para_idx,
+                    n - o,
+                );
+            }
         }
 
         self.document.sections[sec_idx].raw_stream = None;
@@ -1437,12 +1514,23 @@ impl DocumentCore {
             let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
             let margin_right = para_style.map(|s| s.margin_right).unwrap_or(0.0);
             let available_width = (col_width - margin_left - margin_right).max(1.0);
+            let old_end =
+                paragraph_flow_end_vpos(&self.document.sections[sec_idx].paragraphs[para_idx]);
             reflow_line_segs(
                 &mut self.document.sections[sec_idx].paragraphs[para_idx],
                 available_width,
                 &styles,
                 self.dpi,
             );
+            let new_end =
+                paragraph_flow_end_vpos(&self.document.sections[sec_idx].paragraphs[para_idx]);
+            if let (Some(o), Some(n)) = (old_end, new_end) {
+                shift_following_paragraph_vpos(
+                    &mut self.document.sections[sec_idx].paragraphs,
+                    para_idx,
+                    n - o,
+                );
+            }
         }
 
         self.document.sections[sec_idx].raw_stream = None;
@@ -1502,7 +1590,16 @@ impl DocumentCore {
         {
             let para = &mut self.document.sections[sec_idx].paragraphs[para_idx];
             para.para_shape_id = para_shape_id;
+            let old_end = paragraph_flow_end_vpos(para);
             reflow_line_segs(para, available_width, &styles, self.dpi);
+            let new_end = paragraph_flow_end_vpos(para);
+            if let (Some(o), Some(n)) = (old_end, new_end) {
+                shift_following_paragraph_vpos(
+                    &mut self.document.sections[sec_idx].paragraphs,
+                    para_idx,
+                    n - o,
+                );
+            }
         }
 
         self.document.sections[sec_idx].raw_stream = None;
@@ -2286,5 +2383,111 @@ mod tests {
             ..Default::default()
         };
         assert!(!char_shape_mods_affect_text_flow(&mods));
+    }
+
+    // 줄간격 변경이 페이지 수에 반영되는지 — stale vpos 회귀 방어.
+    // (2026-08-02 root-cause: 서식 변경 경로가 편집 경로와 달리 후속 문단들의
+    // 저장 vertical_pos 를 델타 이동하지 않아, typeset 이 stale 절대 vpos 로
+    // 페이지를 나눠 줄간격 100↔200% 가 같은 쪽수로 floor 되던 결함.
+    // shift_following_paragraph_vpos 배선으로 수리.)
+    #[test]
+    fn line_spacing_change_repaginates() {
+        use crate::document_core::DocumentCore;
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        for i in 0..60usize {
+            core.insert_text_native(0, i, 0, &format!("채우기 문장 {} 입니다.", i + 1))
+                .unwrap();
+            if i + 1 < 60 {
+                let len = core.document.sections[0].paragraphs[i].text.chars().count();
+                core.split_paragraph_native(0, i, len).unwrap();
+            }
+        }
+        let set_all = |core: &mut DocumentCore, v: i32| {
+            let n = core.document.sections[0].paragraphs.len();
+            for p in 0..n {
+                core.apply_para_format_native(
+                    0,
+                    p,
+                    &format!("{{\"lineSpacing\":{},\"lineSpacingType\":\"Percent\"}}", v),
+                )
+                .unwrap();
+            }
+        };
+        set_all(&mut core, 100);
+        let p100 = core.page_count();
+        set_all(&mut core, 200);
+        let p200 = core.page_count();
+        // 원하는 동작(수정 후): p100 < p200. 현재(버그): 둘 다 같다.
+        assert!(
+            p100 < p200,
+            "줄간격 100%와 200%는 페이지수가 달라야 한다 (현재 버그로 동일: 100={}, 200={})",
+            p100,
+            p200
+        );
+    }
+
+    // 자간(spacings) 축소는 줄바꿈(줄 수)을 바꾸므로 stale-vpos 버그를 우회해
+    // 페이지 수를 줄일 수 있어야 한다 — studio auto-fit(자간 기반)의 엔진 전제 검증.
+    #[test]
+    fn char_spacing_reduction_shrinks_page_count() {
+        use crate::document_core::DocumentCore;
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        // 몇 줄씩 감기는 중간 길이 문단 여러 개 — 실문서 근사 (2쪽 이상)
+        const N: usize = 15;
+        for i in 0..N {
+            let filler =
+                format!("문단 {} — 가나다라마바사아자차카타파하 여러 글자들 ", i + 1).repeat(16);
+            core.insert_text_native(0, i, 0, &filler).unwrap();
+            if i + 1 < N {
+                let len = core.document.sections[0].paragraphs[i].text.chars().count();
+                core.split_paragraph_native(0, i, len).unwrap();
+            }
+        }
+        let set_spacing = |core: &mut DocumentCore, v: i32| {
+            let n = core.document.sections[0].paragraphs.len();
+            for p in 0..n {
+                let len = core.document.sections[0].paragraphs[p].text.chars().count();
+                core.apply_char_format_native(
+                    0,
+                    p,
+                    0,
+                    len,
+                    &format!("{{\"spacings\":[{0},{0},{0},{0},{0},{0},{0}]}}", v),
+                )
+                .unwrap();
+            }
+        };
+        let lines0 = |core: &DocumentCore| core.document.sections[0].paragraphs[0].line_segs.len();
+        let chain_end = |core: &DocumentCore| {
+            core.document.sections[0]
+                .paragraphs
+                .last()
+                .and_then(|p| p.line_segs.last())
+                .map(|s| s.vertical_pos + s.line_height + s.line_spacing)
+                .unwrap_or(-1)
+        };
+        let p0 = core.page_count();
+        let l0 = lines0(&core);
+        let e0 = chain_end(&core);
+        set_spacing(&mut core, -25);
+        let p_neg = core.page_count();
+        let l_neg = lines0(&core);
+        let e_neg = chain_end(&core);
+        set_spacing(&mut core, 0);
+        let p_back = core.page_count();
+        eprintln!(
+            "spacing0={}({}줄,end={}) spacing-25={}({}줄,end={}) back0={}",
+            p0, l0, e0, p_neg, l_neg, e_neg, p_back
+        );
+        assert!(p0 >= 2, "테스트 전제: 원본이 2쪽 이상이어야 함 (p0={})", p0);
+        assert!(
+            p_neg < p0,
+            "자간 -25 면 페이지가 줄어야 한다 (전={}, 후={})",
+            p0,
+            p_neg
+        );
+        assert_eq!(p_back, p0, "자간 원복 시 페이지수도 원복");
     }
 }
