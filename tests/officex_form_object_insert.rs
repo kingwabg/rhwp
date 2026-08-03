@@ -237,3 +237,27 @@ fn caret_can_stand_right_of_form_object() {
         "개체 앞뒤 논리 위치가 같은 텍스트 좌표로 뭉갠다: {before_obj} -> {after_obj}"
     );
 }
+
+/// 캐럿 **그림**도 개체 오른쪽에 그려져야 한다 — 논리 위치만 맞고 x 가 개체 폭을
+/// 건너뛰면 "타이핑은 오른쪽에 되는데 커서는 왼쪽에 보이는" 상태가 된다(2026-08-03 신고).
+#[test]
+fn caret_rect_moves_past_form_object_width() {
+    let mut doc = new_doc();
+    doc.insert_text_native(0, 0, 0, "나가 내").unwrap();
+    doc.insert_form_object_native(0, 0, 3, r#"{"formType":"PushButton"}"#).unwrap();
+
+    let rect_x = |d: &HwpDocument, off: usize| -> f64 {
+        let r = d.get_cursor_rect_native(0, 0, off).unwrap();
+        let at = r.find("\"x\":").unwrap() + 4;
+        r[at..].split(|c| c == ',' || c == '}').next().unwrap().parse().unwrap()
+    };
+
+    // 논리: 나(0)가(1)공백(2)[개체](3)내(4). 개체 앞(3) vs 개체 뒤(4).
+    let before = rect_x(&doc, 3);
+    let after = rect_x(&doc, 4);
+    // 명령 단추 기본 폭 7087 HWPUNIT ≈ 94px — 절반 이상은 벌어져야 한다.
+    assert!(
+        after - before > 40.0,
+        "캐럿 x 가 개체 폭을 건너뛴다: before={before:.1}, after={after:.1}"
+    );
+}

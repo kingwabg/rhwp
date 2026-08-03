@@ -291,7 +291,10 @@ impl DocumentCore {
         }
 
         fn is_inline_cursor_control(ctrl: &Control) -> bool {
-            is_treat_as_char_object_control(ctrl)
+            // 양식 개체는 common(treat_as_char)이 없지만 조판은 언제나 인라인 —
+            // 여기서 빠지면 캐럿 x 가 개체 폭을 건너뛰어 "논리로는 오른쪽인데 그림은
+            // 왼쪽"이 된다(2026-08-03 사용자 신고).
+            is_treat_as_char_object_control(ctrl) || matches!(ctrl, Control::Form(_))
         }
 
         fn text_offset_after_same_pos_inline_controls(
@@ -398,6 +401,14 @@ impl DocumentCore {
                                 (node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height),
                             );
                         }
+                    }
+                }
+                RenderNodeType::FormObject(form_node) => {
+                    if form_node.section_index == sec && form_node.para_index == para {
+                        bboxes.insert(
+                            form_node.control_index,
+                            (node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height),
+                        );
                     }
                 }
                 _ => {}
