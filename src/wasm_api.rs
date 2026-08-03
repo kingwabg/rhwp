@@ -6659,6 +6659,20 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
+    /// 양식 개체 속성을 바꾼다(부분 갱신 — 온 키만).
+    #[wasm_bindgen(js_name = setFormObjectProps)]
+    pub fn set_form_object_props(
+        &mut self,
+        sec_idx: usize,
+        para_idx: usize,
+        control_idx: usize,
+        props_json: &str,
+    ) -> Result<String, JsValue> {
+        self.core
+            .set_form_object_props_native(sec_idx, para_idx, control_idx, props_json)
+            .map_err(|e| e.into())
+    }
+
     /// 양식 개체를 삭제한다(삽입의 역연산).
     #[wasm_bindgen(js_name = deleteFormObject)]
     pub fn delete_form_object(

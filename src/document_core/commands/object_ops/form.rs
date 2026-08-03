@@ -161,6 +161,76 @@ impl DocumentCore {
         ))
     }
 
+    /// 양식 개체 속성을 바꾼다 — 이름·캡션·텍스트·값·크기·색·활성화·그룹.
+    ///
+    /// `props_json` 에 온 키만 바꾼다(부분 갱신). 크기는 HWPUNIT.
+    /// ponytail: 본문 문단 전용 — 셀 안 양식은 setFormValueInCell 배관이 따로 있고,
+    ///   속성 편집 UI 가 셀까지 넓어지면 그때 같이 간다.
+    pub fn set_form_object_props_native(
+        &mut self,
+        section_idx: usize,
+        para_idx: usize,
+        control_idx: usize,
+        props_json: &str,
+    ) -> Result<String, HwpError> {
+        use crate::document_core::helpers::{json_bool, json_i32, json_str};
+
+        let section = self
+            .document
+            .sections
+            .get_mut(section_idx)
+            .ok_or_else(|| HwpError::RenderError(format!("구역 {} 범위 초과", section_idx)))?;
+        let paragraph = section
+            .paragraphs
+            .get_mut(para_idx)
+            .ok_or_else(|| HwpError::RenderError(format!("문단 {} 범위 초과", para_idx)))?;
+        let Some(Control::Form(form)) = paragraph.controls.get_mut(control_idx) else {
+            return Err(HwpError::InvalidField("양식 개체가 아닙니다".into()));
+        };
+
+        if let Some(v) = json_str(props_json, "name") {
+            form.name = v;
+        }
+        if let Some(v) = json_str(props_json, "caption") {
+            form.caption = v;
+        }
+        if let Some(v) = json_str(props_json, "text") {
+            form.text = v;
+        }
+        if let Some(v) = json_i32(props_json, "value") {
+            form.value = v;
+        }
+        if let Some(v) = json_i32(props_json, "width") {
+            if v > 0 {
+                form.width = v as u32;
+            }
+        }
+        if let Some(v) = json_i32(props_json, "height") {
+            if v > 0 {
+                form.height = v as u32;
+            }
+        }
+        if let Some(v) = json_bool(props_json, "enabled") {
+            form.enabled = v;
+        }
+        // 색은 0x00BBGGRR 정수로 받는다(#rrggbb 파싱은 JS 쪽 몫 — 경계를 한 곳에 둔다)
+        if let Some(v) = json_i32(props_json, "foreColor") {
+            form.fore_color = v as u32;
+        }
+        if let Some(v) = json_i32(props_json, "backColor") {
+            form.back_color = v as u32;
+        }
+        if let Some(v) = json_str(props_json, "groupName") {
+            form.properties.insert("GroupName".into(), v);
+        }
+
+        section.raw_stream = None;
+        self.recompose_section(section_idx);
+        self.paginate_if_needed();
+        self.invalidate_page_tree_cache();
+        Ok("{\"ok\":true}".to_string())
+    }
+
     /// 양식 개체를 지운다(삽입의 역연산 — 컨트롤 제거 + 본문 8 WCHAR 반환).
     pub fn delete_form_object_native(
         &mut self,
