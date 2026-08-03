@@ -12,6 +12,58 @@ use crate::model::event::DocumentEvent;
 use crate::error::HwpError;
 use crate::model::control::{Control, FormObject, FormType};
 
+
+/// 컨트롤 8-블록이 스트림 위치 `at` 에 끼어들 때(delta=+8) / 빠질 때(delta=-8),
+/// 스트림 위치를 참조하는 **모든 장부**를 함께 민다.
+///
+/// char_offsets 만 밀고 char_shapes 를 안 밀면 개체 뒤 글자들이 남의 서식(크기·굵기)을
+/// 뒤집어쓴다 — 2026-08-03 실측: 15pt 경계(스트림 19) 앞(텍스트 2)에 개체를 넣자
+/// 뒤 글자가 10pt→15pt 로 둔갑("개체를 넣으면 텍스트가 작아진다" 신고의 본체).
+/// 규칙은 insert_text_at 과 같다: 경계가 `at` 뒤면 이동, 정확히 `at` 이면 0이 아닐 때만.
+fn shift_stream_refs(para: &mut crate::model::paragraph::Paragraph, at: u32, delta: i32) {
+    let apply = |v: &mut u32, ge: bool| {
+        let hit = if ge { *v >= at } else { *v > at };
+        if hit {
+            *v = (*v as i64 + delta as i64).max(0) as u32;
+        }
+    };
+    for cs in &mut para.char_shapes {
+        if cs.start_pos > at || (cs.start_pos == at && cs.start_pos > 0) {
+            cs.start_pos = (cs.start_pos as i64 + delta as i64).max(0) as u32;
+        }
+    }
+    for tm in &mut para.track_marks {
+        apply(&mut tm.start_pos, true);
+        apply(&mut tm.end_pos, false);
+    }
+    for rt in &mut para.range_tags {
+        apply(&mut rt.start, true);
+        apply(&mut rt.end, true);
+    }
+}
+
+/// 텍스트 오프셋 K 에 컨트롤을 넣을 때의 스트림 삽입점.
+/// K 앞 글자들·같은 자리 선행 컨트롤들 뒤 = "K번째 글자의 현재 스트림 위치"(없으면 스트림 끝).
+fn control_stream_point(para: &crate::model::paragraph::Paragraph, text_offset: usize) -> u32 {
+    if text_offset < para.char_offsets.len() {
+        return para.char_offsets[text_offset];
+    }
+    // 문단 끝: 마지막 글자 끝 + 후행 컨트롤들
+    let text_len = para.text.chars().count();
+    let last_end = para
+        .char_offsets
+        .last()
+        .copied()
+        .map(|o| o + 1)
+        .unwrap_or(0);
+    let trailing = para
+        .control_text_positions()
+        .iter()
+        .filter(|&&p| p >= text_len)
+        .count() as u32;
+    last_end + trailing * 8
+}
+
 /// 한컴 새 양식 개체 정답지 값: (크기 w×h HWPUNIT, 캡션, 배경색 0x00BBGGRR, BorderType)
 fn hancom_defaults(form_type: FormType) -> (u32, u32, &'static str, u32, i32) {
     match form_type {
@@ -142,9 +194,12 @@ impl DocumentCore {
         paragraph.ctrl_data_records.insert(insert_idx, None);
 
         // 확장 컨트롤 = 본문 8 WCHAR (수식·표와 같은 규약)
-        if !paragraph.char_offsets.is_empty() {
+        // ⚠ 글자 위치와 서식 경계를 **함께** 민다 — 하나만 밀면 개체 뒤 글자가 남의 서식을 쓴다.
+        {
             let text_len = paragraph.text.chars().count();
             let safe_offset = char_offset.min(text_len);
+            let at = control_stream_point(paragraph, safe_offset);
+            shift_stream_refs(paragraph, at, 8);
             for co in paragraph.char_offsets[safe_offset..].iter_mut() {
                 *co += 8;
             }
@@ -349,6 +404,10 @@ impl DocumentCore {
             None
         };
         let safe = cur_pos.min(paragraph.text.chars().count());
+        {
+            let at = control_stream_point(paragraph, safe).saturating_sub(8);
+            shift_stream_refs(paragraph, at, -8);
+        }
         for co in paragraph.char_offsets[safe..].iter_mut() {
             *co = co.saturating_sub(8);
         }
@@ -371,8 +430,10 @@ impl DocumentCore {
         };
         dest.controls.insert(insert_idx, form_ctrl);
         dest.ctrl_data_records.insert(insert_idx, record);
-        if !dest.char_offsets.is_empty() {
+        {
             let safe_offset = target_offset.min(dest_len);
+            let at = control_stream_point(dest, safe_offset);
+            shift_stream_refs(dest, at, 8);
             for co in dest.char_offsets[safe_offset..].iter_mut() {
                 *co += 8;
             }
@@ -425,6 +486,10 @@ impl DocumentCore {
         // 컨트롤 뒤 글자들만 8 을 되돌린다(char_offsets[i] = i번째 글자의 스트림 offset).
         let text_len = paragraph.text.chars().count();
         let safe = ctrl_pos.min(text_len);
+        {
+            let at = control_stream_point(paragraph, safe).saturating_sub(8);
+            shift_stream_refs(paragraph, at, -8);
+        }
         for co in paragraph.char_offsets[safe..].iter_mut() {
             *co = co.saturating_sub(8);
         }

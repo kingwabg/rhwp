@@ -307,3 +307,42 @@ fn inline_form_matches_font_size() {
     assert!(h <= 1500, "인라인 개체가 글자보다 너무 크다: {h} HWPUNIT");
     assert!(h >= 900, "너무 작다: {h}");
 }
+
+/// 개체 삽입·이동이 **서식 경계 장부**(char_shapes)를 글자 장부와 함께 밀어야 한다.
+/// 안 밀면 개체 뒤 글자들이 남의 서식(크기·굵기)을 뒤집어쓴다 — 2026-08-03 실측:
+/// 15pt 경계 앞에 개체를 넣자 10pt 글자가 15pt 로 둔갑("텍스트가 작아진다" 신고의 본체).
+#[test]
+fn insert_and_move_keep_char_shape_boundaries() {
+    let mut doc = new_doc();
+    doc.insert_text_native(0, 0, 0, "가나다라마바").unwrap();
+    doc.apply_char_format_native(0, 0, 3, 6, r#"{"fontSize":1500}"#).unwrap();
+    let sizes = |d: &HwpDocument| -> Vec<String> {
+        (0..6).map(|off| {
+            let j = d.get_char_properties_at_native(0, 0, off).unwrap();
+            j.split("\"fontSize\":").nth(1).unwrap().split(',').next().unwrap().to_string()
+        }).collect()
+    };
+    let want = vec!["1000", "1000", "1000", "1500", "1500", "1500"];
+    assert_eq!(sizes(&doc), want);
+
+    // 경계 앞(텍스트 2)에 삽입 → 서식 불변이어야
+    let r = doc.insert_form_object_native(0, 0, 2, r#"{"formType":"CheckBox"}"#).unwrap();
+    let ci: usize = r.split("\"controlIdx\":").nth(1).and_then(|t| t.trim_end_matches('}').parse().ok()).unwrap();
+    assert_eq!(sizes(&doc), want, "삽입 후 서식이 어긋났다");
+
+    // 앞뒤로 몇 번 옮겨도 불변
+    doc.move_form_object_native(0, 0, ci, r#"{"delta":1}"#).unwrap();
+    assert_eq!(sizes(&doc), want, "오른쪽 이동 후 서식이 어긋났다");
+    doc.move_form_object_native(0, 0, ci, r#"{"delta":1}"#).unwrap();
+    doc.move_form_object_native(0, 0, ci, r#"{"delta":-1}"#).unwrap();
+    doc.move_form_object_native(0, 0, ci, r#"{"delta":-1}"#).unwrap();
+    doc.move_form_object_native(0, 0, ci, r#"{"delta":-1}"#).unwrap();
+    assert_eq!(sizes(&doc), want, "왕복 이동 후 서식이 어긋났다");
+
+    // 삭제 후에도 불변 + HWP 왕복
+    doc.delete_form_object_native(0, 0, ci).unwrap();
+    assert_eq!(sizes(&doc), want, "삭제 후 서식이 어긋났다");
+    let bytes = doc.export_hwp_with_adapter().unwrap();
+    let doc2 = HwpDocument::from_bytes(&bytes).unwrap();
+    assert_eq!(sizes(&doc2), want, "저장 왕복 후 서식이 어긋났다");
+}
