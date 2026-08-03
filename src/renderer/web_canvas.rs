@@ -2439,34 +2439,52 @@ impl Renderer for WebCanvasRenderer {
             );
         }
 
-        // 강조점 처리
+        // 강조점 처리 — 모양은 renderer::emphasis 한 곳에서 정한다(svg 와 같은 도형).
         if style.emphasis_dot > 0 {
-            let dot_char = match style.emphasis_dot {
-                1 => "●",
-                2 => "○",
-                3 => "ˇ",
-                4 => "˜",
-                5 => "･",
-                6 => "˸",
-                _ => "",
-            };
-            if !dot_char.is_empty() {
-                // 강조점은 **글자 바로 위**, 줄 상자 안에 들어가야 한다.
-                // 종전 1.05em 은 줄 상자(윗변 = baseline-1.0em) 밖이라 본문 clip 에 잘렸다 —
-                // 첫 줄에서는 통째로 안 보였다(2026-08-03 실측). 한글 글자 윗변이 대략
-                // baseline-0.8em 이므로, 점 잉크가 [줄 윗변, 글자 윗변] 사이에 들어오게 둔다.
-                let dot_size = font_size * 0.3;
-                let dot_y = y - font_size * 0.82;
-                self.ctx.save();
-                self.ctx.set_font(&format!("{}px sans-serif", dot_size));
-                self.ctx.set_text_align("center");
-                self.ctx.set_fill_style_str(&color_to_css(style.color));
-                for &cx in &char_positions[..char_positions.len().saturating_sub(1)] {
-                    let dot_x = x + cx + (font_size * style.ratio * 0.5);
-                    self.ctx.fill_text(dot_char, dot_x, dot_y).ok();
+            use crate::renderer::emphasis::{emphasis_mark, EmphasisPrim};
+            let color = color_to_css(style.color);
+            self.ctx.save();
+            self.ctx.set_fill_style_str(&color);
+            self.ctx.set_stroke_style_str(&color);
+            let _ = self.ctx.set_line_dash(&js_sys::Array::new());
+            self.ctx.set_line_cap("round");
+            self.ctx.set_line_join("round");
+            for &cx in &char_positions[..char_positions.len().saturating_sub(1)] {
+                let center_x = x + cx + (font_size * style.ratio * 0.5);
+                for prim in emphasis_mark(style.emphasis_dot, center_x, y, font_size) {
+                    match prim {
+                        EmphasisPrim::Circle {
+                            cx,
+                            cy,
+                            r,
+                            filled,
+                            stroke_width,
+                        } => {
+                            self.ctx.begin_path();
+                            let _ = self.ctx.arc(cx, cy, r.max(0.1), 0.0, std::f64::consts::PI * 2.0);
+                            if filled {
+                                self.ctx.fill();
+                            } else {
+                                self.ctx.set_line_width(stroke_width);
+                                self.ctx.stroke();
+                            }
+                        }
+                        EmphasisPrim::Polyline { points, width } => {
+                            self.ctx.set_line_width(width);
+                            self.ctx.begin_path();
+                            for (i, (px, py)) in points.iter().enumerate() {
+                                if i == 0 {
+                                    self.ctx.move_to(*px, *py);
+                                } else {
+                                    self.ctx.line_to(*px, *py);
+                                }
+                            }
+                            self.ctx.stroke();
+                        }
+                    }
                 }
-                self.ctx.restore();
             }
+            self.ctx.restore();
         }
 
         // 탭 리더(채울 모양) 렌더링 — 12종
