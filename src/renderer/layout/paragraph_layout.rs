@@ -467,13 +467,19 @@ fn tac_offsets_for_line(
         .collect()
 }
 
+/// 줄에 보이는 글자가 하나도 없다 — run 이 아예 없거나, 전부 빈 텍스트 run 뿐.
+/// (텍스트를 다 지운 문단의 줄은 빈 run 하나를 들고 있어 `runs.is_empty()` 로는 못 잡는다.)
+fn line_is_textless(line: &ComposedLine) -> bool {
+    line.runs.iter().all(|r| r.text.is_empty())
+}
+
 fn repeated_empty_tac_line_offset(
     comp: &ComposedParagraph,
     tac_offsets_px: &[(usize, f64, usize)],
     line_idx: usize,
 ) -> Option<Vec<(usize, f64, usize)>> {
     let line = comp.lines.get(line_idx)?;
-    if !line.runs.is_empty() {
+    if !line_is_textless(line) {
         return None;
     }
 
@@ -481,7 +487,7 @@ fn repeated_empty_tac_line_offset(
     let repeated_empty_line_count = comp
         .lines
         .iter()
-        .filter(|candidate| candidate.runs.is_empty() && candidate.char_start == start)
+        .filter(|candidate| line_is_textless(candidate) && candidate.char_start == start)
         .count();
     if repeated_empty_line_count <= 1 {
         return None;
@@ -491,24 +497,53 @@ fn repeated_empty_tac_line_offset(
         .lines
         .iter()
         .take(line_idx)
-        .filter(|candidate| candidate.runs.is_empty() && candidate.char_start == start)
+        .filter(|candidate| line_is_textless(candidate) && candidate.char_start == start)
         .count();
     let line_tac_sequence = tac_offsets_px
         .iter()
         .copied()
-        .filter(|(pos, _, _)| *pos >= start && *pos < start + repeated_empty_line_count)
+        .filter(|(pos, _, _)| *pos >= start)
         .collect::<Vec<_>>();
 
     // 텍스트 없는 HWP 문단은 LINE_SEG 여러 줄이 같은 text_start 를 가질 수 있다.
     // 이때 TAC 개수와 빈 줄 수가 정확히 맞으면 한 줄에 하나씩 순서대로 배정한다.
     if line_tac_sequence.len() == repeated_empty_line_count {
-        line_tac_sequence
+        return line_tac_sequence
             .get(line_ordinal)
             .copied()
-            .map(|offset| vec![offset])
-    } else {
-        None
+            .map(|offset| vec![offset]);
     }
+
+    // 개수가 안 맞는 경우(예: 양식 개체 6개가 두 줄로 감김): 같은 char_start 의 빈 줄들이
+    // 전체 TAC 를 겹쳐 받아 **컨트롤이 줄마다 통째로 복제**돼 보였다
+    // (2026-08-03 실측: 양식 6개 문단의 텍스트를 다 지우면 두 벌로 렌더). 줄 폭 기준으로
+    // 잘라 각 TAC 가 정확히 한 줄에만 실리게 한다 — 줄바꿈기가 폭으로 갈랐으니 여기도 폭이 기준.
+    let all_tacs_at_start = line_tac_sequence;
+    if all_tacs_at_start.is_empty() {
+        return None;
+    }
+    let caps: Vec<i32> = comp
+        .lines
+        .iter()
+        .filter(|c| line_is_textless(c) && c.char_start == start)
+        .map(|c| c.segment_width)
+        .collect();
+    // 폭은 px, 줄 폭은 HWPUNIT — 배정 판단만 하면 되므로 같은 단위(HWPUNIT 근사)로 맞춘다.
+    // (tac_offsets_px 의 px = hwpunit × dpi/7200 · 배정 경계가 반 픽셀 어긋나도 무해)
+    let mut groups: Vec<Vec<(usize, f64, usize)>> =
+        vec![Vec::new(); repeated_empty_line_count];
+    let mut gi = 0usize;
+    let mut acc_px = 0.0f64;
+    for t in all_tacs_at_start {
+        let cap_px = caps.get(gi).copied().unwrap_or(i32::MAX) as f64 / 7200.0 * 96.0;
+        if gi + 1 < repeated_empty_line_count && !groups[gi].is_empty() && acc_px + t.1 > cap_px {
+            gi += 1;
+            acc_px = 0.0;
+        }
+        acc_px += t.1;
+        groups[gi].push(t);
+    }
+    groups.get(line_ordinal).cloned()
 }
 
 fn tac_picture_or_shape_height_px(ctrl: &Control, dpi: f64) -> Option<f64> {
@@ -3766,7 +3801,8 @@ impl LayoutEngine {
                 &mut line_node,
                 comp_line,
                 para,
-                &tac_offsets_px,
+                // ⚠ 전체 목록을 주면 같은 char_start 의 빈 줄마다 전부 그려 복제된다(2026-08-03).
+                &line_tac_offsets,
                 cell_ctx.as_ref(),
                 x,
                 y,

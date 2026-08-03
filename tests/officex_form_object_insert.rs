@@ -91,3 +91,23 @@ fn delete_then_roundtrip_stays_consistent() {
     let text = doc2.get_text_range_native(0, 0, 0, 10).unwrap_or_default();
     assert_eq!(text, "가나다", "삭제 후 왕복 본문이 어긋났다: {text:?}");
 }
+
+/// 텍스트를 전부 지워 양식만 남은 문단 — 컨트롤 총폭이 줄 폭을 넘어 두 줄로 감길 때,
+/// 같은 char_start 의 빈 줄들이 전체 TAC 를 겹쳐 받아 **모든 양식이 줄마다 복제**돼 보였다
+/// (2026-08-03 실측: 브라우저에서 Ctrl+Z 로 텍스트를 되돌리자 양식 줄이 두 벌로).
+#[test]
+fn textless_paragraph_with_wrapping_forms_renders_each_form_once() {
+    let mut doc = new_doc();
+    doc.insert_text_native(0, 0, 0, "동의: ").unwrap();
+    doc.insert_form_object_native(0, 0, 4, r#"{"formType":"CheckBox"}"#).unwrap();
+    for kind in ["PushButton", "ComboBox", "RadioButton", "RadioButton", "Edit"] {
+        doc.insert_form_object_native(0, 0, 5, &format!(r#"{{"formType":"{kind}"}}"#))
+            .unwrap();
+    }
+    // 총폭 > 줄 폭 → 두 줄로 감긴다. 텍스트 삭제 후에도 각 양식은 정확히 한 번.
+    doc.delete_text_native(0, 0, 0, 4).unwrap();
+    let svg = doc.render_page_svg_native(0).unwrap();
+    assert_eq!(svg.matches("선택 상자").count(), 1, "선택 상자 복제");
+    assert_eq!(svg.matches("명령 단추").count(), 1, "명령 단추 복제");
+    assert_eq!(svg.matches("라디오 단추").count(), 2, "라디오 단추 복제");
+}
