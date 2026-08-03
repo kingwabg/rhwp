@@ -3011,8 +3011,12 @@ impl Renderer for SvgRenderer {
                 _ => "",
             };
             if !dot_char.is_empty() {
+                // 강조점은 **글자 바로 위**, 줄 상자 안에 들어가야 한다.
+                // 종전 1.05em 은 줄 상자(윗변 = baseline-1.0em) 밖이라 본문 clip 에 잘렸다 —
+                // 첫 줄에서는 통째로 안 보였다(2026-08-03 실측). 한글 글자 윗변이 대략
+                // baseline-0.8em 이므로, 점 잉크가 [줄 윗변, 글자 윗변] 사이에 들어오게 둔다.
                 let dot_size = font_size * 0.3;
-                let dot_y = y - font_size * 1.05;
+                let dot_y = y - font_size * 0.82;
                 for &cx in &char_positions[..char_positions.len().saturating_sub(1)] {
                     let dot_x = x + cx + (font_size * style.ratio * 0.5);
                     self.output.push_str(&format!(
