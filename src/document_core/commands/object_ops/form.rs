@@ -137,9 +137,12 @@ impl DocumentCore {
                 .filter(|v| *v > 0.0)
                 .unwrap_or(13.333);
             let font_size = (font_px * 72.0 / 96.0 * 100.0).round() as u32;
-            // 글자 한 칸보다 조금 큰 정도(1.4em) — 네모·동그라미가 글자 위아래로 살짝 넘되
-            // 160% 줄간격 안에는 들어간다.
-            let target_h = (font_size as f64 * 1.4).round() as u32;
+            // 글자 잉크와 같은 높이(1.0em) — 조판은 "개체 > 글자 잉크"면 줄을 개체 높이로
+            // 키우는 한컴 규칙이라(form-01.hwp 실측: lh=개체높이, baseline=0.85), 1.4em 로
+            // 넣으면 개체 하나에 줄이 커지고 글자가 아래로 몰린다(2026-08-04 사용자 신고
+            // "중앙정렬이 하단정렬로 내려가"). 1.0em 이면 줄이 전혀 안 변한다.
+            // 더 큰 개체를 원하면 속성 패널에서 키우면 되고, 그때는 정본대로 줄이 커진다.
+            let target_h = font_size;
             if target_h > 0 && target_h < def_h {
                 def_w = ((def_w as f64) * (target_h as f64) / (def_h as f64)).round() as u32;
                 def_h = target_h;
@@ -188,6 +191,12 @@ impl DocumentCore {
             idx
         };
 
+        // ⚠ 머리말이 낀 문서 등에서 ctrl_data_records 가 controls 보다 짧게 로드되는
+        //   문단이 있다 — 그대로 insert 하면 인덱스 초과 panic(2026-08-04 실측, wasm 이
+        //   통째로 죽어 "처음부터 아무것도 안 되는" 증상이 됐다). 길이를 맞춰 놓고 넣는다.
+        while paragraph.ctrl_data_records.len() < paragraph.controls.len() {
+            paragraph.ctrl_data_records.push(None);
+        }
         paragraph
             .controls
             .insert(insert_idx, Control::Form(Box::new(form)));
@@ -428,6 +437,9 @@ impl DocumentCore {
             }
             idx
         };
+        while dest.ctrl_data_records.len() < dest.controls.len() {
+            dest.ctrl_data_records.push(None);
+        }
         dest.controls.insert(insert_idx, form_ctrl);
         dest.ctrl_data_records.insert(insert_idx, record);
         {

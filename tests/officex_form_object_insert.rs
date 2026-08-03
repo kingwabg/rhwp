@@ -303,8 +303,9 @@ fn inline_form_matches_font_size() {
     let ci: usize = r.split("\"controlIdx\":").nth(1).and_then(|t| t.trim_end_matches('}').parse().ok()).unwrap();
     let info = doc.get_form_object_info_native(0, 0, ci).unwrap();
     let h: u32 = info.split("\"height\":").nth(1).unwrap().split(',').next().unwrap().parse().unwrap();
-    // 기본 10pt(=1000) 문서 → 1.4em = 1400 언저리. 정본 1984 를 그대로 쓰면 실패한다.
-    assert!(h <= 1500, "인라인 개체가 글자보다 너무 크다: {h} HWPUNIT");
+    // 기본 10pt(=1000) 문서 → 1.0em. 글자 잉크(1000)를 넘으면 조판이 줄을 개체 높이로
+    // 키워 글자가 아래로 몰린다(2026-08-04 신고) — 넘지 않아야 한다.
+    assert!(h <= 1000, "인라인 개체가 글자 잉크를 넘는다(줄이 커진다): {h} HWPUNIT");
     assert!(h >= 900, "너무 작다: {h}");
 }
 
@@ -345,4 +346,26 @@ fn insert_and_move_keep_char_shape_boundaries() {
     let bytes = doc.export_hwp_with_adapter().unwrap();
     let doc2 = HwpDocument::from_bytes(&bytes).unwrap();
     assert_eq!(sizes(&doc2), want, "저장 왕복 후 서식이 어긋났다");
+}
+
+/// 머리말이 있는 문서에서의 삽입 — ctrl_data_records 가 controls 보다 짧은 문단이 있어
+/// 그대로 insert 하면 인덱스 초과 panic 으로 wasm 전체가 죽었다(2026-08-04 실측,
+/// "처음부터 개체 이동이 안 된다" 신고의 본체). 길이를 맞추고 넣는지 확인한다.
+#[test]
+fn insert_into_document_with_header() {
+    let mut doc = new_doc();
+    doc.create_header_footer_native(0, true, 0).unwrap();
+    let r = doc
+        .insert_form_object_native(0, 0, 0, r#"{"formType":"CheckBox"}"#)
+        .unwrap();
+    assert!(r.contains("\"ok\":true"), "{r}");
+    // 개체 뒤 캐럿이 개체 오른쪽에 선다(= 삽입·조판·커서 계산 전부 생존)
+    let rect = doc.get_cursor_rect_native(0, 0, 1).unwrap();
+    let x: f64 = rect.split("\"x\":").nth(1).unwrap().split(',').next().unwrap().parse().unwrap();
+    assert!(x > 150.0, "개체 뒤 캐럿 x 가 개체를 못 넘었다: {rect}");
+    // 이동도 생존
+    let ci: usize = r.split("\"controlIdx\":").nth(1).and_then(|t| t.trim_end_matches('}').parse().ok()).unwrap();
+    doc.insert_text_logical(0, 0, 1, "가나").unwrap();
+    let m = doc.move_form_object_native(0, 0, ci, r#"{"delta":1}"#).unwrap();
+    assert!(m.contains("\"ok\":true"), "{m}");
 }
