@@ -1,0 +1,93 @@
+//! 양식 개체 삽입 v1 — 5종 삽입·렌더·HWP 왕복(저장→다시 열기) 회귀.
+//!
+//! 골격은 수식 삽입과 같은 확장 컨트롤 규약(본문 8 WCHAR)이다. 여기서 지키는 것:
+//!  1. 삽입 직후 렌더 트리에 양식 개체가 나온다(조판 배선).
+//!  2. HWP 로 저장해 다시 열어도 종류·캡션·크기가 산다(직렬화 왕복).
+//!  3. 삭제하면 본문 길이가 원래대로 돌아온다(8 WCHAR 반환).
+
+use rhwp::wasm_api::HwpDocument;
+
+const KINDS: [(&str, &str); 5] = [
+    ("PushButton", "명령 단추"),
+    ("CheckBox", "선택 상자"),
+    ("ComboBox", ""),
+    ("RadioButton", "라디오 단추"),
+    ("Edit", ""),
+];
+
+fn new_doc() -> HwpDocument {
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document_native().unwrap();
+    doc
+}
+
+#[test]
+fn insert_each_kind_and_roundtrip_hwp() {
+    let mut doc = new_doc();
+    doc.insert_text_native(0, 0, 0, "양식:").unwrap();
+    for (kind, _) in KINDS {
+        let r = doc
+            .insert_form_object_native(0, 0, 3, &format!(r#"{{"formType":"{kind}"}}"#))
+            .unwrap_or_else(|e| panic!("{kind} 삽입 실패: {e:?}"));
+        assert!(r.contains("\"ok\":true"), "{kind}: {r}");
+    }
+
+    // 1. 조판/렌더에 나온다
+    let svg = doc.render_page_svg_native(0).unwrap();
+    for needle in ["명령 단추", "선택 상자", "라디오 단추"] {
+        assert!(svg.contains(needle), "SVG 에 {needle} 캡션이 없다");
+    }
+
+    // 2. HWP 왕복
+    let bytes = doc.export_hwp_with_adapter().unwrap();
+    let doc2 = HwpDocument::from_bytes(&bytes).unwrap();
+    let mut seen = Vec::new();
+    for ci in 0..10usize {
+        if let Ok(info) = doc2.get_form_object_info_native(0, 0, ci) {
+            if info.contains("\"ok\":true") {
+                seen.push(info);
+            }
+        }
+    }
+    assert_eq!(seen.len(), 5, "왕복 후 양식 개체 5개여야: {}개", seen.len());
+    for (kind, caption) in KINDS {
+        let found = seen.iter().find(|i| i.contains(&format!("\"formType\":\"{kind}\"")));
+        let info = found.unwrap_or_else(|| panic!("왕복 후 {kind} 가 없다"));
+        if !caption.is_empty() {
+            assert!(info.contains(caption), "{kind} 캡션 소실: {info}");
+        }
+    }
+}
+
+/// 삭제 후에도 스트림 장부(char_count/char_offsets)가 맞아야 한다 —
+/// 틀리면 저장이 깨지거나 다시 연 문서가 어긋난다. 그래서 "삭제 → 저장 → 재열기"로 검사한다.
+#[test]
+fn delete_then_roundtrip_stays_consistent() {
+    let mut doc = new_doc();
+    doc.insert_text_native(0, 0, 0, "가나다").unwrap();
+    let r = doc
+        .insert_form_object_native(0, 0, 1, r#"{"formType":"CheckBox"}"#)
+        .unwrap();
+    // 빈 문서에도 숨은 컨트롤(구역/단 정의)이 있어 인덱스는 반환값에서 읽는다.
+    let ci: usize = r
+        .split("\"controlIdx\":")
+        .nth(1)
+        .and_then(|t| t.trim_end_matches('}').parse().ok())
+        .expect("controlIdx");
+    assert!(doc
+        .get_form_object_info_native(0, 0, ci)
+        .unwrap()
+        .contains("\"ok\":true"));
+
+    doc.delete_form_object_native(0, 0, ci).unwrap();
+    assert!(
+        doc.get_form_object_info_native(0, 0, ci).is_err()
+            || !doc.get_form_object_info_native(0, 0, ci).unwrap().contains("\"ok\":true"),
+        "삭제 후에도 양식 개체가 남아 있다"
+    );
+
+    let bytes = doc.export_hwp_with_adapter().unwrap();
+    let doc2 = HwpDocument::from_bytes(&bytes).unwrap();
+    let text = doc2.get_text_range_native(0, 0, 0, 10).unwrap_or_default();
+    assert_eq!(text, "가나다", "삭제 후 왕복 본문이 어긋났다: {text:?}");
+}

@@ -6642,6 +6642,36 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
+    /// 양식 개체(명령 단추·선택 상자·콤보 상자·라디오 단추·입력 상자)를 삽입한다.
+    ///
+    /// `props_json`: `{"formType":"CheckBox","name":"...","caption":"...","groupName":"..."}`
+    /// formType 만 필수. 크기·캡션·색 기본값은 한컴 정답지(samples/form-01.hwp) 값.
+    #[wasm_bindgen(js_name = insertFormObject)]
+    pub fn insert_form_object(
+        &mut self,
+        sec_idx: usize,
+        para_idx: usize,
+        char_offset: usize,
+        props_json: &str,
+    ) -> Result<String, JsValue> {
+        self.core
+            .insert_form_object_native(sec_idx, para_idx, char_offset, props_json)
+            .map_err(|e| e.into())
+    }
+
+    /// 양식 개체를 삭제한다(삽입의 역연산).
+    #[wasm_bindgen(js_name = deleteFormObject)]
+    pub fn delete_form_object(
+        &mut self,
+        sec_idx: usize,
+        para_idx: usize,
+        control_idx: usize,
+    ) -> Result<String, JsValue> {
+        self.core
+            .delete_form_object_native(sec_idx, para_idx, control_idx)
+            .map_err(|e| e.into())
+    }
+
     /// 글꼴 이름으로 font_id를 조회하거나 새로 생성한다.
     ///
     /// 한글(0번) 카테고리에서 이름 검색 → 없으면 7개 전체 카테고리에 신규 등록.
