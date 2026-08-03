@@ -20,6 +20,10 @@ pub(crate) fn is_treat_as_char_object_control(ctrl: &Control) -> bool {
 
 pub(crate) fn is_logical_inline_control(ctrl: &Control) -> bool {
     is_treat_as_char_object_control(ctrl)
+        // 양식 개체는 common 이 없어 treat_as_char 로 못 걸러진다. 조판은 언제나 인라인으로
+        // 배치하므로(composer::inline_control_size_hwp) 커서도 한 글자로 세야 한다 —
+        // 안 세면 **개체 오른쪽에 캐럿이 설 자리가 없다**(2026-08-03 사용자 신고).
+        || matches!(ctrl, Control::Form(_))
         || matches!(ctrl, Control::Footnote(_) | Control::Endnote(_))
 }
 

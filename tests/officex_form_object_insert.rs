@@ -215,3 +215,25 @@ fn move_form_object_within_text() {
     assert_eq!(doc2.get_text_range_native(0, 0, 0, 10).unwrap(), "가나다라");
     assert!(doc2.get_form_object_info_native(0, 0, ci).unwrap().contains("\"ok\":true"));
 }
+
+/// 캐럿이 개체 **오른쪽**에 설 수 있어야 한다 — 양식이 논리 길이에서 빠져 있으면
+/// 개체 뒤로 커서가 못 간다(2026-08-03 사용자 신고: "개체 오른쪽으로 커서가 가지 않아").
+#[test]
+fn caret_can_stand_right_of_form_object() {
+    let mut doc = new_doc();
+    doc.insert_text_native(0, 0, 0, "가나").unwrap();
+    doc.insert_form_object_native(0, 0, 2, r#"{"formType":"PushButton"}"#).unwrap();
+    doc.insert_text_native(0, 0, 2, "다").unwrap();
+
+    // 본문 글자 3 + 개체 1 = 논리 길이 4
+    let logical = doc.get_logical_length(0, 0).unwrap();
+    assert_eq!(logical, 4, "양식이 논리 길이에 안 잡힌다(캐럿이 개체를 건너뛴다)");
+
+    // 개체 오른쪽(논리 3)이 텍스트 좌표 2(=개체 뒤 '다' 앞)로 풀려야 한다
+    let after_obj = doc.logical_to_text_offset(0, 0, 3).unwrap();
+    let before_obj = doc.logical_to_text_offset(0, 0, 2).unwrap();
+    assert!(
+        after_obj >= before_obj,
+        "개체 앞뒤 논리 위치가 같은 텍스트 좌표로 뭉갠다: {before_obj} -> {after_obj}"
+    );
+}
