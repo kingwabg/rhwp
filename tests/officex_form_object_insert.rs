@@ -111,3 +111,60 @@ fn textless_paragraph_with_wrapping_forms_renders_each_form_once() {
     assert_eq!(svg.matches("명령 단추").count(), 1, "명령 단추 복제");
     assert_eq!(svg.matches("라디오 단추").count(), 2, "라디오 단추 복제");
 }
+
+/// 콤보 항목 편집 v1 — setFormObjectProps({items}) 가
+///  1) info.items 에 즉시 반영되고 (properties listItem{N} 정본)
+///  2) HWP 저장 → 재열기에도 살아남아야 한다(스크립트 스트림 왕복).
+#[test]
+fn combobox_items_roundtrip_hwp() {
+    let mut doc = new_doc();
+    let r = doc
+        .insert_form_object_native(0, 0, 0, r#"{"formType":"ComboBox","name":"계절"}"#)
+        .unwrap();
+    let ci: usize = r
+        .split("\"controlIdx\":")
+        .nth(1)
+        .and_then(|t| t.trim_end_matches('}').parse().ok())
+        .expect("controlIdx");
+
+    doc.set_form_object_props_native(
+        0, 0, ci,
+        r#"{"text":"계절 선택","items":["봄","여름","가을","겨울"]}"#,
+    )
+    .unwrap();
+
+    let info = doc.get_form_object_info_native(0, 0, ci).unwrap();
+    assert!(info.contains(r#"["봄","여름","가을","겨울"]"#), "즉시 반영 실패: {info}");
+
+    let bytes = doc.export_hwp_with_adapter().unwrap();
+    let doc2 = HwpDocument::from_bytes(&bytes).unwrap();
+    let info2 = doc2.get_form_object_info_native(0, 0, ci).unwrap();
+    assert!(
+        info2.contains(r#"["봄","여름","가을","겨울"]"#),
+        "HWP 왕복 후 항목 소실: {info2}"
+    );
+    assert!(info2.contains(r#""text":"계절 선택""#), "텍스트 소실: {info2}");
+}
+
+/// 항목을 두 번 갈아끼워도 스크립트에 옛 줄이 안 쌓여야 한다(중복 InsertString 방지).
+#[test]
+fn combobox_items_replace_not_append() {
+    let mut doc = new_doc();
+    let r = doc
+        .insert_form_object_native(0, 0, 0, r#"{"formType":"ComboBox","name":"급식"}"#)
+        .unwrap();
+    let ci: usize = r
+        .split("\"controlIdx\":")
+        .nth(1)
+        .and_then(|t| t.trim_end_matches('}').parse().ok())
+        .unwrap();
+    doc.set_form_object_props_native(0, 0, ci, r#"{"items":["밥","빵"]}"#).unwrap();
+    doc.set_form_object_props_native(0, 0, ci, r#"{"items":["김치","라면","떡"]}"#).unwrap();
+
+    // 재열기 후에도 마지막 항목만 (스크립트에 옛 줄이 쌓였으면 옛 항목이 섞인다)
+    let bytes = doc.export_hwp_with_adapter().unwrap();
+    let doc2 = HwpDocument::from_bytes(&bytes).unwrap();
+    let info2 = doc2.get_form_object_info_native(0, 0, ci).unwrap();
+    assert!(info2.contains(r#"["김치","라면","떡"]"#), "교체 실패: {info2}");
+    assert!(!info2.contains("밥"), "옛 항목 잔존: {info2}");
+}

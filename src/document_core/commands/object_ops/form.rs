@@ -224,7 +224,37 @@ impl DocumentCore {
             form.properties.insert("GroupName".into(), v);
         }
 
+        // 콤보 항목 — `"items":["봄","여름",...]`. 정본 저장소는 properties 의 listItem{N}
+        // (HWPX 왕복이 이미 이 키를 쓴다). HWP5 는 항목이 스크립트 스트림(JScript)에 사니
+        // 거기도 같이 갱신한다 — 안 하면 한컴에서 열었을 때 항목이 옛것으로 남는다.
+        let mut new_items: Option<Vec<String>> = None;
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(props_json) {
+            if let Some(arr) = v.get("items").and_then(|a| a.as_array()) {
+                new_items = Some(
+                    arr.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect(),
+                );
+            }
+        }
+        if let Some(items) = &new_items {
+            let mut i = 0;
+            while form.properties.remove(&format!("listItem{i}")).is_some()
+                || form.properties.remove(&format!("listItemDisplay{i}")).is_some()
+            {
+                i += 1;
+            }
+            for (i, item) in items.iter().enumerate() {
+                form.properties.insert(format!("listItem{i}"), item.clone());
+            }
+        }
+        let script_sync = new_items.map(|items| (form.name.clone(), form.text.clone(), items));
+
         section.raw_stream = None;
+        if let Some((name, text, items)) = script_sync {
+            sync_combobox_script(&mut self.document, &name, &text, &items);
+        }
+
         self.recompose_section(section_idx);
         self.paginate_if_needed();
         self.invalidate_page_tree_cache();
@@ -276,5 +306,161 @@ impl DocumentCore {
         self.paginate_if_needed();
         self.invalidate_page_tree_cache();
         Ok("{\"ok\":true}".to_string())
+    }
+}
+
+// ─── HWP5 스크립트 스트림(콤보 항목의 정본 저장소) ─────────────────────────
+//
+// 한컴은 콤보 항목을 /Scripts/DefaultJScript 에 `Name.InsertString("항목", i);` 로 저장한다.
+// 스트림 구조(samples/form-01.hwp 실측, 2026-08-03):
+//   raw-deflate( [u32 글자수][UTF-16LE 본문] × N ... [u32 0][u32 0][0xFFFFFFFF] )
+//   세그먼트0 = 선언부(var …), 세그먼트1 = 함수/블록부.
+// JScriptVersion 은 raw-deflate(u32 1, u32 0).
+
+fn decode_script_segments(data: &[u8]) -> Option<Vec<String>> {
+    use std::io::Read;
+    let mut d = flate2::read::DeflateDecoder::new(data);
+    let mut out = Vec::new();
+    d.read_to_end(&mut out).ok()?;
+    let mut segs = Vec::new();
+    let mut off = 0usize;
+    while off + 4 <= out.len() {
+        let n = u32::from_le_bytes([out[off], out[off + 1], out[off + 2], out[off + 3]]);
+        if n == 0xFFFF_FFFF {
+            break;
+        }
+        let n = n as usize;
+        let end = off + 4 + n * 2;
+        if end > out.len() {
+            return None;
+        }
+        let u16s: Vec<u16> = out[off + 4..end]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        segs.push(String::from_utf16_lossy(&u16s));
+        off = end;
+    }
+    // 뒤의 빈 세그(0,0)는 종결 관례 — 내용 세그만 돌려준다
+    while segs.last().is_some_and(|s| s.is_empty()) {
+        segs.pop();
+    }
+    Some(segs)
+}
+
+fn encode_script_segments(segs: &[String]) -> Vec<u8> {
+    use std::io::Write;
+    let mut raw = Vec::new();
+    for seg in segs {
+        let u16s: Vec<u16> = seg.encode_utf16().collect();
+        raw.extend_from_slice(&(u16s.len() as u32).to_le_bytes());
+        for u in u16s {
+            raw.extend_from_slice(&u.to_le_bytes());
+        }
+    }
+    raw.extend_from_slice(&0u32.to_le_bytes());
+    raw.extend_from_slice(&0u32.to_le_bytes());
+    raw.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+
+    let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(&raw).ok();
+    enc.finish().unwrap_or_default()
+}
+
+/// 콤보 항목을 스크립트 스트림에 반영한다 — 이 콤보의 옛 줄만 걷어내고 정본 블록을 덧붙인다.
+fn sync_combobox_script(
+    document: &mut crate::model::document::Document,
+    name: &str,
+    text: &str,
+    items: &[String],
+) {
+    let stream_key = "/Scripts/DefaultJScript";
+    let existing = document
+        .extra_streams
+        .iter()
+        .find(|(p, _)| p == stream_key || p == "Scripts/DefaultJScript")
+        .and_then(|(_, d)| decode_script_segments(d));
+
+    let (mut decl, mut body) = match existing {
+        Some(segs) if !segs.is_empty() => {
+            let decl = segs.first().cloned().unwrap_or_default();
+            let body = segs.get(1).cloned().unwrap_or_default();
+            (decl, body)
+        }
+        _ => (
+            "var Documents = XHwpDocuments;\r\nvar Document = Documents.Active_XHwpDocument;\r\n"
+                .to_string(),
+            "function OnDocument_Open()\r\n{\r\n\t//todo : \r\n}\r\n\r\nfunction OnDocument_New()\r\n{\r\n\t//todo : \r\n}\r\n"
+                .to_string(),
+        ),
+    };
+
+    // 선언이 없으면 추가 (한컴 정본 문구)
+    let decl_line = format!(
+        "var {name} = Document.XHwpFormComboBoxs.ItemFromName(\"{name}\");"
+    );
+    if !decl.contains(&decl_line) {
+        if !decl.ends_with('\n') {
+            decl.push_str("\r\n");
+        }
+        decl.push_str(&decl_line);
+        decl.push_str("\r\n");
+    }
+
+    // 이 콤보의 옛 항목 줄 제거 — 남는 빈 {} 블록은 JS 에서 무해하다
+    let prefix_calls = [
+        format!("{name}.Enabled"),
+        format!("{name}.ResetContent"),
+        format!("{name}.Text"),
+        format!("{name}.InsertString"),
+    ];
+    body = body
+        .lines()
+        .filter(|line| {
+            let t = line.trim_start();
+            !prefix_calls.iter().any(|p| t.starts_with(p.as_str()))
+        })
+        .collect::<Vec<_>>()
+        .join("\r\n");
+
+    // 정본 블록 덧붙이기 (form-01.hwp 실측 형태 그대로)
+    body.push_str("\r\n{\r\n");
+    body.push_str(&format!("{name}.Enabled = 1;\r\n"));
+    body.push_str(&format!("{name}.ResetContent();\r\n"));
+    body.push_str(&format!("{name}.Text =\"{text}\"\r\n"));
+    for (i, item) in items.iter().enumerate() {
+        body.push_str(&format!("{name}.InsertString(\"{item}\",{i});\r\n"));
+    }
+    body.push_str("}\r\n");
+
+    let encoded = encode_script_segments(&[decl, body]);
+    if let Some(slot) = document
+        .extra_streams
+        .iter_mut()
+        .find(|(p, _)| p == stream_key || p == "Scripts/DefaultJScript")
+    {
+        slot.1 = encoded;
+    } else {
+        document
+            .extra_streams
+            .push((stream_key.to_string(), encoded));
+    }
+
+    // JScriptVersion 이 없으면 정본(버전 1.0)으로 만들어 둔다
+    if !document
+        .extra_streams
+        .iter()
+        .any(|(p, _)| p.contains("JScriptVersion"))
+    {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&1u32.to_le_bytes());
+        raw.extend_from_slice(&0u32.to_le_bytes());
+        use std::io::Write;
+        let mut enc =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(&raw).ok();
+        document
+            .extra_streams
+            .push(("/Scripts/JScriptVersion".to_string(), enc.finish().unwrap_or_default()));
     }
 }

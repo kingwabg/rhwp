@@ -195,10 +195,21 @@ impl DocumentCore {
                     .collect();
                 let props_json = format!("{{{}}}", props.join(","));
 
-                // ComboBox: 스크립트에서 InsertString 항목 추출
+                // ComboBox 항목: properties 의 listItem{N}(HWPX 왕복·패널 편집의 정본) 우선,
+                // 없으면 스크립트 스트림(HWP5 원본)에서 추출.
                 let items_json = if f.form_type == FormType::ComboBox {
-                    let items =
-                        extract_combobox_items_from_script(&self.document.extra_streams, &f.name);
+                    let mut items: Vec<String> = Vec::new();
+                    let mut i = 0;
+                    while let Some(v) = f.properties.get(&format!("listItem{i}")) {
+                        items.push(v.clone());
+                        i += 1;
+                    }
+                    if items.is_empty() {
+                        items = extract_combobox_items_from_script(
+                            &self.document.extra_streams,
+                            &f.name,
+                        );
+                    }
                     if items.is_empty() {
                         "[]".to_string()
                     } else {
