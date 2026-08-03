@@ -68,7 +68,31 @@ impl DocumentCore {
             }
         };
 
-        let (def_w, def_h, def_caption, back_color, border_type) = hancom_defaults(form_type);
+        let (def_w, mut def_h, def_caption, back_color, border_type) = hancom_defaults(form_type);
+        // 한컴 정본 크기(1984 HWPUNIT ≈ 19.8pt)는 **개체만 있는 문단** 기준이다. 10pt 본문 사이에
+        // 그대로 넣으면 줄 높이가 두 배로 뛰어 글자가 아래로 밀린다(2026-08-03 사용자 신고).
+        // 그래서 삽입 지점의 글자 크기에 맞춰 줄인다 — 가로세로 비는 정본 그대로.
+        let mut def_w = def_w;
+        {
+            let para = &self.document.sections[section_idx].paragraphs[para_idx];
+            let cs_id = para.char_shape_id_at(char_offset).unwrap_or(0);
+            // ResolvedCharStyle.font_size 는 px — HWPUNIT 로 되돌린다(96dpi 기준 1pt=100).
+            let font_px = self
+                .styles
+                .char_styles
+                .get(cs_id as usize)
+                .map(|s| s.font_size)
+                .filter(|v| *v > 0.0)
+                .unwrap_or(13.333);
+            let font_size = (font_px * 72.0 / 96.0 * 100.0).round() as u32;
+            // 글자 한 칸보다 조금 큰 정도(1.4em) — 네모·동그라미가 글자 위아래로 살짝 넘되
+            // 160% 줄간격 안에는 들어간다.
+            let target_h = (font_size as f64 * 1.4).round() as u32;
+            if target_h > 0 && target_h < def_h {
+                def_w = ((def_w as f64) * (target_h as f64) / (def_h as f64)).round() as u32;
+                def_h = target_h;
+            }
+        }
         let name = json_str(props_json, "name")
             .unwrap_or_else(|| format!("{:?}", form_type));
         let caption = json_str(props_json, "caption").unwrap_or_else(|| def_caption.to_string());

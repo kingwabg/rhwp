@@ -507,7 +507,10 @@ fn repeated_empty_tac_line_offset(
 
     // 텍스트 없는 HWP 문단은 LINE_SEG 여러 줄이 같은 text_start 를 가질 수 있다.
     // 이때 TAC 개수와 빈 줄 수가 정확히 맞으면 한 줄에 하나씩 순서대로 배정한다.
-    if line_tac_sequence.len() == repeated_empty_line_count {
+    // ⚠ 개수가 1:1 로 맞아떨어져도 **줄이 하나뿐이면** 이 규칙을 쓰면 안 된다 —
+    //    개체 6개가 한 줄에 들어가는데 1개만 그려진다(2026-08-03 실측, 개체를 글자 크기로
+    //    줄이자 드러남). 여러 줄일 때만 순서 배정이 뜻이 있다.
+    if repeated_empty_line_count > 1 && line_tac_sequence.len() == repeated_empty_line_count {
         return line_tac_sequence
             .get(line_ordinal)
             .copied()
@@ -2136,10 +2139,19 @@ impl LayoutEngine {
         baseline: f64,
         section_index: usize,
         para_index: usize,
+        placed_forms: &mut std::collections::HashSet<usize>,
     ) -> f64 {
-        if comp_line.runs.is_empty() && !tac_offsets_px.is_empty() {
+        // 글자가 없는 줄(빈 run 하나만 있는 줄 포함)에 얹힌 양식 개체를 그린다.
+        // ⚠ **이미 그린 개체는 건너뛴다** — 같은 char_start 를 공유하는 빈 줄이 여럿이면
+        //   줄마다 전부 그려 개체가 통째로 복제됐다(2026-08-03 실측). 줄 배정을 추측하는
+        //   대신 "한 번만 그린다"로 못박는다.
+        let textless = comp_line.runs.iter().all(|r| r.text.is_empty());
+        if textless && !tac_offsets_px.is_empty() {
             if let Some(p) = para {
                 for &(_tac_pos, tac_w, tac_ci) in tac_offsets_px {
+                    if !placed_forms.insert(tac_ci) {
+                        continue;
+                    }
                     if let Some(Control::Form(f)) = p.controls.get(tac_ci) {
                         let form_h = hwpunit_to_px(f.height as i32, self.dpi);
                         let form_y = (y + baseline - form_h).max(y);
@@ -2481,6 +2493,8 @@ impl LayoutEngine {
         wrap_anchor: Option<&crate::renderer::pagination::WrapAnchorRef>,
     ) -> f64 {
         let mut y = y_start;
+        // 이 문단에서 이미 그린 양식 개체(중복 방지 — 빈 줄이 여럿일 때 줄마다 그려졌다)
+        let mut placed_forms: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let end = end_line.min(composed.lines.len());
 
         // 문단 스타일에서 여백 및 정렬 정보
@@ -3801,14 +3815,14 @@ impl LayoutEngine {
                 &mut line_node,
                 comp_line,
                 para,
-                // ⚠ 전체 목록을 주면 같은 char_start 의 빈 줄마다 전부 그려 복제된다(2026-08-03).
-                &line_tac_offsets,
+                &tac_offsets_px,
                 cell_ctx.as_ref(),
                 x,
                 y,
                 baseline,
                 section_index,
                 para_index,
+                &mut placed_forms,
             );
 
             let defer_empty_line_control_marker = comp_line.runs.is_empty()

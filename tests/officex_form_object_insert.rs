@@ -289,3 +289,21 @@ fn typing_after_consecutive_forms_lands_after_them() {
         x_of(">끝<"), x_of(">라디오 단추<")
     );
 }
+
+/// 본문 사이에 넣은 개체는 **그 글자 크기에 맞춰** 들어가야 한다 —
+/// 한컴 정본 크기(19.8pt)를 10pt 본문에 그대로 넣으면 줄 높이가 뛰어 글자가 밀린다
+/// (2026-08-03 사용자 신고 "텍스트 높낮이가 달라지는데").
+#[test]
+fn inline_form_matches_font_size() {
+    let mut doc = new_doc();
+    doc.insert_text_native(0, 0, 0, "가나다").unwrap();
+    let r = doc
+        .insert_form_object_native(0, 0, 2, r#"{"formType":"CheckBox"}"#)
+        .unwrap();
+    let ci: usize = r.split("\"controlIdx\":").nth(1).and_then(|t| t.trim_end_matches('}').parse().ok()).unwrap();
+    let info = doc.get_form_object_info_native(0, 0, ci).unwrap();
+    let h: u32 = info.split("\"height\":").nth(1).unwrap().split(',').next().unwrap().parse().unwrap();
+    // 기본 10pt(=1000) 문서 → 1.4em = 1400 언저리. 정본 1984 를 그대로 쓰면 실패한다.
+    assert!(h <= 1500, "인라인 개체가 글자보다 너무 크다: {h} HWPUNIT");
+    assert!(h >= 900, "너무 작다: {h}");
+}
