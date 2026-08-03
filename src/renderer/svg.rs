@@ -63,6 +63,9 @@ pub enum FontEmbedMode {
 
 /// SVG 렌더러
 pub struct SvgRenderer {
+    /// 본문 clip 사각형의 윗변 — 강조점이 이 위로 올라가면 화면에서 잘린다.
+    /// (Renderer trait 의 draw_text 시그니처를 못 바꿔 필드로 넘긴다.)
+    body_clip_top: Option<f64>,
     /// SVG 출력 버퍼
     output: String,
     /// 그라데이션 정의 버퍼 (<defs> 내부)
@@ -156,6 +159,7 @@ struct OverlayImageInfo {
 impl SvgRenderer {
     pub fn new() -> Self {
         Self {
+            body_clip_top: None,
             output: String::new(),
             defs: Vec::new(),
             gradient_counter: 0,
@@ -544,6 +548,7 @@ impl SvgRenderer {
             RenderNodeType::Body {
                 clip_rect: Some(cr),
             } => {
+                self.body_clip_top = Some(cr.y);
                 let clip_id = format!("body-clip-{}", node.id);
                 let right_pad = if self.show_paragraph_marks || self.show_control_codes {
                     TEXT_MARK_CLIP_RIGHT_PAD
@@ -2662,6 +2667,8 @@ impl Renderer for SvgRenderer {
     }
 
     fn draw_text(&mut self, text: &str, x: f64, y: f64, style: &TextStyle) {
+        // 강조점이 본문 clip 밖으로 나가지 않게 쓰는 천장(없으면 제한 없음).
+        let line_top = self.body_clip_top.unwrap_or(f64::NEG_INFINITY);
         // [Task #1067] inline 컨트롤 placeholder (U+FFFC OBJECT REPLACEMENT CHARACTER) 를
         // 보이지 않게 처리. HWP/HWPX 의 inline 도형/표/그림 등 treat_as_char 컨트롤이
         // paragraph text 자체에 U+FFFC 로 표현됨 — 도형 path 는 별도 emit 되므로 본
@@ -3004,7 +3011,7 @@ impl Renderer for SvgRenderer {
             use crate::renderer::emphasis::{emphasis_mark, EmphasisPrim};
             for &cx in &char_positions[..char_positions.len().saturating_sub(1)] {
                 let center_x = x + cx + (font_size * style.ratio * 0.5);
-                for prim in emphasis_mark(style.emphasis_dot, center_x, y, font_size) {
+                for prim in emphasis_mark(style.emphasis_dot, center_x, y, font_size, line_top) {
                     match prim {
                         EmphasisPrim::Circle {
                             cx,

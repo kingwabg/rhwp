@@ -30,18 +30,23 @@ pub(crate) enum EmphasisPrim {
 ///
 /// `center_x` 는 글자 가로 중앙, `baseline_y` 는 글자 baseline, `font_size` 는 글자 크기(px).
 /// 종류는 한/글 「글자 모양」 강조점 순서를 따른다(1=● 2=○ 3=ˇ 4=˜ 5=･ 6=˸).
+/// `line_top` 은 이 글자가 앉은 **줄 상자의 윗변**(본문 clip 도 여기서 잘린다).
+/// 글꼴·줄간격에 따라 baseline 에서 얼마나 떨어져 있는지가 달라지므로 **추측하지 않고 받는다** —
+/// 0.985em 로 어림잡았더니 ascent 가 그보다 짧은 글꼴에서 점 윗부분이 잘렸다(2026-08-03 신고).
 pub(crate) fn emphasis_mark(
     kind: u8,
     center_x: f64,
     baseline_y: f64,
     font_size: f64,
+    line_top: f64,
 ) -> Vec<EmphasisPrim> {
-    // 잉크가 들어갈 띠. 위는 줄 상자 윗변에서 아주 살짝 내려(반올림에 잘리지 않게),
-    // 아래는 글자 윗변보다 살짝 위에서 끝낸다.
     let lw = (font_size * 0.045).max(0.5);
     // 선으로 그리는 모양은 굵기의 절반이 바깥으로 번진다 — 그만큼 안쪽으로 들여 잡는다.
-    let top = baseline_y - font_size * 0.985 + lw / 2.0;
-    let bottom = baseline_y - font_size * 0.825 - lw / 2.0;
+    // 줄 상자 윗변보다 위로는 절대 올라가지 않는다.
+    let top = (baseline_y - font_size * 0.985).max(line_top) + lw / 2.0;
+    // 아래는 글자 윗변 살짝 위. 다만 띠가 너무 얇아지면(=줄 상자가 빠듯하면) 안 보이므로,
+    // 글자에 조금 다가서더라도 최소 두께는 지킨다 — 안 보이는 것보다 붙는 게 낫다.
+    let bottom = (baseline_y - font_size * 0.825 - lw / 2.0).max(top + font_size * 0.11);
     let h = bottom - top;
     let cy = (top + bottom) / 2.0;
     // 채움 원은 선 번짐이 없어 띠를 꽉 채워도 된다(선 모양보다 조금 크게 보이는 게 맞다).
@@ -129,7 +134,7 @@ mod tests {
         let band_top = baseline - fs; // 줄 상자 윗변
         let glyph_top = baseline - fs * 0.8; // 한글 글자 윗변
         for kind in 1..=6u8 {
-            for prim in emphasis_mark(kind, 50.0, baseline, fs) {
+            for prim in emphasis_mark(kind, 50.0, baseline, fs, band_top) {
                 let (lo, hi) = match prim {
                     EmphasisPrim::Circle {
                         cy,

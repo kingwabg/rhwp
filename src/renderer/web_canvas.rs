@@ -307,6 +307,8 @@ fn replay_plane_for_wrap(target: crate::model::shape::TextWrap) -> PaintReplayPl
 /// WASM 환경에서만 컴파일된다.
 #[cfg(target_arch = "wasm32")]
 pub struct WebCanvasRenderer {
+    /// 본문 clip 사각형의 윗변 — 강조점이 이 위로 올라가면 화면에서 잘린다.
+    body_clip_top: Option<f64>,
     /// Canvas 2D 컨텍스트
     ctx: CanvasRenderingContext2d,
     /// 페이지 폭 (px)
@@ -340,6 +342,7 @@ impl WebCanvasRenderer {
             .dyn_into::<CanvasRenderingContext2d>()?;
 
         Ok(Self {
+            body_clip_top: None,
             ctx,
             width: canvas.width() as f64,
             height: canvas.height() as f64,
@@ -1191,6 +1194,8 @@ impl WebCanvasRenderer {
                 clip_kind,
             } => match clip_kind {
                 ClipKind::Body => {
+                    // 강조점이 이 윗변을 넘지 않게 기억해 둔다(넘으면 잘려 안 보인다).
+                    let prev_body_top = self.body_clip_top.replace(clip.y);
                     self.ctx.save();
                     self.ctx.begin_path();
                     let right_pad = if self.show_paragraph_marks || self.show_control_codes {
@@ -1203,6 +1208,7 @@ impl WebCanvasRenderer {
                     self.ctx.clip();
                     self.render_layer_node(child, active_layer);
                     self.ctx.restore();
+                    self.body_clip_top = prev_body_top;
 
                     let body_left = clip.x;
                     let body_right = clip.x + clip.width;
@@ -2116,6 +2122,8 @@ impl Renderer for WebCanvasRenderer {
     }
 
     fn draw_text(&mut self, text: &str, x: f64, y: f64, style: &TextStyle) {
+        // 강조점이 본문 clip 밖으로 나가지 않게 쓰는 천장(없으면 제한 없음).
+        let line_top = self.body_clip_top.unwrap_or(f64::NEG_INFINITY);
         // [Task #1067] inline 컨트롤 placeholder (U+FFFC OBJECT REPLACEMENT CHARACTER) skip.
         // svg.rs::draw_text 와 동일 정합.
         let text: String = text.chars().filter(|&c| c != '\u{FFFC}').collect();
@@ -2451,7 +2459,7 @@ impl Renderer for WebCanvasRenderer {
             self.ctx.set_line_join("round");
             for &cx in &char_positions[..char_positions.len().saturating_sub(1)] {
                 let center_x = x + cx + (font_size * style.ratio * 0.5);
-                for prim in emphasis_mark(style.emphasis_dot, center_x, y, font_size) {
+                for prim in emphasis_mark(style.emphasis_dot, center_x, y, font_size, line_top) {
                     match prim {
                         EmphasisPrim::Circle {
                             cx,
