@@ -6673,6 +6673,20 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
+    /// 양식 개체를 텍스트 안에서 옮긴다 — {"delta":±1} 또는 {"toPara":N,"offset":M}(텍스트 좌표).
+    #[wasm_bindgen(js_name = moveFormObject)]
+    pub fn move_form_object(
+        &mut self,
+        sec_idx: usize,
+        para_idx: usize,
+        control_idx: usize,
+        props_json: &str,
+    ) -> Result<String, JsValue> {
+        self.core
+            .move_form_object_native(sec_idx, para_idx, control_idx, props_json)
+            .map_err(|e| e.into())
+    }
+
     /// 양식 개체를 삭제한다(삽입의 역연산).
     #[wasm_bindgen(js_name = deleteFormObject)]
     pub fn delete_form_object(

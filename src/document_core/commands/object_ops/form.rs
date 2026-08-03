@@ -261,6 +261,111 @@ impl DocumentCore {
         Ok("{\"ok\":true}".to_string())
     }
 
+    /// 양식 개체를 텍스트 안에서 옮긴다 — 개체 드래그/화살표 이동의 배관.
+    ///
+    /// `props_json`:
+    /// - `{"delta":-1}` / `{"delta":1}`  — 한 글자 왼쪽/오른쪽 (화살표)
+    /// - `{"toPara":N,"offset":M}`      — 절대 위치(드래그 낙하점, 텍스트 좌표)
+    ///
+    /// 구현은 "빼기(장부 -8) + 다시 넣기(장부 +8)" — 삽입·삭제와 같은 규약이라
+    /// 스트림 장부가 어긋날 여지를 새로 만들지 않는다. 반환에 새 controlIdx 를 준다.
+    pub fn move_form_object_native(
+        &mut self,
+        section_idx: usize,
+        para_idx: usize,
+        control_idx: usize,
+        props_json: &str,
+    ) -> Result<String, HwpError> {
+        use crate::document_core::helpers::{find_control_text_positions, json_i32};
+
+        let section = self
+            .document
+            .sections
+            .get_mut(section_idx)
+            .ok_or_else(|| HwpError::RenderError(format!("구역 {} 범위 초과", section_idx)))?;
+        let paragraph = section
+            .paragraphs
+            .get_mut(para_idx)
+            .ok_or_else(|| HwpError::RenderError(format!("문단 {} 범위 초과", para_idx)))?;
+        if !matches!(paragraph.controls.get(control_idx), Some(Control::Form(_))) {
+            return Err(HwpError::InvalidField("양식 개체가 아닙니다".into()));
+        }
+
+        let positions = find_control_text_positions(paragraph);
+        let cur_pos = positions.get(control_idx).copied().unwrap_or(0);
+        let text_len = paragraph.text.chars().count();
+
+        let to_para = json_i32(props_json, "toPara")
+            .map(|v| v as usize)
+            .unwrap_or(para_idx);
+        let target_offset = if let Some(delta) = json_i32(props_json, "delta") {
+            let t = cur_pos as i64 + delta as i64;
+            t.clamp(0, text_len as i64) as usize
+        } else if let Some(off) = json_i32(props_json, "offset") {
+            off.max(0) as usize
+        } else {
+            return Err(HwpError::InvalidField("delta 또는 offset 이 필요합니다".into()));
+        };
+
+        if to_para == para_idx && target_offset == cur_pos {
+            return Ok(format!(
+                "{{\"ok\":true,\"paraIdx\":{para_idx},\"controlIdx\":{control_idx}}}"
+            ));
+        }
+        if to_para >= section.paragraphs.len() {
+            return Err(HwpError::RenderError(format!("대상 문단 {} 범위 초과", to_para)));
+        }
+
+        // ── 빼기 (delete_form_object_native 와 같은 장부) ──
+        let paragraph = &mut section.paragraphs[para_idx];
+        let form_ctrl = paragraph.controls.remove(control_idx);
+        let record = if control_idx < paragraph.ctrl_data_records.len() {
+            paragraph.ctrl_data_records.remove(control_idx)
+        } else {
+            None
+        };
+        let safe = cur_pos.min(paragraph.text.chars().count());
+        for co in paragraph.char_offsets[safe..].iter_mut() {
+            *co = co.saturating_sub(8);
+        }
+        paragraph.char_count = paragraph.char_count.saturating_sub(8);
+
+        // ── 다시 넣기 (insert_form_object_native 와 같은 장부) ──
+        let dest = &mut section.paragraphs[to_para];
+        let dest_len = dest.text.chars().count();
+        let target_offset = target_offset.min(dest_len);
+        let insert_idx = {
+            let positions = find_control_text_positions(dest);
+            let mut idx = dest.controls.len();
+            for (i, &pos) in positions.iter().enumerate() {
+                if pos > target_offset || (pos == target_offset && i >= control_idx && to_para == para_idx) {
+                    idx = i;
+                    break;
+                }
+            }
+            idx
+        };
+        dest.controls.insert(insert_idx, form_ctrl);
+        dest.ctrl_data_records.insert(insert_idx, record);
+        if !dest.char_offsets.is_empty() {
+            let safe_offset = target_offset.min(dest_len);
+            for co in dest.char_offsets[safe_offset..].iter_mut() {
+                *co += 8;
+            }
+        }
+        dest.char_count += 8;
+        dest.control_mask |= 1u32 << 11;
+        dest.has_para_text = true;
+
+        section.raw_stream = None;
+        self.recompose_section(section_idx);
+        self.paginate_if_needed();
+        self.invalidate_page_tree_cache();
+        Ok(format!(
+            "{{\"ok\":true,\"paraIdx\":{to_para},\"controlIdx\":{insert_idx}}}"
+        ))
+    }
+
     /// 양식 개체를 지운다(삽입의 역연산 — 컨트롤 제거 + 본문 8 WCHAR 반환).
     pub fn delete_form_object_native(
         &mut self,

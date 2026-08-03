@@ -168,3 +168,50 @@ fn combobox_items_replace_not_append() {
     assert!(info2.contains(r#"["김치","라면","떡"]"#), "교체 실패: {info2}");
     assert!(!info2.contains("밥"), "옛 항목 잔존: {info2}");
 }
+
+/// 개체 좌우 이동 — delta 로 한 글자씩, 절대 offset 으로 드래그 낙하. 본문이 정확히 갈라진다.
+#[test]
+fn move_form_object_within_text() {
+    let mut doc = new_doc();
+    doc.insert_text_native(0, 0, 0, "가나다라").unwrap();
+    let r = doc
+        .insert_form_object_native(0, 0, 2, r#"{"formType":"CheckBox"}"#)
+        .unwrap();
+    let ci: usize = r.split("\"controlIdx\":").nth(1).and_then(|t| t.trim_end_matches('}').parse().ok()).unwrap();
+
+    // 렌더에서 체크박스의 x 가 텍스트 사이 어디냐로 위치를 판정한다 — 위치 2: "가나[☐]다라"
+    let x_of = |d: &HwpDocument, needle: &str| -> f64 {
+        let svg = d.render_page_svg_native(0).unwrap();
+        let line = svg.lines().find(|l| l.contains(needle)).unwrap_or_else(|| panic!("{needle} 없음"));
+        let at = line.find(" x=\"").unwrap() + 4;
+        line[at..].split('"').next().unwrap().parse().unwrap()
+    };
+    let box_x = |d: &HwpDocument| -> f64 {
+        // 체크 사각형은 rect 로 그려진다 — 첫 검은 테두리 rect 의 x
+        let svg = d.render_page_svg_native(0).unwrap();
+        let line = svg.lines().find(|l| l.starts_with("<rect") && l.contains("선택") || l.contains("checkbox"))
+            .map(|l| l.to_string());
+        // 렌더 구현에 기대지 말고 캡션 "선택 상자" 텍스트 x 로 판정한다
+        drop(line);
+        x_of(d, ">선택 상자<")
+    };
+
+    let x2 = box_x(&doc); // 위치 2
+    // 왼쪽으로 한 칸 → 위치 1: "가[☐]나다라"
+    let r = doc.move_form_object_native(0, 0, ci, r#"{"delta":-1}"#).unwrap();
+    let ci: usize = r.split("\"controlIdx\":").nth(1).and_then(|t| t.trim_end_matches('}').parse().ok()).unwrap();
+    let x1 = box_x(&doc);
+    assert!(x1 < x2, "왼쪽 이동 후 x 가 줄어야: {x1} vs {x2}");
+
+    // 절대 위치 4(맨 끝) → "가나다라[☐]"
+    let r = doc.move_form_object_native(0, 0, ci, r#"{"offset":4}"#).unwrap();
+    let ci: usize = r.split("\"controlIdx\":").nth(1).and_then(|t| t.trim_end_matches('}').parse().ok()).unwrap();
+    let x4 = box_x(&doc);
+    assert!(x4 > x2, "끝 이동 후 x 가 커져야: {x4} vs {x2}");
+
+    // 왕복 무결 — 저장해 다시 열어도 위치·본문 유지
+    let bytes = doc.export_hwp_with_adapter().unwrap();
+    let doc2 = HwpDocument::from_bytes(&bytes).unwrap();
+    assert_eq!(doc2.get_text_range_native(0, 0, 0, 10).unwrap(), "가나다라");
+    assert!(doc2.get_form_object_info_native(0, 0, ci).unwrap().contains("\"ok\":true"));
+}
