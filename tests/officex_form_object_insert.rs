@@ -261,3 +261,31 @@ fn caret_rect_moves_past_form_object_width() {
         "캐럿 x 가 개체 폭을 건너뛴다: before={before:.1}, after={after:.1}"
     );
 }
+
+/// 개체를 연속 삽입한 문단 끝에서 타이핑 — 글자가 개체들 **뒤**에 들어가야 한다.
+/// (2026-08-03 실측: logical_to_text_offset 워크 루프가 같은 위치의 컨트롤 여럿을
+/// 소비 못 해 at_ctrl=false 로 풀렸고, 이어 친 글자가 개체들 앞으로 말려들어갔다.)
+#[test]
+fn typing_after_consecutive_forms_lands_after_them() {
+    let mut doc = new_doc();
+    doc.insert_text_logical(0, 0, 0, "수집: ").unwrap();
+    for kind in ["CheckBox", "ComboBox", "RadioButton"] {
+        doc.insert_form_object_native(0, 0, 4, &format!(r#"{{"formType":"{kind}"}}"#))
+            .unwrap();
+    }
+    // 커서 = 개체 3개 뒤(논리 7)
+    let r = doc.insert_text_logical(0, 0, 7, "끝").unwrap();
+    assert!(r.contains("\"logicalOffset\":8"), "삽입 후 논리 위치: {r}");
+
+    let svg = doc.render_page_svg_native(0).unwrap();
+    let x_of = |needle: &str| -> f64 {
+        let line = svg.lines().find(|l| l.contains(needle)).unwrap_or_else(|| panic!("{needle} 없음"));
+        let at = line.find(" x=\"").unwrap() + 4;
+        line[at..].split('"').next().unwrap().parse().unwrap()
+    };
+    assert!(
+        x_of(">끝<") > x_of(">라디오 단추<"),
+        "글자가 개체들 앞에 그려졌다: 끝={} 라디오={}",
+        x_of(">끝<"), x_of(">라디오 단추<")
+    );
+}

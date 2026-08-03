@@ -76,6 +76,12 @@ pub(crate) fn logical_to_text_offset(para: &Paragraph, logical_offset: usize) ->
             if logical_idx == logical_offset {
                 return (text_idx, true);
             }
+            // 같은 텍스트 위치에 컨트롤이 여럿(연속 삽입)이면 다음 컨트롤부터 마저 소비한다.
+            // 종전엔 여기서 글자 소비로 넘어가, 글자가 소진된 문단 끝에서는 후행 컨트롤이
+            // 남아 있어도 break 돼 (text_len, false) 를 돌려줬다 — 개체 3개 뒤(논리 7)가
+            // "컨트롤 직후 아님"으로 잘못 풀려, 이어 친 글자가 개체들 앞에 들어갔다
+            // (2026-08-03 실측: "수집: [☐][콤보][라디오]" 뒤 타이핑이 "수집: 끝[…]" 이 됨).
+            continue;
         }
         // 텍스트 문자
         if text_idx < text_len {
