@@ -777,13 +777,46 @@ impl Table {
                 }
             }
         }
-        // 폭이 0인 열은 기본값 1800 HWPUNIT (약 6.35mm)
+        // [경계선 재설계 2026-08-04] 어긋낸 표의 조각 열은 단독(span1) 목격자가 없다 —
+        // 기본값으로 채우면 update_ctrl_dimensions 를 부르는 다음 연산(일반 드래그 등)이
+        // 표를 슬쩍 키운다(신고: 오른쪽 끝이 커짐). 병합 셀 제약으로 먼저 푼다.
+        self.solve_span_gaps(&mut widths, true);
+        // 그래도 폭이 0인 열은 기본값 1800 HWPUNIT (약 6.35mm)
         for w in &mut widths {
             if *w == 0 {
                 *w = 1800;
             }
         }
         widths
+    }
+
+    /// 목격자 없는 열/행 크기를 병합 셀 제약(구간 합 = 셀 크기)으로 채운다.
+    /// 정확히 한 구간만 미지수인 병합 셀부터 반복 해소 — 레이아웃 솔버의 모델판.
+    fn solve_span_gaps(&self, sizes: &mut [HwpUnit], cols: bool) {
+        loop {
+            let mut progressed = false;
+            for cell in &self.cells {
+                let (start, span, total) = if cols {
+                    (cell.col as usize, cell.col_span as usize, cell.width)
+                } else {
+                    (cell.row as usize, cell.row_span as usize, cell.height)
+                };
+                if span < 2 || start + span > sizes.len() {
+                    continue;
+                }
+                let unknown: Vec<usize> = (start..start + span).filter(|&i| sizes[i] == 0).collect();
+                if unknown.len() == 1 {
+                    let known: u32 = (start..start + span).map(|i| sizes[i]).sum();
+                    if total > known {
+                        sizes[unknown[0]] = total - known;
+                        progressed = true;
+                    }
+                }
+            }
+            if !progressed {
+                break;
+            }
+        }
     }
 
     /// 열별 폭(HWPUNIT)을 절대값으로 설정한다.
@@ -820,7 +853,9 @@ impl Table {
     /// 높이가 0인 행은 기본값 400으로 대체 (새 셀 생성용).
     pub fn get_row_heights(&self) -> Vec<HwpUnit> {
         let mut heights = self.get_raw_row_heights();
-        // 높이가 0인 행은 기본값 400 HWPUNIT
+        // [경계선 재설계 2026-08-04] 어긋낸 표의 조각 행 — 열과 같은 제약 해소
+        self.solve_span_gaps(&mut heights, false);
+        // 그래도 높이가 0인 행은 기본값 400 HWPUNIT
         for h in &mut heights {
             if *h == 0 {
                 *h = 400;

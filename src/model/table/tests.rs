@@ -1363,3 +1363,24 @@ fn test_restore_cell_boundary_extend_direction() {
     assert_eq!((b2c.row_span, b2c.height), (1, 600));
     assert_eq!(cell_text(&t, 1, 1), "B2", "B2 내용 보존");
 }
+
+/// 어긋낸 표의 조각 열/행도 병합 제약으로 정확히 유도된다 —
+/// update_ctrl_dimensions 를 부르는 다음 연산이 표를 키우지 않는다(신고 수리).
+#[test]
+fn test_offset_table_derived_sizes_stable() {
+    let mut t = make_table(2, 2);
+    let a1 = t.cell_index_at(0, 0).unwrap();
+    t.offset_cell_boundary(a1, true, 900).unwrap();
+    assert_eq!(t.get_column_widths(), vec![3600, 900, 2700], "조각 열 폭이 제약으로 풀린다");
+    let w_before = t.common.width;
+    t.update_ctrl_dimensions();
+    assert_eq!(t.common.width, w_before, "재계산해도 표 폭 불변");
+
+    let mut t2 = make_table(2, 2);
+    let a1b = t2.cell_index_at(0, 0).unwrap();
+    t2.offset_cell_boundary(a1b, false, 400).unwrap();
+    assert_eq!(t2.get_row_heights(), vec![1000, 400, 600], "조각 행 높이가 제약으로 풀린다");
+    let h_before = t2.common.height;
+    t2.update_ctrl_dimensions();
+    assert_eq!(t2.common.height, h_before, "재계산해도 표 높이 불변");
+}
