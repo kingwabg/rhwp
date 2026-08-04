@@ -106,6 +106,27 @@ impl DocumentCore {
                 .collect()
         };
 
+        // [편집 훅 2026-08-04] 값싼 조기 탈출 — 어울림 host 도 없고 과거 좁힘 흔적도
+        // 없으면 렌더트리를 돌 이유가 없다. 이게 없으면 평범한 문서의 글자 입력마다
+        // 전 페이지 조판이 한 번씩 더 붙는다(편집 훅 배선의 전제).
+        if square_hosts.is_empty() {
+            let has_narrow_trace = self
+                .document
+                .sections
+                .get(section_idx)
+                .map(|sec| {
+                    sec.paragraphs.iter().any(|p| {
+                        p.line_segs
+                            .iter()
+                            .any(|ls| ls.column_start > 0 || ls.segment_width > 0)
+                    })
+                })
+                .unwrap_or(false);
+            if !has_narrow_trace {
+                return false;
+            }
+        }
+
         // 페이지 수 확보(조판 유발) 후 렌더트리에서 (표 상자, 문단 첫줄 y, 페이지) 수집.
         let page_count = DocumentCore::page_count(self).max(1) as usize;
         struct Probe {
