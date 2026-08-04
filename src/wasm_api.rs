@@ -6687,6 +6687,12 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
+    /// 논리 칸을 차지하는 양식 개체의 컨트롤 인덱스(없으면 -1) — Backspace/Delete 분기용.
+    #[wasm_bindgen(js_name = formControlAtLogical)]
+    pub fn form_control_at_logical(&self, sec_idx: usize, para_idx: usize, logical: usize) -> i32 {
+        self.core.form_control_at_logical_native(sec_idx, para_idx, logical)
+    }
+
     /// 양식 개체를 삭제한다(삽입의 역연산).
     #[wasm_bindgen(js_name = deleteFormObject)]
     pub fn delete_form_object(

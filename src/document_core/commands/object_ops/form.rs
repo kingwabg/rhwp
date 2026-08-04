@@ -463,6 +463,37 @@ impl DocumentCore {
         ))
     }
 
+    /// 논리 칸 `logical` 을 차지하는 양식 개체의 컨트롤 인덱스(없으면 -1).
+    ///
+    /// Backspace/Delete 가 개체를 글자처럼 지우기 위한 조회 — 캐럿 앞/뒤 칸이 양식이면
+    /// 텍스트 삭제 대신 개체 삭제로 갈라탄다(한컴 동작).
+    pub fn form_control_at_logical_native(
+        &self,
+        section_idx: usize,
+        para_idx: usize,
+        logical: usize,
+    ) -> i32 {
+        use crate::document_core::helpers::{find_control_text_positions, is_logical_inline_control};
+        let Some(section) = self.document.sections.get(section_idx) else { return -1 };
+        let Some(para) = section.paragraphs.get(para_idx) else { return -1 };
+        let positions = find_control_text_positions(para);
+        // 스트림 순서대로 걸으며 각 논리 인라인 컨트롤의 논리 칸을 센다:
+        // 컨트롤의 논리 칸 = 텍스트 위치 + (그보다 앞에 선 논리 인라인 컨트롤 수)
+        let mut inline_seen = 0usize;
+        for (ci, ctrl) in para.controls.iter().enumerate() {
+            if !is_logical_inline_control(ctrl) {
+                continue;
+            }
+            let pos = positions.get(ci).copied().unwrap_or(0);
+            let slot = pos + inline_seen;
+            if slot == logical {
+                return if matches!(ctrl, Control::Form(_)) { ci as i32 } else { -1 };
+            }
+            inline_seen += 1;
+        }
+        -1
+    }
+
     /// 양식 개체를 지운다(삽입의 역연산 — 컨트롤 제거 + 본문 8 WCHAR 반환).
     pub fn delete_form_object_native(
         &mut self,

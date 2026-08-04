@@ -369,3 +369,19 @@ fn insert_into_document_with_header() {
     let m = doc.move_form_object_native(0, 0, ci, r#"{"delta":1}"#).unwrap();
     assert!(m.contains("\"ok\":true"), "{m}");
 }
+
+/// Backspace/Delete 분기용 논리 칸 조회 — 개체 앞뒤 글자·개체가 섞여도 정확히 짚는다.
+#[test]
+fn form_control_at_logical_slots() {
+    let mut doc = new_doc();
+    doc.insert_text_native(0, 0, 0, "가나").unwrap();
+    // 논리: 가(0) 나(1) [A](2) [B](3)  — 위치 2에 개체 둘
+    doc.insert_form_object_native(0, 0, 2, r#"{"formType":"PushButton"}"#).unwrap();
+    doc.insert_form_object_native(0, 0, 2, r#"{"formType":"CheckBox"}"#).unwrap();
+    assert_eq!(doc.form_control_at_logical_native(0, 0, 0), -1, "글자 칸");
+    assert_eq!(doc.form_control_at_logical_native(0, 0, 1), -1, "글자 칸");
+    let a = doc.form_control_at_logical_native(0, 0, 2);
+    let b = doc.form_control_at_logical_native(0, 0, 3);
+    assert!(a >= 0 && b >= 0 && a != b, "개체 칸 둘: {a},{b}");
+    assert_eq!(doc.form_control_at_logical_native(0, 0, 4), -1, "범위 밖");
+}
