@@ -125,13 +125,29 @@ pub(crate) const EMOJI_ADVANCE_EM: f64 = 1.0;
 /// 크기로 읽히는 건 폭이므로 폭을 한글 한 칸에 맞춘다: 12.9 / 17 ≈ 0.76 → 13.0w × 16h.
 pub(crate) const EMOJI_GLYPH_SCALE: f64 = 0.76;
 
-/// 축소 후 baseline 아래로 3.8px(=5 × 0.76) 남으므로 한글 descent(2.0px)에 맞춰
-/// 들어올린다: (3.8 − 2.0) / 13.333 ≈ 0.135em. 이래야 이모지 바닥이 글자 바닥과 같다.
-/// (남는 높이 차 3.5px 는 baseline 위로 — 줄 간격 안쪽 여유에 들어간다.)
-pub(crate) const EMOJI_BASELINE_LIFT_EM: f64 = 0.135;
+/// baseline 올림(em) — **픽셀 잉크 실측 정본**(2026-08-04).
+///
+/// 옛 값 0.135 는 `measureText().width`(=어드밴스)·폰트박스에서 유도한 추정이라 4배
+/// 과다였고, 이모지가 글자보다 위로 떠 보였다(사용자 신고). 캔버스 픽셀 스캔 실측:
+/// 😀 잉크 top −0.88em·bottom +0.11em(중심 −0.385em), 한글 '가' top −0.80·bottom +0.15
+/// (중심 −0.325em). 축소(0.76) 후 이모지 중심은 −0.293em 이므로 두 중심을 맞추려면
+/// 0.032em 만 올리면 된다. (바닥 맞춤이 아니라 **중심 맞춤** — 이모지는 둥근 덩어리라
+/// 중심이 눈에 걸린다.)
+pub(crate) const EMOJI_BASELINE_LIFT_EM: f64 = 0.032;
 
-/// 원본 크기 기준 이모지 잉크 폭 배율 — 축소한 글리프를 진행폭 안에서 가운데 둘 때 쓴다.
-pub(crate) const EMOJI_INK_EM: f64 = 1.28;
+/// 그려지는 크기 기준 이모지 잉크 폭 배율 — 축소 글리프를 진행폭 안에 가운데 둘 때 쓴다.
+/// 실측: 😀 잉크 폭 = 어드밴스와 같은 1.0em(좌측 베어링 0). 옛 값 1.28 은 어드밴스를
+/// 원본 em 으로 나눈 수치를 잉크로 오인한 것이라 중앙 보정이 9배 부족했다(왼쪽 쏠림).
+pub(crate) const EMOJI_INK_EM: f64 = 1.0;
+
+/// 이모지 클러스터의 그리기 오프셋 — (가로 중앙 보정, baseline 올림) 픽셀.
+/// web_canvas(화면)·svg(인쇄) 두 경로가 **반드시 같은 값**을 쓰도록 한 곳에 둔다.
+pub(crate) fn emoji_draw_offsets(font_size: f64, advance: f64) -> (f64, f64) {
+    let scaled = font_size * EMOJI_GLYPH_SCALE;
+    let ink_w = scaled * EMOJI_INK_EM;
+    let dx = ((advance - ink_w) / 2.0).max(0.0);
+    (dx, font_size * EMOJI_BASELINE_LIFT_EM)
+}
 
 /// 이모지 결합용 문자 — 앞 글자에 붙어 그려지므로 폭 0.
 /// (변이 선택자·ZWJ·피부색 수정자·keycap 결합자)
@@ -2097,6 +2113,29 @@ pub(crate) fn vertical_substitute_char(c: char) -> Option<char> {
 }
 
 // ── 테스트 ──────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod emoji_offset_tests {
+    use super::*;
+
+    /// 이모지 세로 위치 회귀 방지 — 지금까지 x(폭·캐럿)만 검사해 baseline 회귀가
+    /// 두 번 통과했다(2026-08-04 신고). 잉크 실측 기준 중심 정렬을 수치로 못박는다.
+    #[test]
+    fn emoji_offsets_match_ink_measurements() {
+        let fs = 100.0;
+        let (dx, lift) = emoji_draw_offsets(fs, fs); // 어드밴스 = 1em
+        // 가로: (1.0 − 0.76)/2 = 0.12em — 옛 버그값 0.0136em 이면 왼쪽으로 쏠린다
+        assert!((dx - 12.0).abs() < 0.01, "dx {dx} != 12.0 (0.12em)");
+        // 세로: 0.032em — 옛 버그값 13.5(0.135em)면 이모지가 위로 뜬다
+        assert!((lift - 3.2).abs() < 0.01, "lift {lift} != 3.2 (0.032em)");
+        // 중심 정렬 검산: 축소 이모지 중심(−0.385×0.76) − 올림 = 한글 중심(−0.325) ±0.01em
+        let emoji_center = -0.385 * EMOJI_GLYPH_SCALE - EMOJI_BASELINE_LIFT_EM;
+        assert!(
+            (emoji_center - (-0.325)).abs() < 0.01,
+            "이모지 중심 {emoji_center} 이 한글 중심 −0.325 와 어긋난다"
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {

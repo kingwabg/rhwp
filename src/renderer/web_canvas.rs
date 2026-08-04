@@ -2323,7 +2323,7 @@ impl Renderer for WebCanvasRenderer {
                 // 바닥을 한글 descent 에 맞춰 들어올린다 — 진행폭(1em) 안에서 가운데.
                 if crate::renderer::layout::text_measurement::is_emoji_presentation(ch) {
                     use crate::renderer::layout::text_measurement::{
-                        EMOJI_BASELINE_LIFT_EM, EMOJI_GLYPH_SCALE, EMOJI_INK_EM,
+                        emoji_draw_offsets, EMOJI_GLYPH_SCALE,
                     };
                     let advance = {
                         let end = *char_idx + cluster_str.chars().count();
@@ -2334,8 +2334,7 @@ impl Renderer for WebCanvasRenderer {
                         }
                     };
                     let scaled = font_size * EMOJI_GLYPH_SCALE;
-                    let ink_w = scaled * EMOJI_INK_EM;
-                    let dx = ((advance - ink_w) / 2.0).max(0.0);
+                    let (dx, lift) = emoji_draw_offsets(font_size, advance);
                     self.ctx.save();
                     let emoji_font = format!(
                         "{}{}{:.3}px {}",
@@ -2345,7 +2344,7 @@ impl Renderer for WebCanvasRenderer {
                     let _ = self.ctx.fill_text(
                         cluster_str,
                         char_x + dx,
-                        y - font_size * EMOJI_BASELINE_LIFT_EM,
+                        y - lift,
                     );
                     self.ctx.restore();
                     self.ctx.set_font(&font);

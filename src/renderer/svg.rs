@@ -2920,16 +2920,15 @@ impl Renderer for SvgRenderer {
             if let Some(ch) = cluster_str.chars().next() {
                 if crate::renderer::layout::text_measurement::is_emoji_presentation(ch) {
                     use crate::renderer::layout::text_measurement::{
-                        EMOJI_BASELINE_LIFT_EM, EMOJI_GLYPH_SCALE, EMOJI_INK_EM,
+                        emoji_draw_offsets, EMOJI_GLYPH_SCALE,
                     };
                     let advance = cluster_advance(*char_idx, cluster_str);
                     let scaled = font_size * EMOJI_GLYPH_SCALE;
-                    let ink_w = scaled * EMOJI_INK_EM;
-                    let dx = ((advance - ink_w) / 2.0).max(0.0);
+                    let (dx, lift) = emoji_draw_offsets(font_size, advance);
                     self.output.push_str(&format!(
                         "<text x=\"{:.4}\" y=\"{:.4}\" font-family=\"{}\" font-size=\"{:.4}\" fill=\"{}\">{}</text>\n",
                         char_x + dx,
-                        y - font_size * EMOJI_BASELINE_LIFT_EM,
+                        y - lift,
                         font_family,
                         scaled,
                         color,
