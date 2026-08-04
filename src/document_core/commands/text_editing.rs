@@ -2857,7 +2857,31 @@ impl DocumentCore {
                 section.paragraphs.len()
             ))
         })?;
-        Ok(para.text.chars().count())
+        // [글자처럼 취급 2026-08-05] 인라인(글자처럼) 컨트롤도 **한 글자**로 센다.
+        //
+        // 신고: 글자처럼 취급한 표 오른쪽에 커서를 두고 치면 글자가 겹쳐 보이고 표가
+        // 밀린다. 원인은 여기 — 길이를 text 글자 수로만 재서 표 뒤 오프셋이 존재하지
+        // 않았다. End·클릭이 표 **앞** 오프셋으로 접히고, 거기 삽입되니 표가 오른쪽으로
+        // 밀렸다(캐럿은 클릭한 표 오른쪽에 있는데 글자는 표 앞에 그려져 '겹침'으로 보임).
+        // 삽입 경로는 이미 `char_offset > text_len` 을 후행 컨트롤 뒤로 해석하므로
+        // (paragraph.rs insert_text), 길이만 논리 길이로 맞추면 좌표계가 이어진다.
+        let text_len = para.text.chars().count();
+        let trailing_inline = para
+            .control_text_positions()
+            .iter()
+            .zip(para.controls.iter())
+            .filter(|(&pos, ctrl)| {
+                pos >= text_len
+                    && match ctrl {
+                        crate::model::control::Control::Table(t) => t.common.treat_as_char,
+                        crate::model::control::Control::Picture(p) => p.common.treat_as_char,
+                        crate::model::control::Control::Shape(sh) => sh.common().treat_as_char,
+                        crate::model::control::Control::Equation(e) => e.common.treat_as_char,
+                        _ => false,
+                    }
+            })
+            .count();
+        Ok(text_len + trailing_inline)
     }
 
     /// 문단에 텍스트박스가 있는 Shape 컨트롤의 인덱스를 반환 (네이티브)
