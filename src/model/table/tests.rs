@@ -1339,3 +1339,27 @@ fn test_restore_cell_boundary_not_offset_rejected() {
     let a1 = t.cell_index_at(0, 0).unwrap();
     assert!(t.restore_cell_boundary(a1, false).is_err());
 }
+
+/// 치유 반대 방향: 정렬된 칸(B1)의 경계를 어긋난 선 쪽으로 맞추면 전 열이 어긋난
+/// 선 위치로 정렬되고 격자가 단순화된다.
+#[test]
+fn test_restore_cell_boundary_extend_direction() {
+    let mut t = make_table(2, 2);
+    set_cell_text(&mut t, 1, 1, "B2");
+    let a1 = t.cell_index_at(0, 0).unwrap();
+    t.offset_cell_boundary(a1, false, 400).unwrap();
+    assert_eq!(t.row_count, 3);
+
+    // B1(정렬된 칸)을 잡고 어긋난 선으로 — restore 가 extend 분기로 처리
+    let b1 = t.cell_index_at(0, 1).unwrap();
+    t.restore_cell_boundary(b1, false).unwrap();
+
+    assert_eq!(t.row_count, 2, "어긋난 선 위치로 정렬되며 격자 단순화");
+    let a1c = t.cell_at(0, 0).unwrap();
+    assert_eq!((a1c.row_span, a1c.height), (1, 1400), "A1 은 어긋난 크기 유지");
+    let b1c = t.cell_at(0, 1).unwrap();
+    assert_eq!((b1c.row_span, b1c.height), (1, 1400), "B1 이 어긋난 선까지 확장(목격자 A1)");
+    let b2c = t.cell_at(1, 1).unwrap();
+    assert_eq!((b2c.row_span, b2c.height), (1, 600));
+    assert_eq!(cell_text(&t, 1, 1), "B2", "B2 내용 보존");
+}

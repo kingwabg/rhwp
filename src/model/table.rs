@@ -1864,7 +1864,7 @@ impl Table {
 
         if edge_right {
             if t.col_span < 2 {
-                return Err("어긋난 경계가 아닙니다".to_string());
+                return self.extend_cell_to_offset_line(cell_idx, true);
             }
             let boundary = t.col + t.col_span;
             if boundary >= self.col_count {
@@ -1909,7 +1909,7 @@ impl Table {
             self.collapse_unused_lines(true);
         } else {
             if t.row_span < 2 {
-                return Err("어긋난 경계가 아닙니다".to_string());
+                return self.extend_cell_to_offset_line(cell_idx, false);
             }
             let boundary = t.row + t.row_span;
             if boundary >= self.row_count {
@@ -1946,6 +1946,117 @@ impl Table {
             if let Some(i) = self.cell_index_at(boundary - 1, t.col) {
                 if self.cells[i].paragraphs.len() > 1 && self.cells[i].paragraphs[0].text.is_empty() {
                     self.cells[i].paragraphs.remove(0);
+                }
+            }
+            self.collapse_unused_lines(false);
+        }
+        self.rebuild_grid();
+        Ok(())
+    }
+
+    /// 치유 반대 방향: 정렬된 칸의 경계를 **어긋난 선 쪽으로** 끌어 맞춘다.
+    /// 이웃이 어긋나(스팬≥2) 있을 때, 이웃의 첫 조각을 대상이 흡수해 전 열/행이
+    /// 어긋난 선 위치로 정렬되고, 못 쓰게 된 원래 격자 줄은 접힌다.
+    fn extend_cell_to_offset_line(&mut self, cell_idx: usize, edge_right: bool) -> Result<(), String> {
+        let t = self
+            .cells
+            .get(cell_idx)
+            .ok_or_else(|| "셀 인덱스가 유효하지 않습니다".to_string())?
+            .clone();
+
+        if edge_right {
+            let boundary = t.col + t.col_span;
+            if boundary >= self.col_count {
+                return Err("바깥 테두리는 정렬 대상이 아닙니다".to_string());
+            }
+            let n = self
+                .cell_at(t.row, boundary)
+                .ok_or_else(|| "오른쪽 이웃 셀을 찾지 못했습니다".to_string())?
+                .clone();
+            if n.col_span < 2 {
+                return Err("어긋난 경계가 아닙니다".to_string());
+            }
+            if n.row != t.row || n.row_span != t.row_span {
+                return Err("위아래 높이가 다른 칸과는 정렬할 수 없습니다".to_string());
+            }
+            self.split_cell(n.row, n.col)?;
+            // split 은 내용을 첫 조각에 남긴다 — 흡수될 조각은 비우고 남는 이웃 조각에 되돌린다
+            if let (Some(a), Some(b)) = (
+                self.cell_index_at(t.row, boundary),
+                self.cell_index_at(t.row, boundary + 1),
+            ) {
+                if a != b {
+                    let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+                    let (x, y) = self.cells.split_at_mut(hi);
+                    std::mem::swap(&mut x[lo].paragraphs, &mut y[0].paragraphs);
+                }
+            }
+            self.merge_cells(t.row, t.col, t.row + t.row_span - 1, boundary)?;
+            if n.col_span > 2 {
+                self.merge_cells(t.row, boundary + 1, t.row + t.row_span - 1, boundary + n.col_span - 1)?;
+            }
+            let copy_w = |cells: &[Cell], col: u16, span: u16, skip_row: u16| -> Option<HwpUnit> {
+                cells
+                    .iter()
+                    .find(|c| c.col == col && c.col_span == span && c.row != skip_row)
+                    .map(|c| c.width)
+            };
+            if let Some(w) = copy_w(&self.cells, t.col, t.col_span + 1, t.row) {
+                if let Some(i) = self.cell_index_at(t.row, t.col) {
+                    self.cells[i].width = w;
+                }
+            }
+            if let Some(w) = copy_w(&self.cells, boundary + 1, n.col_span - 1, t.row) {
+                if let Some(i) = self.cell_index_at(t.row, boundary + 1) {
+                    self.cells[i].width = w;
+                }
+            }
+            self.collapse_unused_lines(true);
+        } else {
+            let boundary = t.row + t.row_span;
+            if boundary >= self.row_count {
+                return Err("바깥 테두리는 정렬 대상이 아닙니다".to_string());
+            }
+            let n = self
+                .cell_at(boundary, t.col)
+                .ok_or_else(|| "아래 이웃 셀을 찾지 못했습니다".to_string())?
+                .clone();
+            if n.row_span < 2 {
+                return Err("어긋난 경계가 아닙니다".to_string());
+            }
+            if n.col != t.col || n.col_span != t.col_span {
+                return Err("좌우 폭이 다른 칸과는 정렬할 수 없습니다".to_string());
+            }
+            self.split_cell(n.row, n.col)?;
+            // split 은 내용을 첫 조각에 남긴다 — 흡수될 조각은 비우고 남는 이웃 조각에 되돌린다
+            if let (Some(a), Some(b)) = (
+                self.cell_index_at(boundary, t.col),
+                self.cell_index_at(boundary + 1, t.col),
+            ) {
+                if a != b {
+                    let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+                    let (x, y) = self.cells.split_at_mut(hi);
+                    std::mem::swap(&mut x[lo].paragraphs, &mut y[0].paragraphs);
+                }
+            }
+            self.merge_cells(t.row, t.col, boundary, t.col + t.col_span - 1)?;
+            if n.row_span > 2 {
+                self.merge_cells(boundary + 1, t.col, boundary + n.row_span - 1, t.col + t.col_span - 1)?;
+            }
+            let copy_h = |cells: &[Cell], row: u16, span: u16, skip_col: u16| -> Option<HwpUnit> {
+                cells
+                    .iter()
+                    .find(|c| c.row == row && c.row_span == span && c.col != skip_col)
+                    .map(|c| c.height)
+            };
+            if let Some(h) = copy_h(&self.cells, t.row, t.row_span + 1, t.col) {
+                if let Some(i) = self.cell_index_at(t.row, t.col) {
+                    self.cells[i].height = h;
+                }
+            }
+            if let Some(h) = copy_h(&self.cells, boundary + 1, n.row_span - 1, t.col) {
+                if let Some(i) = self.cell_index_at(boundary + 1, t.col) {
+                    self.cells[i].height = h;
                 }
             }
             self.collapse_unused_lines(false);
