@@ -1105,6 +1105,19 @@ fn apply_inline_control_line_height(seg: &mut LineSeg, height_hwp: i32) {
     }
 }
 
+/// [이모지 줄박스 2026-08-04] 독스 원리 — 이모지가 있는 줄은 줄 상자가 글리프를 감싼다.
+/// 이모지는 글자 크기 그대로 그리므로(무보정) 잉크가 한글보다 크다: 실측 top −0.88em·
+/// bottom +0.11em(한글 −0.80/+0.15). 상자 1.15em + 기준선 0.96em 이면 위아래를 다 덮고,
+/// 상자는 **아래로** 자란다 — 선택 하이라이트·캐럿이 TextLine bbox 를 쓰므로 같이 커진다.
+fn apply_emoji_line_height(seg: &mut LineSeg, font_size_px: f64, dpi: f64) {
+    let lh = px_to_hwpunit(font_size_px * 1.15, dpi);
+    if lh > seg.line_height {
+        seg.line_height = lh;
+        seg.text_height = lh;
+        seg.baseline_distance = px_to_hwpunit(font_size_px * 0.96, dpi);
+    }
+}
+
 /// [officex/어울림 본편] 부분폭 밴드(빈 host Square 표 상자)의 세로 구간.
 /// 좌표는 **컬럼 로컬 px**(문단이 배치되는 단의 x=0 기준), top 은 문서 흐름 y.
 #[derive(Debug, Clone, Copy)]
@@ -1456,8 +1469,9 @@ pub(crate) fn reflow_line_segs_with_bands(
             .collect();
         breaks
     };
+    let para_chars: Vec<char> = para.text.chars().collect();
     let mut new_line_segs: Vec<LineSeg> = Vec::new();
-    for lb in &line_breaks {
+    for (lb_i, lb) in line_breaks.iter().enumerate() {
         let utf16_start = if new_line_segs.is_empty() {
             0 // 첫 번째 줄의 text_start는 항상 0 (문단 시작)
         } else if lb.start_idx < para.char_offsets.len() {
@@ -1481,6 +1495,21 @@ pub(crate) fn reflow_line_segs_with_bands(
             12.0
         };
         new_line_segs.push(make_line_seg(utf16_start as u32, fs));
+        // [이모지 줄박스] 이 줄의 문자 범위에 이모지가 있으면 상자를 글리프에 맞춘다
+        let line_end = line_breaks
+            .get(lb_i + 1)
+            .map(|n| n.start_idx)
+            .unwrap_or(para_chars.len())
+            .min(para_chars.len());
+        let line_start = lb.start_idx.min(line_end);
+        if para_chars[line_start..line_end]
+            .iter()
+            .any(|&c| crate::renderer::layout::text_measurement::is_emoji_presentation(c))
+        {
+            if let Some(seg) = new_line_segs.last_mut() {
+                apply_emoji_line_height(seg, fs, dpi);
+            }
+        }
     }
 
     if new_line_segs.is_empty() {

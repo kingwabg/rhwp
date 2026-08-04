@@ -77,3 +77,31 @@ fn line_survives_trailing_emoji() {
     assert_eq!(xs.len(), 9, "글자 수만큼 캐럿 자리가 나와야 한다: {xs:?}");
     assert!(xs[8] > xs[0], "줄이 끊겨 캐럿이 되돌아갔다: {xs:?}");
 }
+
+/// [이모지 줄박스 2026-08-04] 독스 원리 — 이모지가 있는 줄은 선택 상자(드래그
+/// 하이라이트 = TextLine bbox)가 글리프를 감싸도록 줄박스가 커진다. 없는 줄은 그대로.
+#[test]
+fn emoji_line_box_grows_to_wrap_glyph() {
+    fn selection_height(text: &str) -> f64 {
+        let mut doc = HwpDocument::create_empty();
+        doc.create_blank_document().unwrap();
+        doc.insert_text(0, 0, 0, text).unwrap();
+        let j = doc.get_selection_rects(0, 0, 0, 0, 4).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&j).unwrap();
+        let rects = v["rects"].as_array().or_else(|| v.as_array()).cloned().unwrap_or_default();
+        rects
+            .iter()
+            .filter_map(|r| r["h"].as_f64().or_else(|| r["height"].as_f64()))
+            .fold(0.0, f64::max)
+    }
+    let h_with = selection_height("가나😀다라");
+    let h_without = selection_height("가나다라");
+    assert!(
+        h_with > h_without * 1.08,
+        "이모지 줄 선택 상자가 커져야 한다: with={h_with} without={h_without}"
+    );
+    assert!(
+        h_with < h_without * 1.35,
+        "과하게 커지면 안 된다: with={h_with} without={h_without}"
+    );
+}
