@@ -1520,6 +1520,39 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// [경계선 재설계 2026-08-04] 한 칸 경계 어긋내기(Shift+드래그) — 격자 재구성 정본.
+    /// edge: "bottom" | "right". delta: HWPUNIT (+아래/오른쪽, -위/왼쪽).
+    #[wasm_bindgen(js_name = offsetCellBoundary)]
+    pub fn offset_cell_boundary(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+        cell_idx: u32,
+        edge: &str,
+        delta: i32,
+    ) -> Result<String, JsValue> {
+        let edge_right = match edge {
+            "right" => true,
+            "bottom" => false,
+            other => {
+                return Err(JsValue::from_str(&format!(
+                    "edge 는 bottom|right 여야 합니다: {}",
+                    other
+                )))
+            }
+        };
+        self.offset_cell_boundary_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+            cell_idx as usize,
+            edge_right,
+            delta,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// `mergeTableCells` 의 options object 변형 (#1413).
     ///
     /// options JSON 키: `{ sectionIdx, parentParaIdx, controlIdx, startRow, startCol,

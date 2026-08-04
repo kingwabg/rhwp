@@ -454,6 +454,40 @@ impl DocumentCore {
         )))
     }
 
+    /// [경계선 재설계 2026-08-04] 한 칸 경계 어긋내기 — 격자 재구성(분할+병합) 정본.
+    /// docs 는 model `Table::offset_cell_boundary` 참조. edge_right: false=아래, true=오른쪽.
+    pub fn offset_cell_boundary_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: usize,
+        edge_right: bool,
+        delta: i32,
+    ) -> Result<String, HwpError> {
+        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+        table
+            .offset_cell_boundary(cell_idx, edge_right, delta)
+            .map_err(HwpError::RenderError)?;
+        table.dirty = true;
+        let cell_count = table.cells.len();
+
+        self.document.sections[section_idx].raw_stream = None;
+        self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
+        self.paginate_if_needed();
+
+        self.event_log.push(DocumentEvent::CellsMerged {
+            section: section_idx,
+            para: parent_para_idx,
+            ctrl: control_idx,
+        });
+        Ok(super::super::helpers::json_ok_with(&format!(
+            "\"cellCount\":{}",
+            cell_count
+        )))
+    }
+
     pub fn split_table_cell_native(
         &mut self,
         section_idx: usize,

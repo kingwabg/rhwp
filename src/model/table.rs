@@ -1685,6 +1685,170 @@ impl Table {
     ///
     /// 우측→좌측, 하단→상단 순서로 처리하여 그리드 시프트가
     /// 아직 처리되지 않은 셀에 영향을 주지 않도록 한다.
+    /// [경계선 재설계 2026-08-04] 한 칸의 아래/오른쪽 경계를 어긋낸다 — 격자 재구성 정본.
+    ///
+    /// 렌더 흉내(renderHeight 힌트)가 아니라 진짜 격자를 다시 짠다: 경계가 파고드는 쪽 칸을
+    /// `split_cell_into` 로 둘로 나눠 격자선을 만들고, 가까운 조각을 대상 칸에 `merge_cells` 로
+    /// 흡수시킨다. 두 연산 모두 스팬 재계산·직렬화 왕복이 검증돼 있어 파일에 그대로 저장되고
+    /// 한컴에서도 동일하게 열린다. 표 바깥 크기는 불변(규칙 docs/table-border-rules.md #1·#5).
+    ///
+    /// * `edge_right` false = 아래 경계(세로 이동), true = 오른쪽 경계(가로 이동)
+    /// * `delta` > 0 = 아래/오른쪽으로(대상이 커짐), < 0 = 위/왼쪽으로(대상이 줄어듦)
+    ///
+    /// ponytail: 경계가 파고드는 쪽 칸이 이미 병합(스팬>1)이면 v1 은 오류 — 스냅으로 기존
+    /// 격자선에 맞춰 되돌리는 치유는 ⌘Z(스냅숏 undo)가 담당한다. 필요해지면 내부 격자선
+    /// 탐색으로 확장.
+    pub fn offset_cell_boundary(
+        &mut self,
+        cell_idx: usize,
+        edge_right: bool,
+        delta: i32,
+    ) -> Result<(), String> {
+        const MIN_CELL: i32 = 200; // resize_table_cells 와 같은 최소 크기
+        if delta == 0 {
+            return Ok(());
+        }
+        let t = self
+            .cells
+            .get(cell_idx)
+            .ok_or_else(|| "셀 인덱스가 유효하지 않습니다".to_string())?
+            .clone();
+
+        if edge_right {
+            // ── 오른쪽 경계 (열 방향) ──
+            let boundary = t.col + t.col_span;
+            if boundary >= self.col_count {
+                return Err("바깥 테두리는 어긋낼 수 없습니다".to_string());
+            }
+            let n_idx = self
+                .cell_index_at(t.row, boundary)
+                .ok_or_else(|| "오른쪽 이웃 셀을 찾지 못했습니다".to_string())?;
+            let n = self.cells[n_idx].clone();
+            if n.row != t.row || n.row_span != t.row_span {
+                return Err("위아래 높이가 다른 칸과는 경계를 어긋낼 수 없습니다".to_string());
+            }
+            if delta > 0 {
+                // 이웃 왼쪽 조각을 잘라 대상에 흡수
+                if n.col_span != 1 {
+                    return Err("이미 어긋난 칸 쪽으로는 더 어긋낼 수 없습니다 — 되돌리려면 ⌘Z".to_string());
+                }
+                let d = delta.min(n.width as i32 - MIN_CELL);
+                if d <= 0 {
+                    return Err("이웃 칸에 남는 폭이 없습니다".to_string());
+                }
+                self.split_cell_into(n.row, n.col, 1, 2, true, false)?;
+                let left = self.cell_index_at(t.row, boundary).ok_or("분할 조각(좌) 소실")?;
+                self.cells[left].width = d as HwpUnit;
+                let right = self.cell_index_at(t.row, boundary + 1).ok_or("분할 조각(우) 소실")?;
+                self.cells[right].width = (n.width as i32 - d) as HwpUnit;
+                // split 은 내용을 첫 조각에 남긴다 — 흡수될 조각은 비우고 이웃 조각에 내용을 되돌린다
+                if left != right {
+                    let (a, b) = if left < right {
+                        let (x, y) = self.cells.split_at_mut(right);
+                        (&mut x[left].paragraphs, &mut y[0].paragraphs)
+                    } else {
+                        let (x, y) = self.cells.split_at_mut(left);
+                        (&mut y[0].paragraphs, &mut x[right].paragraphs)
+                    };
+                    std::mem::swap(a, b);
+                }
+                self.merge_cells(t.row, t.col, t.row + t.row_span - 1, boundary)?;
+                let merged = self.cell_index_at(t.row, t.col).ok_or("병합 결과 소실")?;
+                // merge 는 목격자 없는 열(raw 0)을 합산해 폭을 어림한다 — 정확값으로 못박는다
+                self.cells[merged].width = (t.width as i32 + d) as HwpUnit;
+            } else {
+                // 대상 오른쪽 조각을 잘라 이웃에 넘김
+                if t.col_span != 1 {
+                    return Err("이미 어긋난 경계를 다시 정렬하는 건 ⌘Z 로 되돌려 주세요".to_string());
+                }
+                let d = (-delta).min(t.width as i32 - MIN_CELL);
+                if d <= 0 {
+                    return Err("대상 칸에 남는 폭이 없습니다".to_string());
+                }
+                self.split_cell_into(t.row, t.col, 1, 2, true, false)?;
+                let left = self.cell_index_at(t.row, t.col).ok_or("분할 조각(좌) 소실")?;
+                self.cells[left].width = (t.width as i32 - d) as HwpUnit;
+                let strip = self.cell_index_at(t.row, t.col + 1).ok_or("분할 조각(우) 소실")?;
+                self.cells[strip].width = d as HwpUnit;
+                // 이웃은 새 열 삽입으로 한 칸 밀렸다: boundary+1 에서 시작, 스팬 유지
+                self.merge_cells(t.row, t.col + 1, t.row + t.row_span - 1, boundary + n.col_span)?;
+                let merged = self.cell_index_at(t.row, t.col + 1).ok_or("병합 결과 소실")?;
+                self.cells[merged].width = (n.width as i32 + d) as HwpUnit;
+                // 빈 조각이 병합 기준(primary)이라 이웃 내용이 뒤로 밀린다 — 선두 빈 문단 제거
+                if self.cells[merged].paragraphs.len() > 1
+                    && self.cells[merged].paragraphs[0].text.is_empty()
+                {
+                    self.cells[merged].paragraphs.remove(0);
+                }
+            }
+        } else {
+            // ── 아래 경계 (행 방향) ── (열 코드와 대칭)
+            let boundary = t.row + t.row_span;
+            if boundary >= self.row_count {
+                return Err("바깥 테두리는 어긋낼 수 없습니다".to_string());
+            }
+            let n_idx = self
+                .cell_index_at(boundary, t.col)
+                .ok_or_else(|| "아래 이웃 셀을 찾지 못했습니다".to_string())?;
+            let n = self.cells[n_idx].clone();
+            if n.col != t.col || n.col_span != t.col_span {
+                return Err("좌우 폭이 다른 칸과는 경계를 어긋낼 수 없습니다".to_string());
+            }
+            if delta > 0 {
+                if n.row_span != 1 {
+                    return Err("이미 어긋난 칸 쪽으로는 더 어긋낼 수 없습니다 — 되돌리려면 ⌘Z".to_string());
+                }
+                let d = delta.min(n.height as i32 - MIN_CELL);
+                if d <= 0 {
+                    return Err("이웃 칸에 남는 높이가 없습니다".to_string());
+                }
+                self.split_cell_into(n.row, n.col, 2, 1, true, false)?;
+                let top = self.cell_index_at(boundary, t.col).ok_or("분할 조각(상) 소실")?;
+                self.cells[top].height = d as HwpUnit;
+                let bot = self.cell_index_at(boundary + 1, t.col).ok_or("분할 조각(하) 소실")?;
+                self.cells[bot].height = (n.height as i32 - d) as HwpUnit;
+                // split 은 내용을 첫 조각에 남긴다 — 흡수될 조각은 비우고 이웃 조각에 내용을 되돌린다
+                if top != bot {
+                    let (a, b) = if top < bot {
+                        let (x, y) = self.cells.split_at_mut(bot);
+                        (&mut x[top].paragraphs, &mut y[0].paragraphs)
+                    } else {
+                        let (x, y) = self.cells.split_at_mut(top);
+                        (&mut y[0].paragraphs, &mut x[bot].paragraphs)
+                    };
+                    std::mem::swap(a, b);
+                }
+                self.merge_cells(t.row, t.col, boundary, t.col + t.col_span - 1)?;
+                let merged = self.cell_index_at(t.row, t.col).ok_or("병합 결과 소실")?;
+                self.cells[merged].height = (t.height as i32 + d) as HwpUnit;
+            } else {
+                if t.row_span != 1 {
+                    return Err("이미 어긋난 경계를 다시 정렬하는 건 ⌘Z 로 되돌려 주세요".to_string());
+                }
+                let d = (-delta).min(t.height as i32 - MIN_CELL);
+                if d <= 0 {
+                    return Err("대상 칸에 남는 높이가 없습니다".to_string());
+                }
+                self.split_cell_into(t.row, t.col, 2, 1, true, false)?;
+                let top = self.cell_index_at(t.row, t.col).ok_or("분할 조각(상) 소실")?;
+                self.cells[top].height = (t.height as i32 - d) as HwpUnit;
+                let strip = self.cell_index_at(t.row + 1, t.col).ok_or("분할 조각(하) 소실")?;
+                self.cells[strip].height = d as HwpUnit;
+                self.merge_cells(t.row + 1, t.col, boundary + n.row_span, t.col + t.col_span - 1)?;
+                let merged = self.cell_index_at(t.row + 1, t.col).ok_or("병합 결과 소실")?;
+                self.cells[merged].height = (n.height as i32 + d) as HwpUnit;
+                // 빈 조각이 병합 기준(primary)이라 이웃 내용이 뒤로 밀린다 — 선두 빈 문단 제거
+                if self.cells[merged].paragraphs.len() > 1
+                    && self.cells[merged].paragraphs[0].text.is_empty()
+                {
+                    self.cells[merged].paragraphs.remove(0);
+                }
+            }
+        }
+        self.rebuild_grid();
+        Ok(())
+    }
+
     pub fn split_cells_in_range(
         &mut self,
         start_row: u16,
