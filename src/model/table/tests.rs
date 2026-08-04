@@ -1286,3 +1286,56 @@ fn test_offset_cell_boundary_preserves_totals() {
     assert_eq!(t.common.width, before_w, "표 폭 불변");
     assert_eq!(t.common.height, before_h, "표 높이 불변");
 }
+
+/// 복원(치유): 어긋낸 아래 경계를 restore 하면 원래 2×2 격자로 완전히 돌아온다.
+#[test]
+fn test_restore_cell_boundary_bottom() {
+    let mut t = make_table(2, 2);
+    set_cell_text(&mut t, 0, 0, "A1");
+    set_cell_text(&mut t, 1, 0, "A2");
+    set_cell_text(&mut t, 1, 1, "B2");
+    let a1 = t.cell_index_at(0, 0).unwrap();
+    t.offset_cell_boundary(a1, false, 400).unwrap();
+    assert_eq!(t.row_count, 3);
+
+    let a1_after = t.cell_index_at(0, 0).unwrap();
+    t.restore_cell_boundary(a1_after, false).unwrap();
+
+    assert_eq!(t.row_count, 2, "접힌 줄까지 정리돼 원 격자로");
+    let a1c = t.cell_at(0, 0).unwrap();
+    assert_eq!((a1c.row_span, a1c.height), (1, 1000), "목격자(B1) 높이로 복원");
+    let a2c = t.cell_at(1, 0).unwrap();
+    assert_eq!((a2c.row, a2c.row_span, a2c.height), (1, 1, 1000));
+    assert_eq!(cell_text(&t, 1, 0), "A2", "이웃 내용 보존");
+    assert_eq!(cell_text(&t, 1, 1), "B2");
+    let b1 = t.cell_at(0, 1).unwrap();
+    assert_eq!((b1.row_span, b1.height), (1, 1000));
+}
+
+/// 복원(치유): 오른쪽 경계 대칭.
+#[test]
+fn test_restore_cell_boundary_right() {
+    let mut t = make_table(2, 2);
+    set_cell_text(&mut t, 0, 1, "B1");
+    let a1 = t.cell_index_at(0, 0).unwrap();
+    t.offset_cell_boundary(a1, true, 900).unwrap();
+    assert_eq!(t.col_count, 3);
+
+    let a1_after = t.cell_index_at(0, 0).unwrap();
+    t.restore_cell_boundary(a1_after, true).unwrap();
+
+    assert_eq!(t.col_count, 2);
+    let a1c = t.cell_at(0, 0).unwrap();
+    assert_eq!((a1c.col_span, a1c.width), (1, 3600));
+    let b1c = t.cell_at(0, 1).unwrap();
+    assert_eq!((b1c.col, b1c.col_span, b1c.width), (1, 1, 3600));
+    assert_eq!(cell_text(&t, 0, 1), "B1");
+}
+
+/// 가드: 어긋나지 않은 칸은 복원 거부.
+#[test]
+fn test_restore_cell_boundary_not_offset_rejected() {
+    let mut t = make_table(2, 2);
+    let a1 = t.cell_index_at(0, 0).unwrap();
+    assert!(t.restore_cell_boundary(a1, false).is_err());
+}

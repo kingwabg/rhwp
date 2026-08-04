@@ -1849,6 +1849,151 @@ impl Table {
         Ok(())
     }
 
+    /// [경계선 재설계 2026-08-04] 어긋낸 경계를 정렬로 복원(치유) — offset 의 역연산.
+    ///
+    /// 스냅 가이드가 원래 경계선 위치에 캐치했을 때 스튜디오가 호출한다. 대상 칸이
+    /// 어긋나며 흡수했던 조각을 병합 해제로 되찾아 이웃에 되돌리고, 크기는 같은 구간을
+    /// 공유하는 다른 열/행 셀(목격자)에서 복사한다. 그 결과 아무 셀 경계도 쓰지 않게 된
+    /// 격자 줄은 접어서 원래의 단순한 격자로 되돌린다.
+    pub fn restore_cell_boundary(&mut self, cell_idx: usize, edge_right: bool) -> Result<(), String> {
+        let t = self
+            .cells
+            .get(cell_idx)
+            .ok_or_else(|| "셀 인덱스가 유효하지 않습니다".to_string())?
+            .clone();
+
+        if edge_right {
+            if t.col_span < 2 {
+                return Err("어긋난 경계가 아닙니다".to_string());
+            }
+            let boundary = t.col + t.col_span;
+            if boundary >= self.col_count {
+                return Err("바깥 테두리는 복원 대상이 아닙니다".to_string());
+            }
+            let n = self
+                .cell_at(t.row, boundary)
+                .ok_or_else(|| "오른쪽 이웃 셀을 찾지 못했습니다".to_string())?
+                .clone();
+            if n.row != t.row || n.row_span != t.row_span {
+                return Err("위아래 높이가 다른 칸과는 복원할 수 없습니다".to_string());
+            }
+            // 병합 해제 → 왼쪽 (span-1)개 재병합 → 마지막 조각을 이웃에 붙인다
+            self.split_cell(t.row, t.col)?;
+            if t.col_span > 2 {
+                self.merge_cells(t.row, t.col, t.row + t.row_span - 1, boundary - 2)?;
+            }
+            self.merge_cells(t.row, boundary - 1, t.row + t.row_span - 1, boundary + n.col_span - 1)?;
+            // 크기 목격자 복사: 같은 (col, col_span) 구간을 쓰는 다른 행의 셀
+            let copy_w = |cells: &[Cell], col: u16, span: u16, skip_row: u16| -> Option<HwpUnit> {
+                cells
+                    .iter()
+                    .find(|c| c.col == col && c.col_span == span && c.row != skip_row)
+                    .map(|c| c.width)
+            };
+            if let Some(w) = copy_w(&self.cells, t.col, t.col_span - 1, t.row) {
+                if let Some(i) = self.cell_index_at(t.row, t.col) {
+                    self.cells[i].width = w;
+                }
+            }
+            if let Some(w) = copy_w(&self.cells, boundary - 1, n.col_span + 1, t.row) {
+                if let Some(i) = self.cell_index_at(t.row, boundary - 1) {
+                    self.cells[i].width = w;
+                }
+            }
+            // 병합 결과 선두 빈 문단 정리(빈 조각이 primary)
+            if let Some(i) = self.cell_index_at(t.row, boundary - 1) {
+                if self.cells[i].paragraphs.len() > 1 && self.cells[i].paragraphs[0].text.is_empty() {
+                    self.cells[i].paragraphs.remove(0);
+                }
+            }
+            self.collapse_unused_lines(true);
+        } else {
+            if t.row_span < 2 {
+                return Err("어긋난 경계가 아닙니다".to_string());
+            }
+            let boundary = t.row + t.row_span;
+            if boundary >= self.row_count {
+                return Err("바깥 테두리는 복원 대상이 아닙니다".to_string());
+            }
+            let n = self
+                .cell_at(boundary, t.col)
+                .ok_or_else(|| "아래 이웃 셀을 찾지 못했습니다".to_string())?
+                .clone();
+            if n.col != t.col || n.col_span != t.col_span {
+                return Err("좌우 폭이 다른 칸과는 복원할 수 없습니다".to_string());
+            }
+            self.split_cell(t.row, t.col)?;
+            if t.row_span > 2 {
+                self.merge_cells(t.row, t.col, boundary - 2, t.col + t.col_span - 1)?;
+            }
+            self.merge_cells(boundary - 1, t.col, boundary + n.row_span - 1, t.col + t.col_span - 1)?;
+            let copy_h = |cells: &[Cell], row: u16, span: u16, skip_col: u16| -> Option<HwpUnit> {
+                cells
+                    .iter()
+                    .find(|c| c.row == row && c.row_span == span && c.col != skip_col)
+                    .map(|c| c.height)
+            };
+            if let Some(h) = copy_h(&self.cells, t.row, t.row_span - 1, t.col) {
+                if let Some(i) = self.cell_index_at(t.row, t.col) {
+                    self.cells[i].height = h;
+                }
+            }
+            if let Some(h) = copy_h(&self.cells, boundary - 1, n.row_span + 1, t.col) {
+                if let Some(i) = self.cell_index_at(boundary - 1, t.col) {
+                    self.cells[i].height = h;
+                }
+            }
+            if let Some(i) = self.cell_index_at(boundary - 1, t.col) {
+                if self.cells[i].paragraphs.len() > 1 && self.cells[i].paragraphs[0].text.is_empty() {
+                    self.cells[i].paragraphs.remove(0);
+                }
+            }
+            self.collapse_unused_lines(false);
+        }
+        self.rebuild_grid();
+        Ok(())
+    }
+
+    /// 아무 셀 경계도 쓰지 않는 격자 줄(경계선)을 접는다 — 복원(치유) 뒷정리.
+    /// edge_right=false 면 행, true 면 열. 접을 수 있는 줄이 없어질 때까지 반복.
+    fn collapse_unused_lines(&mut self, cols: bool) {
+        loop {
+            let count = if cols { self.col_count } else { self.row_count };
+            let mut target: Option<u16> = None;
+            for line in 1..count {
+                let used = self.cells.iter().any(|c| {
+                    let (start, span) = if cols { (c.col, c.col_span) } else { (c.row, c.row_span) };
+                    start == line || start + span == line
+                });
+                if !used {
+                    target = Some(line);
+                    break;
+                }
+            }
+            let Some(line) = target else { break };
+            // 줄 `line` 과 `line-1` 사이 경계선이 미사용 → 줄 line 을 접는다
+            for c in self.cells.iter_mut() {
+                let (start, span) = if cols {
+                    (&mut c.col, &mut c.col_span)
+                } else {
+                    (&mut c.row, &mut c.row_span)
+                };
+                if *start >= line {
+                    *start -= 1;
+                } else if *start + *span > line {
+                    *span -= 1;
+                }
+            }
+            if cols {
+                self.col_count -= 1;
+            } else {
+                self.row_count -= 1;
+            }
+            self.rebuild_row_sizes();
+            self.rebuild_grid();
+        }
+    }
+
     pub fn split_cells_in_range(
         &mut self,
         start_row: u16,
