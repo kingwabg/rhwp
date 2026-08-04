@@ -51,6 +51,17 @@ impl DocumentCore {
     /// 뽑는다: 이 케이스에서 vpos 축은 float 표의 흐름 소비를 반영하지 않아 렌더와
     /// 어긋난다(실측 34px). 렌더트리 1회 조회 비용은 편집당 조판 1회 추가 — 수용.
     /// 밴드에서 벗어난 문단은 전폭으로 자동 원복(빈 겹침 = 전폭 기록).
+    /// [어울림 편집 훅 2026-08-04] 글자 입력·삭제 뒤 어울림 밴드 재줄바꿈.
+    ///
+    /// 신고: 어울림 표 뒤에 글을 치면 옆으로 흐르지 않고 표를 뚫는다 — 배치를 껐다
+    /// 켜면 정상. 즉 엔진 계산은 맞고 **편집 시 훅이 안 돌아** 옛 전폭 줄이 재생되고
+    /// 있었다. 표 이동·속성 변경에만 걸려 있던 훅을 텍스트 편집에도 건다.
+    /// 값싼 조기 탈출(어울림 host 도 좁힘 흔적도 없으면 즉시 반환)이 앞단에 있어
+    /// 평범한 문서의 타이핑에는 비용이 붙지 않는다.
+    pub(crate) fn reflow_square_bands_after_edit(&mut self, section_idx: usize) {
+        self.reflow_paras_for_square_bands(section_idx);
+    }
+
     pub(crate) fn reflow_paras_for_square_bands(&mut self, section_idx: usize) {
         if self.suppress_square_reflow {
             return;
