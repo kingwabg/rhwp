@@ -2412,13 +2412,13 @@ impl DocumentCore {
     ) -> Result<String, HwpError> {
         let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
 
-        // CommonObjAttr 바이트 레이아웃: flags/v_offset/h_offset
-        while table.raw_ctrl_data.len() < common_obj_offsets::H_OFFSET.end {
-            table.raw_ctrl_data.push(0);
-        }
+        // 오프셋 정본은 물리(`common.*_offset`)다. raw_ctrl_data 는 HWP5 파스본의
+        // 원본 바이트 사본이므로 **있을 때만** 갱신한다 — 종전엔 `while push(0)` 로
+        // 12바이트 토막을 만들어, HWPX 로드 표를 한 번 드래그하면 저장 시 어댑터의
+        // CommonObjAttr 전체 합성이 건너뛰어져 배치가 통째로 유실됐다.
+        let has_raw_offsets = table.raw_ctrl_data.len() >= common_obj_offsets::H_OFFSET.end;
 
-        // attr bit0 은 일부 생성 경로에서 미동기 — 모델 정본(common.treat_as_char)과 OR.
-        let is_treat_as_char = (table.attr & 0x01) != 0 || table.common.treat_as_char;
+        let is_treat_as_char = table.common.treat_as_char;
 
         // [2026-07-30 사용자 결정] 글자처럼취급 표는 드래그 이동 불가 — 한컴에 없는 기능.
         // 종전엔 v_offset 누적 + 문단 경계에서 paragraphs.swap 으로 "문단 사이 이동"을
@@ -2433,26 +2433,22 @@ impl DocumentCore {
 
         // vertical_offset: CommonObjAttr::V_OFFSET (i32 LE)
         if delta_v != 0 {
-            let cur_v = i32::from_le_bytes(
-                table.raw_ctrl_data[common_obj_offsets::V_OFFSET]
-                    .try_into()
-                    .unwrap(),
-            );
-            let nv = cur_v.wrapping_add(delta_v);
-            table.raw_ctrl_data[common_obj_offsets::V_OFFSET].copy_from_slice(&nv.to_le_bytes());
+            let nv = (table.common.vertical_offset as i32).wrapping_add(delta_v);
             table.common.vertical_offset = nv as u32;
+            if has_raw_offsets {
+                table.raw_ctrl_data[common_obj_offsets::V_OFFSET]
+                    .copy_from_slice(&nv.to_le_bytes());
+            }
         }
 
         // horizontal_offset: CommonObjAttr::H_OFFSET (i32 LE)
         if delta_h != 0 {
-            let cur_h = i32::from_le_bytes(
-                table.raw_ctrl_data[common_obj_offsets::H_OFFSET]
-                    .try_into()
-                    .unwrap(),
-            );
-            let new_h = cur_h.wrapping_add(delta_h);
-            table.raw_ctrl_data[common_obj_offsets::H_OFFSET].copy_from_slice(&new_h.to_le_bytes());
+            let new_h = (table.common.horizontal_offset as i32).wrapping_add(delta_h);
             table.common.horizontal_offset = new_h as u32;
+            if has_raw_offsets {
+                table.raw_ctrl_data[common_obj_offsets::H_OFFSET]
+                    .copy_from_slice(&new_h.to_le_bytes());
+            }
         }
 
         let result_ppi = parent_para_idx;
@@ -2503,41 +2499,16 @@ impl DocumentCore {
 
         let bf_json = self.build_border_fill_json_by_id(table.border_fill_id);
 
-        // raw_ctrl_data에서 표 크기 & 바깥 여백 추출 (parse_common_obj_attr 정합)
-        // [0..4]=flags, [4..8]=v_offset, [8..12]=h_offset, [12..16]=width, [16..20]=height
-        let rd = &table.raw_ctrl_data;
-        let table_width = if rd.len() >= common_obj_offsets::WIDTH.end {
-            u32::from_le_bytes(rd[common_obj_offsets::WIDTH].try_into().unwrap())
-        } else {
-            0
-        };
-        let table_height = if rd.len() >= common_obj_offsets::HEIGHT.end {
-            u32::from_le_bytes(rd[common_obj_offsets::HEIGHT].try_into().unwrap())
-        } else {
-            0
-        };
-        // outer_margin: [24..32] (parse_common_obj_attr 정합)
-        // [20..24]=z_order, [24..26]=left, [26..28]=right, [28..30]=top, [30..32]=bottom
-        let outer_left = if rd.len() >= common_obj_offsets::MARGIN_LEFT.end {
-            i16::from_le_bytes(rd[common_obj_offsets::MARGIN_LEFT].try_into().unwrap())
-        } else {
-            0
-        };
-        let outer_right = if rd.len() >= common_obj_offsets::MARGIN_RIGHT.end {
-            i16::from_le_bytes(rd[common_obj_offsets::MARGIN_RIGHT].try_into().unwrap())
-        } else {
-            0
-        };
-        let outer_top = if rd.len() >= common_obj_offsets::MARGIN_TOP.end {
-            i16::from_le_bytes(rd[common_obj_offsets::MARGIN_TOP].try_into().unwrap())
-        } else {
-            0
-        };
-        let outer_bottom = if rd.len() >= common_obj_offsets::MARGIN_BOTTOM.end {
-            i16::from_le_bytes(rd[common_obj_offsets::MARGIN_BOTTOM].try_into().unwrap())
-        } else {
-            0
-        };
+        // 물리(`table.common`)를 읽는다 — `raw_ctrl_data` 는 HWP5 파스본의 원본 바이트
+        // 사본이라 HWPX 로드 표에서는 비어 있고, 그 시절엔 표 크기·바깥 여백이 전부
+        // 0 으로 보고돼 스튜디오 속성 패널이 거짓을 표시했다. 파서는 같은 바이트에서
+        // common 을 채우므로 HWP5 문서에서는 동일 값이다. (법칙 2)
+        let table_width = table.common.width;
+        let table_height = table.common.height;
+        let outer_left = table.common.margin.left;
+        let outer_right = table.common.margin.right;
+        let outer_top = table.common.margin.top;
+        let outer_bottom = table.common.margin.bottom;
 
         // 캡션 정보
         let caption_json = if let Some(ref cap) = table.caption {
@@ -2596,33 +2567,15 @@ impl DocumentCore {
             crate::model::shape::HorzAlign::Inside => "Inside",
             crate::model::shape::HorzAlign::Outside => "Outside",
         };
-        // CommonObjAttr: flags/v_offset/h_offset
-        let vert_offset = if rd.len() >= common_obj_offsets::V_OFFSET.end {
-            i32::from_le_bytes(rd[common_obj_offsets::V_OFFSET].try_into().unwrap())
-        } else {
-            0
-        };
-        let horz_offset = if rd.len() >= common_obj_offsets::H_OFFSET.end {
-            i32::from_le_bytes(rd[common_obj_offsets::H_OFFSET].try_into().unwrap())
-        } else {
-            0
-        };
+        let vert_offset = table.common.vertical_offset as i32;
+        let horz_offset = table.common.horizontal_offset as i32;
         // 물리를 읽는다 — `table.attr` 은 HWP5 저장 attr 의 미러이고 HWPX 로드
         // 문서에서는 bit0 만 채워지므로(parser/hwpx/section.rs), 미러에서 bit13/14 를
         // 읽으면 HWPX 문서의 restrictInPage·allowOverlap 이 항상 false 로 보고돼
         // 스튜디오 속성 패널이 거짓을 표시한다. (법칙 2: 같은 값 두 경로 계산 금지)
         let restrict_in_page = table.common.flow_with_text;
         let allow_overlap = table.common.allow_overlap;
-        // prevent_page_break: CommonObjAttr::PREVENT_PAGE_BREAK
-        let keep_with_anchor = if rd.len() >= common_obj_offsets::PREVENT_PAGE_BREAK.end {
-            i32::from_le_bytes(
-                rd[common_obj_offsets::PREVENT_PAGE_BREAK]
-                    .try_into()
-                    .unwrap(),
-            ) != 0
-        } else {
-            false
-        };
+        let keep_with_anchor = table.common.prevent_page_break != 0;
 
         Ok(format!(
             "{{\"cellSpacing\":{},\"paddingLeft\":{},\"paddingRight\":{},\"paddingTop\":{},\"paddingBottom\":{},\"pageBreak\":{},\"repeatHeader\":{},{},\"tableWidth\":{},\"tableHeight\":{},\"outerLeft\":{},\"outerRight\":{},\"outerTop\":{},\"outerBottom\":{}{},\"treatAsChar\":{},\"textWrap\":\"{}\",\"vertRelTo\":\"{}\",\"vertAlign\":\"{}\",\"horzRelTo\":\"{}\",\"horzAlign\":\"{}\",\"vertOffset\":{},\"horzOffset\":{},\"textFlow\":\"{}\",\"restrictInPage\":{},\"allowOverlap\":{},\"keepWithAnchor\":{}}}",
@@ -2710,12 +2663,12 @@ impl DocumentCore {
         if let Some(v) = json_bool(json, "repeatHeader") {
             table.repeat_header = v;
         }
+        // [법칙 1·2] 아래 배치 속성은 **물리(`table.common.*`)만** 쓴다. `table.attr` 과
+        // `table.common.attr` 은 물리의 비트 표현이므로 이 함수 끝에서 한 번 재팩한다
+        // (종전에는 각 분기가 미러 `table.attr` 을 손으로 twiddle 하고
+        // `table.common.attr = table.attr` 로 역방향 덮어써서, 미러가 bit0 만 채워지는
+        // HWPX 로드 표의 정상 패킹을 파괴했다).
         if let Some(v) = json_bool(json, "treatAsChar") {
-            if v {
-                table.attr |= 0x01;
-            } else {
-                table.attr &= !0x01;
-            }
             table.common.treat_as_char = v;
         }
 
@@ -2735,7 +2688,6 @@ impl DocumentCore {
                 "Through" => 5,
                 _ => 0,
             };
-            table.attr = (table.attr & !(0x07 << 21)) | (bits << 21);
             table.common.text_wrap = match bits {
                 1 => crate::model::shape::TextWrap::TopAndBottom,
                 2 => crate::model::shape::TextWrap::BehindText,
@@ -2752,7 +2704,6 @@ impl DocumentCore {
                 "Para" => 2,
                 _ => 0,
             };
-            table.attr = (table.attr & !(0x03 << 3)) | (bits << 3);
             table.common.vert_rel_to = match bits {
                 1 => crate::model::shape::VertRelTo::Page,
                 2 => crate::model::shape::VertRelTo::Para,
@@ -2768,7 +2719,6 @@ impl DocumentCore {
                 "Outside" => 4,
                 _ => 0,
             };
-            table.attr = (table.attr & !(0x07 << 5)) | (bits << 5);
             table.common.vert_align = match bits {
                 1 => crate::model::shape::VertAlign::Center,
                 2 => crate::model::shape::VertAlign::Bottom,
@@ -2785,7 +2735,6 @@ impl DocumentCore {
                 "Para" => 3,
                 _ => 0,
             };
-            table.attr = (table.attr & !(0x03 << 8)) | (bits << 8);
             table.common.horz_rel_to = match bits {
                 1 => crate::model::shape::HorzRelTo::Page,
                 2 => crate::model::shape::HorzRelTo::Column,
@@ -2802,7 +2751,6 @@ impl DocumentCore {
                 "Outside" => 4,
                 _ => 0,
             };
-            table.attr = (table.attr & !(0x07 << 10)) | (bits << 10);
             table.common.horz_align = match bits {
                 1 => crate::model::shape::HorzAlign::Center,
                 2 => crate::model::shape::HorzAlign::Right,
@@ -2811,40 +2759,29 @@ impl DocumentCore {
                 _ => crate::model::shape::HorzAlign::Left,
             };
         }
-        table.common.attr = table.attr;
-        // 위치 오프셋: CommonObjAttr [0..4]=flags, [4..8]=v_offset, [8..12]=h_offset
-        while table.raw_ctrl_data.len() < common_obj_offsets::H_OFFSET.end {
-            table.raw_ctrl_data.push(0);
-        }
+        // 위치 오프셋: 물리를 쓰고, HWP5 원본 바이트가 있을 때만 그 사본을 갱신한다.
+        // (종전엔 `while push(0)` 로 12바이트 토막을 만들어 HWPX 표의 저장을 망쳤다 —
+        //  아래 FLAGS 재팩 주석 참고.)
+        let has_raw_offsets = table.raw_ctrl_data.len() >= common_obj_offsets::H_OFFSET.end;
         if let Some(v) = json_i32(json, "vertOffset") {
-            table.raw_ctrl_data[common_obj_offsets::V_OFFSET].copy_from_slice(&v.to_le_bytes());
             table.common.vertical_offset = v as u32;
+            if has_raw_offsets {
+                table.raw_ctrl_data[common_obj_offsets::V_OFFSET].copy_from_slice(&v.to_le_bytes());
+            }
         }
         if let Some(v) = json_i32(json, "horzOffset") {
-            table.raw_ctrl_data[common_obj_offsets::H_OFFSET].copy_from_slice(&v.to_le_bytes());
             table.common.horizontal_offset = v as u32;
+            if has_raw_offsets {
+                table.raw_ctrl_data[common_obj_offsets::H_OFFSET].copy_from_slice(&v.to_le_bytes());
+            }
         }
         // restrictInPage → attr bit 13
         if let Some(v) = json_bool(json, "restrictInPage") {
-            if v {
-                table.attr |= 1 << 13;
-                table.common.flow_with_text = true;
-            } else {
-                table.attr &= !(1 << 13);
-                table.common.flow_with_text = false;
-            }
-            table.common.attr = table.attr;
+            table.common.flow_with_text = v;
         }
         // allowOverlap → attr bit 14
         if let Some(v) = json_bool(json, "allowOverlap") {
-            if v {
-                table.attr |= 1 << 14;
-                table.common.allow_overlap = true;
-            } else {
-                table.attr &= !(1 << 14);
-                table.common.allow_overlap = false;
-            }
-            table.common.attr = table.attr;
+            table.common.allow_overlap = v;
         }
         // [officex/본문위치] 어울림일 때 글이 개체의 어느 쪽에 흐르는가(한컴 "본문 위치":
         // 양쪽/왼쪽/오른쪽/큰 쪽 — attr bit 24-25). 파서·직렬화는 이미 왕복 보존하고
@@ -2859,57 +2796,50 @@ impl DocumentCore {
                 _ => None,
             };
             if let Some(flow) = flow {
-                let bits = match flow {
-                    TextFlow::BothSides => 0u32,
-                    TextFlow::LeftOnly => 1,
-                    TextFlow::RightOnly => 2,
-                    TextFlow::LargestOnly => 3,
-                };
-                table.attr = (table.attr & !(0x03 << 24)) | (bits << 24);
                 table.common.text_flow = flow;
-                table.common.attr = table.attr;
             }
         }
-        // attr 비트 변경을 raw_ctrl_data FLAGS(0..4)에도 반영. HWP5 직렬화기
-        // (serialize_table)는 raw_ctrl_data 가 있으면 그대로 기록하므로, 여기
-        // 반영하지 않으면 글자처럼 취급/배치/기준/정렬/쪽영역제한/겹침 변경이
-        // 저장 파일에서 통째로 유실되고 재로드 시 원복된다. V_OFFSET/H_OFFSET/
-        // PREVENT_PAGE_BREAK/MARGIN_* 패치와 동일 규칙 (미변경 시에는 파싱
-        // 원본 attr 를 그대로 다시 쓰는 항등 연산이라 무해).
-        table.raw_ctrl_data[common_obj_offsets::FLAGS].copy_from_slice(&table.attr.to_le_bytes());
         // keepWithAnchor → prevent_page_break
         // CommonObjAttr::PREVENT_PAGE_BREAK (parse_common_obj_attr 정합)
         if let Some(v) = json_bool(json, "keepWithAnchor") {
-            while table.raw_ctrl_data.len() < common_obj_offsets::PREVENT_PAGE_BREAK.end {
-                table.raw_ctrl_data.push(0);
-            }
             let val: i32 = if v { 1 } else { 0 };
-            table.raw_ctrl_data[common_obj_offsets::PREVENT_PAGE_BREAK]
-                .copy_from_slice(&val.to_le_bytes());
             table.common.prevent_page_break = val;
+            if table.raw_ctrl_data.len() >= common_obj_offsets::PREVENT_PAGE_BREAK.end {
+                table.raw_ctrl_data[common_obj_offsets::PREVENT_PAGE_BREAK]
+                    .copy_from_slice(&val.to_le_bytes());
+            }
         }
 
-        // 바깥 여백 (CommonObjAttr margin ranges, parse_common_obj_attr 정합)
-        if table.raw_ctrl_data.len() >= common_obj_offsets::MARGIN_BOTTOM.end {
-            if let Some(v) = json_i16(json, "outerLeft") {
+        // 바깥 여백 (CommonObjAttr margin ranges, parse_common_obj_attr 정합).
+        // 물리를 먼저 쓴다 — 종전엔 바이트 길이 가드가 물리 대입까지 감싸서 HWPX
+        // 로드 표(raw_ctrl_data 비어 있음)의 바깥 여백 지정이 조용히 무시됐다.
+        let has_raw_margins = table.raw_ctrl_data.len() >= common_obj_offsets::MARGIN_BOTTOM.end;
+        if let Some(v) = json_i16(json, "outerLeft") {
+            table.common.margin.left = v;
+            if has_raw_margins {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_LEFT]
                     .copy_from_slice(&v.to_le_bytes());
-                table.common.margin.left = v;
             }
-            if let Some(v) = json_i16(json, "outerRight") {
+        }
+        if let Some(v) = json_i16(json, "outerRight") {
+            table.common.margin.right = v;
+            if has_raw_margins {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_RIGHT]
                     .copy_from_slice(&v.to_le_bytes());
-                table.common.margin.right = v;
             }
-            if let Some(v) = json_i16(json, "outerTop") {
+        }
+        if let Some(v) = json_i16(json, "outerTop") {
+            table.common.margin.top = v;
+            if has_raw_margins {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_TOP]
                     .copy_from_slice(&v.to_le_bytes());
-                table.common.margin.top = v;
             }
-            if let Some(v) = json_i16(json, "outerBottom") {
+        }
+        if let Some(v) = json_i16(json, "outerBottom") {
+            table.common.margin.bottom = v;
+            if has_raw_margins {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_BOTTOM]
                     .copy_from_slice(&v.to_le_bytes());
-                table.common.margin.bottom = v;
             }
         }
 
@@ -2958,15 +2888,13 @@ impl DocumentCore {
                 cap.spacing = 850; // 약 3mm
                 table.caption = Some(cap);
                 caption_created = true;
-                // attr bit 29: 캡션 존재 플래그 (한컴 호환성)
-                table.attr |= 1 << 29;
-                table.common.attr = table.attr;
-                table.raw_table_record_attr = table.attr;
+                // attr bit 29: 캡션 존재 플래그 (한컴 호환성) — CommonObjAttr FLAGS 비트다.
+                // 종전엔 이 값을 `raw_table_record_attr`(HWPTAG_TABLE 레코드 attr —
+                // 쪽나눔/제목반복/여백지정 비트) 에도 대입해 표 레코드를 오염시켰다.
+                table.common.attr |= 1 << 29;
             } else if !has_cap && table.caption.is_some() {
                 table.caption = None;
-                table.attr &= !(1 << 29);
-                table.common.attr = table.attr;
-                table.raw_table_record_attr = table.attr;
+                table.common.attr &= !(1 << 29);
                 caption_changed = true;
             }
         }
@@ -3000,6 +2928,22 @@ impl DocumentCore {
         }
         if caption_changed || caption_created {
             table.dirty = true;
+        }
+
+        // ── 여기서 한 번만 비트를 재팩한다 (법칙 2: 같은 값 두 경로 금지) ──
+        // `common.attr` 은 물리의 비트 표현이므로 물리에서 패킹하고 미지 비트는 보존한다.
+        // `table.attr` 은 HWP5 저장·레거시 소비자용 **미러**이므로 물리에서 파생시킨다
+        // (parser/control.rs:161 · hwpx_to_hwp.rs:1401 과 같은 방향).
+        Self::sync_common_obj_attr_known_bits(&mut table.common);
+        table.attr = table.common.attr;
+        // HWP5 파스본은 raw_ctrl_data(CommonObjAttr 원본 바이트)를 직렬화기가 그대로
+        // 기록하므로 FLAGS 사본도 갱신한다. **비어 있으면 손대지 않는다**: 토막을 심어두면
+        // HWPX→HWP 어댑터의 전체 합성(`adapt_table_with_context` 의 `raw_ctrl_data.is_empty()`
+        // 조건)이 건너뛰어지고 직렬화기가 그 토막을 ctrl_data 로 기록해 배치 물리는 물론
+        // width/height/z_order/margin/instance_id/description 까지 통째로 유실된다.
+        if table.raw_ctrl_data.len() >= common_obj_offsets::FLAGS.end {
+            table.raw_ctrl_data[common_obj_offsets::FLAGS]
+                .copy_from_slice(&table.common.attr.to_le_bytes());
         }
 
         // BorderFill 변경 — 표 테두리/배경/대각선 변경 시 모든 셀에도 동일 적용
@@ -3059,19 +3003,21 @@ impl DocumentCore {
         if let Some(plan) = rebase_plan {
             let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
             let (h, v) = Self::rebased_offsets(&plan, &table.common, dpi);
-            if h.is_some() || v.is_some() {
-                while table.raw_ctrl_data.len() < common_obj_offsets::H_OFFSET.end {
-                    table.raw_ctrl_data.push(0);
-                }
-                if let Some(v_off) = v {
+            // raw_ctrl_data 가 비어 있으면(HWPX 파스·편집 신설) 만들지 않는다 —
+            // 토막은 어댑터의 전체 합성을 건너뛰게 해 저장을 망친다(위 FLAGS 주석).
+            let has_raw_offsets = table.raw_ctrl_data.len() >= common_obj_offsets::H_OFFSET.end;
+            if let Some(v_off) = v {
+                table.common.vertical_offset = v_off as u32;
+                if has_raw_offsets {
                     table.raw_ctrl_data[common_obj_offsets::V_OFFSET]
                         .copy_from_slice(&v_off.to_le_bytes());
-                    table.common.vertical_offset = v_off as u32;
                 }
-                if let Some(h_off) = h {
+            }
+            if let Some(h_off) = h {
+                table.common.horizontal_offset = h_off as u32;
+                if has_raw_offsets {
                     table.raw_ctrl_data[common_obj_offsets::H_OFFSET]
                         .copy_from_slice(&h_off.to_le_bytes());
-                    table.common.horizontal_offset = h_off as u32;
                 }
             }
         }
