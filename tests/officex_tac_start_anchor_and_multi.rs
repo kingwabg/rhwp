@@ -108,15 +108,18 @@ fn start_anchor_small_table_shares_line_with_following_text() {
         ty + th,
         xy + xh
     );
-    // 코퍼스 횡단법칙: 뒤 텍스트 baseline = 표 바닥. TextRun bbox 높이가 baseline
-    // 거리이므로 baseline = xy + xh 이고, 표 세로 구간 안에 있어야 한다.
-    // (정확한 일치는 저장 line_height 가 표 바깥여백 상하를 포함해야 성립 — 현행
-    //  줄높이는 표 본체 높이라 baseline 이 표 바닥에서 바깥여백만큼 위에 clamp 된다.
-    //  이 잔차는 line_seg 생산(줄높이) 과제 몫이라 여기선 구간으로만 핀한다.)
+    // 코퍼스 횡단법칙 1·법칙 4: 줄 상자 = 표 + 바깥여백 상하이고, 표 바닥은
+    // **기준선 + 바깥여백 하**에 앉는다(paragraph_layout `tbl_y = y+baseline+om_b-h`).
+    // TextRun bbox 높이가 baseline 거리이므로 baseline = xy + xh.
+    // 줄높이가 바깥여백을 빼먹으면 이 식이 음수가 되어 표가 줄 상단으로 clamp 되고
+    // (`.max(y)`) 기준선이 표 바닥에서 0.15·줄높이만큼 떨어진다 — 그 회귀를 잡는 핀.
+    // 잔차 = 바깥여백 하(생성 기본 283HU): create_table_ex 기본값(object_ops/table.rs).
+    const OM_BOTTOM_PX: f64 = 283.0 * 96.0 / 7200.0;
     let baseline = xy + xh;
     assert!(
-        baseline > ty && baseline <= ty + th + 0.5,
-        "텍스트 baseline({baseline})은 표 세로 구간[{ty},{}] 안이어야 한다",
+        ((baseline + OM_BOTTOM_PX) - (ty + th)).abs() <= 0.5,
+        "표 바닥({}) = 텍스트 baseline({baseline}) + 바깥여백 하({OM_BOTTOM_PX}) 여야 한다 \
+         — 어긋나면 줄높이에 바깥여백이 빠져 표가 줄 상단으로 clamp 된 것",
         ty + th
     );
 }
