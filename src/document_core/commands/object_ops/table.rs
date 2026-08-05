@@ -1044,7 +1044,13 @@ impl DocumentCore {
         raw_ctrl_data[common_obj_offsets::INSTANCE_ID].copy_from_slice(&instance_id.to_le_bytes());
 
         let mut table = Table {
-            attr: 0x04000006,
+            // Table.attr 는 CommonObjAttr FLAGS 의 미러다(parser/control.rs:161
+            // `table.attr = table.common.attr`, table_ops.rs:2875 가 이 값을
+            // raw_ctrl_data FLAGS 에 그대로 되쓴다). 여기에 TABLE 레코드 attr
+            // (0x04000006)을 넣어 두면 bit0(글자처럼취급)이 0 이라 조판 라우터
+            // (paragraph_has_table)가 인라인 TAC 표를 블록 표로 오판해 표를
+            // 자기 줄로 내려 그린다.
+            attr: flags,
             row_count,
             col_count,
             cell_spacing: 0,

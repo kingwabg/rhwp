@@ -13634,7 +13634,11 @@ impl TypesetEngine {
             .count();
         let post_table_start = if tac_wrap_split {
             (pre_table_end_line + 1).min(total_lines).max(1)
-        } else if table.attr & 0x01 != 0 {
+        } else if table.attr & 0x01 != 0 && total_lines > pre_table_end_line.max(1) {
+            // 표줄 다음에 실제 본문 줄이 있을 때만 표줄을 post-text 에서 제외한다.
+            // 표와 후행 텍스트가 **같은(유일한) 줄**을 공유하는 문단에서 무조건
+            // .max(1) 하면 그 줄이 통째로 post-text 범위 밖이 되어 후행 텍스트가
+            // 아예 렌더되지 않는다. 아래 HWPX 분기의 단일 줄 가드와 같은 계약.
             pre_table_end_line.max(1)
         } else if table.common.treat_as_char && total_lines > pre_table_end_line + 1 {
             // HWPX TAC 표(attr 비트0=0): 표줄(pre_table_end_line) 다음에 실제 본문 줄이
