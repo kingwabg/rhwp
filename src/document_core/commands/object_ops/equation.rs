@@ -224,7 +224,9 @@ impl DocumentCore {
             cell_idx,
             cell_para_idx,
         )?;
+        let was_tac = eq.common.treat_as_char;
         Self::apply_equation_properties(eq, dpi, props_json);
+        let tac_toggled = was_tac != eq.common.treat_as_char;
         if let Some(plan) = rebase_plan {
             let (h, v) = Self::rebased_offsets(&plan, &eq.common, dpi);
             if let Some(h) = h {
@@ -244,6 +246,15 @@ impl DocumentCore {
             {
                 t.dirty = true;
             }
+        }
+
+        // [트랙4 ④ 2026-08-05] TAC↔float 전환 시 host line_segs 재생산 — 그림 setter
+        // (Task #1151 migration)와 같은 원리. 종전엔 TAC 시절 수식 높이가 seg 에 박제돼
+        // 비-TAC(어울림) 전환 후에도 흐름이 수식 높이만큼 소비됐다(이중 진실 데싱크).
+        // reflow 가 유일한 생산자: 비-TAC 수식은 인라인 치수 계상에서 빠져 host 줄이
+        // 글자 높이로 돌아오고, 옆 흐름(훅 밴드)이 성립한다.
+        if tac_toggled && cell_idx.is_none() && cell_para_idx.is_none() {
+            self.reflow_paragraph(section_idx, parent_para_idx);
         }
 
         // 재조판

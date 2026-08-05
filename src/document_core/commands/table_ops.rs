@@ -24,7 +24,10 @@ pub fn paragraph_has_narrow_trace(
 }
 
 /// [훅 일반화 2026-08-05] 어울림 밴드 host 자격이 있는 float 개체의 공통 속성.
-/// Table·Picture·Shape(그리기 개체 전반)가 대상 — treat_as_char/wrap/rel 판정은 호출부.
+/// Table·Picture·Shape(그리기 개체 전반)·Equation 이 대상 — treat_as_char/wrap/rel
+/// 판정은 호출부. [트랙4 ④] Equation arm 은 `Equation.common.text_wrap` 의 첫 실소비:
+/// 비-TAC Square 수식도 밴드 host 가 되어 옆 문단이 수식 상자를 피해 재줄바꿈된다
+/// (렌더 자체는 여전히 인라인 강등 — 수식 상자 y 는 host 흐름 위치).
 pub(crate) fn square_band_float_common(
     ctrl: &Control,
 ) -> Option<&crate::model::shape::CommonObjAttr> {
@@ -32,6 +35,7 @@ pub(crate) fn square_band_float_common(
         Control::Table(t) => Some(&t.common),
         Control::Picture(p) => Some(&p.common),
         Control::Shape(s) => Some(s.common()),
+        Control::Equation(e) => Some(&e.common),
         _ => None,
     }
 }
@@ -312,6 +316,14 @@ impl DocumentCore {
                     }
                 }
                 RenderNodeType::Group(v) => {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe)
+                    {
+                        return;
+                    }
+                }
+                // [트랙4 ④] 비-TAC Square 수식 — 셀/글상자 안 수식은 Table/TextBox
+                // 조기 return 이 걸러 여기 오는 것은 본문 수식뿐이다.
+                RenderNodeType::Equation(v) => {
                     if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe)
                     {
                         return;
