@@ -1238,3 +1238,92 @@ fn test_reflow_tac_table_line_height_uses_single_glyph_box() {
         );
     }
 }
+
+/// [oracle-pdf-mining-20260806 §1-C] 폭 임계 시리즈 `samples/tac-case-001..005` —
+/// 같은 문단("tacglkj 표 3 배치 시작    4 tacglkj 표 다음", 표는 char 19)에서 표 폭만
+/// 다르다. 한컴 저장 조판(sw=42520, 표 h=2568 + 바깥여백 283·283 → 글리프 3134):
+///
+/// | 파일 | 표 폭 | 저장 segs | 줄 구조 |
+/// |---|---|---|---|
+/// | 001 | 13554 | 1 | 앞 텍스트 + 표 + 뒤 텍스트 한 줄, lh=3134 bd=2664 |
+/// | 003 | 24874 | 2 | 줄1 = 앞 텍스트+표(lh=3134), 줄2 = **뒤 텍스트만**(lh=1000) |
+/// | 004 | 25440 | 2 | 같음 |
+/// | 002 | 27138 | 2 | 같음 |
+/// | 005 | 28836 | 2 | 같음 |
+///
+/// 즉 표가 넓어질 때 다음 줄로 밀리는 것은 **뒤 텍스트**이고 표는 끝까지 앞 텍스트와
+/// 같은 줄에 남는다 — 폭 규칙(`BreakToken::Object`) 하나가 이 전환을 만든다.
+/// (종전의 "end-anchor 표는 자기 줄" 생산 규칙은 이 시리즈와 상하 반대여서 삭제됐다.)
+#[test]
+fn tac_case_width_threshold_series_matches_hancom_stored_layout() {
+    // 표 글리프 높이 = 2568 + 283 + 283 (횡단 법칙 1), 기준선 = 0.85·lh (법칙 2).
+    const TABLE_LINE_H: i32 = 3134;
+    // 표 컨트롤은 utf16 8 유닛 — char 19 앞에 놓이므로 표 뒤 텍스트는 utf16 27 부터.
+    const AFTER_TABLE_UTF16: u32 = 19 + 8;
+    // (파일, 표 폭, 기대 seg 수)
+    let cases: [(&str, u32, usize); 5] = [
+        ("tac-case-001", 13554, 1),
+        ("tac-case-003", 24874, 2),
+        ("tac-case-004", 25440, 2),
+        ("tac-case-002", 27138, 2),
+        ("tac-case-005", 28836, 2),
+    ];
+    for (name, table_width, want_segs) in cases {
+        let path = format!("samples/{name}.hwp");
+        if !std::path::Path::new(&path).exists() {
+            eprintln!("테스트 파일 없음: {path} — 건너뜀");
+            continue;
+        }
+        let data = std::fs::read(&path).unwrap();
+        let mut core = crate::document_core::DocumentCore::from_bytes(&data).unwrap();
+        let para = &core.document.sections[0].paragraphs[1];
+        // 표본 전제 확인 — 폭만 다른 같은 문단인지.
+        let width = para
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                crate::model::control::Control::Table(t) if t.common.treat_as_char => {
+                    Some(t.common.width)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{name}: 글자취급 표 없음"));
+        assert_eq!(width, table_width, "{name}: 표 폭 표본 전제");
+
+        // 강제 reflow — 저장 seg 를 버리고 생산자(폭 규칙)에게 다시 물어본다.
+        core.reflow_paragraph(0, 1);
+        let segs = &core.document.sections[0].paragraphs[1].line_segs;
+        assert_eq!(
+            segs.len(),
+            want_segs,
+            "{name}(표 폭 {table_width}): 저장 조판은 seg {want_segs}개 — 실제 {:?}",
+            segs.iter()
+                .map(|s| (s.text_start, s.line_height))
+                .collect::<Vec<_>>()
+        );
+        // 줄1 = 앞 텍스트 + 표 (표가 앞 텍스트와 같은 줄에 있다는 증거 = 줄높이).
+        assert_eq!(segs[0].text_start, 0, "{name}: 줄1 은 문단 처음부터");
+        assert_eq!(
+            segs[0].line_height, TABLE_LINE_H,
+            "{name}: 줄1 높이는 표 글리프 높이여야 한다(표가 줄1 소유)"
+        );
+        assert!(
+            (segs[0].baseline_distance - 2664).abs() <= 2,
+            "{name}: 줄1 기준선 = 0.85·3134 = 2664, 실제 {}",
+            segs[0].baseline_distance
+        );
+        if want_segs == 2 {
+            // 줄2 = 뒤 텍스트만 — 표를 지나간 위치에서 시작하고 순수 텍스트 줄높이.
+            assert!(
+                segs[1].text_start > AFTER_TABLE_UTF16,
+                "{name}: 줄2 는 표 뒤 텍스트만이어야 한다(ts={} ≤ 표 끝 {AFTER_TABLE_UTF16})",
+                segs[1].text_start
+            );
+            assert!(
+                segs[1].line_height < TABLE_LINE_H,
+                "{name}: 줄2 는 순수 텍스트 줄(lh={} — 표 줄높이면 표가 아래로 밀렸다)",
+                segs[1].line_height
+            );
+        }
+    }
+}

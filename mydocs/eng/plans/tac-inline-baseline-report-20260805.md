@@ -1,5 +1,14 @@
 # 신고: 글자취급 표 혼합 줄 — 세로 기준선·빈 공간 클릭 (실측 재현 완비)
 
+> ⚠ **반증됨 (2026-08-06)** — 이 문서의 "한컴 오라클 채취 완료" 절이 주장한
+> **"표 앞 텍스트는 표 위 줄, 표는 아래 줄"** 은 저장 코퍼스 656파일 전수 + 한컴 인쇄 PDF
+> 실측으로 부정됐다([`oracle-pdf-mining-20260806.md`](oracle-pdf-mining-20260806.md)
+> §1-B/§1-C/§1-D/§2-B). 그 절의 형제 주장("표가 텍스트보다 46px 위")은 뒤에 전혀 다른
+> 원인(`Table.attr` 오설정, 96d24f4b3)으로 밝혀졌고, 재현 절차·저장 파일이 남아 있지 않아
+> 재검증도 불가하다. **이 문서를 근거로 코드를 바꾸지 말 것** — 신고 증상 기록으로만 읽는다.
+> 같은 문서의 "리스크 평가" 4곳 일관성 요구(height_measurer 게이트 / line_breaking reflow /
+> composer compose_lines / typeset pre_table_end_line)는 여전히 유효하다.
+
 작성: sc- 세션 (2026-08-05). 03:04 pkg(= 3c97d8468 hit-test 수리 포함)로 실측.
 재현: 빈 문단에 "왼쪽" 타이핑 → createTableEx(charOffset=2, 2×2, treatAsChar, colWidths [7087,7087]).
 
