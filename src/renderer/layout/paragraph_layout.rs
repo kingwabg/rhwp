@@ -41,6 +41,9 @@ pub(crate) fn layout_debug_enabled() -> bool {
 /// lineseg baseline_distance를 폰트 어센트 기준으로 보정한다.
 /// CENTER 문단 수직정렬 등으로 baseline이 50% 이하로 설정된 경우,
 /// 텍스트 어센트(~80%)가 줄 박스 밖으로 넘치지 않도록 보장한다.
+///
+/// ⚠ 이 바닥은 [`style_resolver::para_vertical_align_baseline_ratio`] 가 해석한
+/// 세로정렬 비율(가운데 0.50)을 **의도적으로 덮는다** — 그 함수의 "남은 덮어쓰기" 항목 참조.
 pub(crate) fn ensure_min_baseline(raw_baseline: f64, max_font_size: f64) -> f64 {
     if max_font_size <= 0.0 {
         return raw_baseline;
@@ -2579,6 +2582,12 @@ impl LayoutEngine {
         let box_margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
         let box_margin_right = para_style.map(|s| s.margin_right).unwrap_or(0.0);
         let indent = para_style.map(|s| s.indent).unwrap_or(0.0);
+        // 줄 기준선 비율 r = bd/lh — 문단 모양의 세로 정렬에서 온다(글꼴기준 0.85 /
+        // 가운데 0.50 / 아래쪽 1.00, oracle-pdf-mining-20260806 §2-A). 생산측
+        // (`composer::line_breaking`)과 같은 단일 소스를 쓴다 — 아래의 글꼴 기반
+        // 폴백 분기들이 종전에 0.85 를 하드코딩해 세로정렬=가운데/아래쪽 문단에서
+        // 생산과 렌더가 어긋났다.
+        let baseline_ratio = para_style.map(|s| s.line_baseline_ratio).unwrap_or(0.85);
 
         // [Task #547] paragraph margin_left/right 는 텍스트 좌/우 inset 으로 한 번만
         // 적용. Task #544 후 box outline = col_area (margin 미적용) 이므로 박스 안
@@ -3099,7 +3108,7 @@ impl LayoutEngine {
                     .unwrap_or(false);
             let (line_height, baseline) = if text_before_picture_line {
                 let font_lh = max_fs.max(1.0);
-                let font_bl = max_fs * 0.85;
+                let font_bl = max_fs * baseline_ratio;
                 (font_lh, ensure_min_baseline(font_bl, max_fs))
             } else if has_tac_shape
                 && !empty_tac_guide_has_explicit_shape_height
@@ -3116,7 +3125,7 @@ impl LayoutEngine {
                 // 전제로 한컴 정합을 이미 이루고 있어(sample16 issue_1116 한컴 핀)
                 // 종전 동작을 유지한다.
                 let font_lh = max_fs * 1.2; // 폰트 크기의 120%
-                let font_bl = max_fs * 0.85;
+                let font_bl = max_fs * baseline_ratio;
                 (font_lh, ensure_min_baseline(font_bl, max_fs))
             } else {
                 (
@@ -3126,6 +3135,7 @@ impl LayoutEngine {
                             hwpunit_to_px(comp_line.baseline_distance, self.dpi),
                             max_fs,
                             source_metrics_reflowed,
+                            baseline_ratio,
                         ),
                         max_fs,
                     ),
@@ -4284,7 +4294,7 @@ impl LayoutEngine {
                     is_vertical: false,
                     char_overlap: None,
                     border_fill_id: 0,
-                    baseline: default_height * 0.85,
+                    baseline: default_height * baseline_ratio,
                     field_marker: FieldMarkerType::None,
                 }),
                 BoundingBox::new(col_area.x, y, col_area.width, default_height),
@@ -6310,7 +6320,10 @@ impl LayoutEngine {
                         is_vertical: false,
                         char_overlap: None,
                         border_fill_id: 0,
-                        baseline: line_height * 0.85,
+                        // 이 줄의 baseline 을 그대로 쓴다 — 종전 `line_height * 0.85` 는
+                        // 같은 줄의 TextLine 노드(저장 bd 기반)와 어긋나는 두 번째 진실이었고,
+                        // 세로정렬=가운데/아래쪽 문단에서 저장값을 0.85 로 덮었다.
+                        baseline,
                         field_marker: FieldMarkerType::None,
                     }),
                     BoundingBox::new(col_area.x, y_clamped, col_area.width, line_height),

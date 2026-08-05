@@ -212,10 +212,17 @@ pub struct ResolvedParaStyle {
 ///
 /// 위쪽(=1)은 코퍼스에 유효 표본이 없어 **미측정** — 기본값 0.85 를 유지한다.
 ///
-/// ⚠ 소비 범위 — 이 비율은 `LineSeg` **생산**(`line_breaking::reflow_line_segs*`)에서만
-/// 쓴다. 저장 seg 를 덮어쓰는 렌더측 글꼴 어센트 폴백(`paragraph_layout` 의
-/// `max_fs * 0.85`, `corrected_line_baseline_for_source` 등)은 아직 0.85 하드코딩이라
-/// 세로정렬=가운데 문단이 그 분기에 걸리면 화면 기준선은 여전히 0.85 다 — 별건.
+/// 소비 범위 — `LineSeg` **생산**(`line_breaking::reflow_line_segs*`)과, 저장 seg 를
+/// 덮어쓰는 **렌더측 글꼴 기반 폴백**(`paragraph_layout` 의 글자취급 Shape/그림 앞 텍스트
+/// 분기, `corrected_line_baseline_for_source`) 양쪽이 이 하나를 읽는다.
+///
+/// ⚠ 남은 덮어쓰기 — `paragraph_layout::ensure_min_baseline` 이 렌더 기준선을
+/// `max(_, 0.8 × max_font_size)` 로 바닥 처리한다. 그 함수의 주석이 밝히듯 이는
+/// **세로정렬=가운데(r=0.50)를 의도적으로 덮는** 어센트 보호 정책이라, 줄높이 == 글꼴크기인
+/// 순수 텍스트 줄에서는 저장 0.50 도 이 비율도 화면에서는 0.80 으로 착지한다(줄이 글꼴보다
+/// 높은 글자취급 개체 줄은 0.50 그대로 통과한다 — 실측). 이 바닥을 걷어낼지는 한컴 인쇄 PDF
+/// 에서 **세로정렬=가운데 순수 텍스트 줄의 글리프 기준선**을 실측해야 판정된다 —
+/// 오라클 §2-B 는 r=0.85 표본만 측정했다. 별건.
 pub fn para_vertical_align_baseline_ratio(attr1: u32) -> f64 {
     match (attr1 >> 20) & 0x03 {
         2 => 0.50, // 가운데

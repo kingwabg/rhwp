@@ -719,14 +719,20 @@ pub(crate) fn source_line_metrics_need_reflow(
 ///
 /// 원본 `baseline_distance`도 손상된 `line_height` 좌표계에 기록되므로, 줄 높이만
 /// 낮추고 baseline을 그대로 두면 SVG/Canvas 텍스트가 페이지 하단으로 이탈한다.
+///
+/// `baseline_ratio` = 그 문단의 r = bd/lh (문단 모양의 세로 정렬 —
+/// [`style_resolver::para_vertical_align_baseline_ratio`], 글꼴기준 0.85 / 가운데 0.50
+/// / 아래쪽 1.00). 종전에는 0.85 하드코딩이라 세로정렬=가운데·아래쪽 문단이 이 분기에
+/// 걸리면 렌더 기준선이 생산측(`composer::line_breaking`)과 어긋났다.
 #[inline]
 pub(crate) fn corrected_line_baseline_for_source(
     raw_baseline: f64,
     max_fs: f64,
     source_metrics_reflowed: bool,
+    baseline_ratio: f64,
 ) -> f64 {
     if source_metrics_reflowed {
-        max_fs * 0.85
+        max_fs * baseline_ratio
     } else {
         raw_baseline
     }
@@ -1502,10 +1508,28 @@ mod tests {
         let max_fs = hwpunit_to_px(1000, 96.0);
         let stale_baseline = hwpunit_to_px(58480, 96.0);
 
-        let baseline = corrected_line_baseline_for_source(stale_baseline, max_fs, true);
+        // 세로정렬=글꼴기준(기본) — 종전 하드코딩과 같은 0.85.
+        let baseline = corrected_line_baseline_for_source(stale_baseline, max_fs, true, 0.85);
 
         assert!((baseline - max_fs * 0.85).abs() < 0.01);
         assert!(baseline < stale_baseline / 10.0);
+
+        // [oracle-pdf-mining-20260806 §2-A] 비율은 그 문단의 세로 정렬에서 온다 —
+        // 가운데 0.50 / 아래쪽 1.00. 0.85 하드코딩이 남아 있으면 여기서 터진다.
+        for ratio in [0.50, 1.00] {
+            let bl = corrected_line_baseline_for_source(stale_baseline, max_fs, true, ratio);
+            assert!(
+                (bl - max_fs * ratio).abs() < 0.01,
+                "r={ratio}: {bl} != {}",
+                max_fs * ratio
+            );
+        }
+
+        // 재조판 대상이 아니면 저장값 그대로 — 비율은 개입하지 않는다.
+        assert_eq!(
+            corrected_line_baseline_for_source(stale_baseline, max_fs, false, 0.50),
+            stale_baseline
+        );
     }
 
     #[test]
