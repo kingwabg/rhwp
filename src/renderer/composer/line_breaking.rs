@@ -35,6 +35,18 @@ pub(crate) enum BreakToken {
     Tab { idx: usize, max_font_size: f64 },
     /// 강제 줄 바꿈 (\n)
     LineBreak { idx: usize },
+    /// [oracle-corpus-mining-20260805 (h)] 글자처럼 취급(TAC) 개체 — **폭을 가진 한 글자**.
+    /// 텍스트 문자는 0개지만 줄 채움에 자기 폭으로 참여하고, 남은 폭에 안 들어가면
+    /// 개체 앞에서 줄이 끊긴다(대형 표가 자기 줄을 갖는 것은 특례가 아니라 이 규칙의
+    /// 귀결). `idx` 는 개체가 **바로 앞에 놓이는** 텍스트 char 인덱스.
+    Object {
+        idx: usize,
+        /// 바깥여백 좌우를 포함한 글리프 폭(HWPUNIT). px 왕복을 거치지 않는다 —
+        /// 코퍼스 표본이 잔여 폭을 2HU 차이로 넘기므로(aift s0#0) 절삭 오차가 판정을
+        /// 뒤집는다.
+        width_hwp: i32,
+        height_hwp: i32,
+    },
 }
 
 /// 줄 채움 결과
@@ -47,6 +59,8 @@ struct LineBreakResult {
     /// [양쪽 흐름] 이 결과가 앞 결과와 **같은 시각적 줄**의 다음 세그먼트인가.
     /// (표 좌우로 글이 갈라질 때 한 줄 = 왼쪽 세그 + 오른쪽 세그)
     continues_line: bool,
+    /// 이 줄에 놓인 TAC 개체의 최대 높이(HWPUNIT, 0 = 없음).
+    object_height_hwp: i32,
 }
 
 /// 줄 머리 금칙: 줄 시작에 올 수 없는 문자
@@ -658,6 +672,7 @@ fn fill_lines_per_line(
             max_font_size: 0.0,
             has_line_break: false,
             continues_line: false,
+            object_height_hwp: 0,
         }];
     }
 
@@ -676,6 +691,8 @@ fn fill_lines_per_line(
     let mut lw = 0i32; // HWPUNIT 정수 누적
     let mut line_space_savings = 0i32;
     let mut line_max_fs = 0.0f64;
+    // 이 줄에 놓인 TAC 개체의 최대 높이 — 줄 상자를 개체에 맞추는 데 쓴다.
+    let mut line_max_obj_h = 0i32;
     let mut is_first_line = true;
 
     let mut last_break_token_idx: Option<usize> = None;
@@ -718,12 +735,14 @@ fn fill_lines_per_line(
                     max_font_size: line_max_fs,
                     has_line_break: true,
                     continues_line: false,
+                    object_height_hwp: line_max_obj_h,
                 });
                 current_line_idx += 1;
                 line_start_idx = *idx + 1;
                 lw = 0;
                 line_space_savings = 0;
                 line_max_fs = 0.0;
+                line_max_obj_h = 0;
                 is_first_line = false;
                 last_break_token_idx = None;
             }
@@ -744,11 +763,13 @@ fn fill_lines_per_line(
                             max_font_size: fs_at_last_break,
                             has_line_break: false,
                     continues_line: false,
+                            object_height_hwp: line_max_obj_h,
                         });
                 current_line_idx += 1;
                         line_start_idx = last_break_char_idx;
                         lw = lw - width_at_last_break;
                         line_space_savings -= space_savings_at_last_break;
+                        line_max_obj_h = 0;
                     } else {
                         results.push(LineBreakResult {
                             start_idx: line_start_idx,
@@ -756,12 +777,14 @@ fn fill_lines_per_line(
                             max_font_size: line_max_fs,
                             has_line_break: false,
                     continues_line: false,
+                            object_height_hwp: line_max_obj_h,
                         });
                 current_line_idx += 1;
                         line_start_idx = *idx;
                         lw = 0;
                         line_space_savings = 0;
                         line_max_fs = *max_font_size;
+                        line_max_obj_h = 0;
                     }
                     is_first_line = false;
                     last_break_token_idx = None;
@@ -793,6 +816,45 @@ fn fill_lines_per_line(
                 let space_hwp = to_hwp(*width);
                 lw += space_hwp;
                 line_space_savings += condense_space_savings_hwp(space_hwp, condense_min_space);
+            }
+            BreakToken::Object {
+                idx,
+                width_hwp,
+                height_hwp,
+            } => {
+                // [코퍼스 (h)] TAC 개체는 "큰 글자" — 남은 폭에 안 들어가면 개체 앞에서
+                // 줄을 끊는다. 개체 하나가 줄폭보다 넓으면(대형 표) 줄 시작에 그대로
+                // 놓여 넘치고, 뒤 텍스트는 아래 Text arm 의 역추적으로 다음 줄이 된다.
+                let w_hwp = *width_hwp;
+                if lw > 0
+                    && condensed_line_width_hwp(lw + w_hwp, line_space_savings)
+                        > eff_w_at(is_first_line, current_line_idx)
+                {
+                    results.push(LineBreakResult {
+                        start_idx: line_start_idx,
+                        end_idx: *idx,
+                        max_font_size: line_max_fs,
+                        has_line_break: false,
+                        continues_line: false,
+                        object_height_hwp: line_max_obj_h,
+                    });
+                    current_line_idx += 1;
+                    line_start_idx = *idx;
+                    lw = 0;
+                    line_space_savings = 0;
+                    line_max_fs = 0.0;
+                    line_max_obj_h = 0;
+                    is_first_line = false;
+                }
+                lw += w_hwp;
+                line_max_obj_h = line_max_obj_h.max(*height_hwp);
+                // 개체 뒤는 줄바꿈 가능 지점 — 개체는 이 줄에 남고 뒤 텍스트만 내려간다.
+                // (recalc_width_hwp 가 Object 를 세지 않는 것과 짝을 이룬다.)
+                last_break_token_idx = Some(ti);
+                last_break_char_idx = *idx;
+                width_at_last_break = lw;
+                space_savings_at_last_break = line_space_savings;
+                fs_at_last_break = line_max_fs;
             }
             BreakToken::Text {
                 start_idx,
@@ -851,7 +913,12 @@ fn fill_lines_per_line(
                 if condensed_candidate > effective_width + LINE_BREAK_TOLERANCE
                     || !condense_pull_allowed
                 {
-                    if *start_idx > line_start_idx {
+                    // 직전 줄바꿈 지점이 TAC 개체면 이 줄의 텍스트가 0글자여도 정당한
+                    // 줄이다(개체만의 줄) — `start_idx > line_start_idx` 가드는 그 경우
+                    // 텍스트를 개체 옆에 억지로 붙여 줄폭을 넘긴다.
+                    let breaking_after_object = last_break_token_idx
+                        .is_some_and(|b| matches!(tokens[b], BreakToken::Object { .. }));
+                    if *start_idx > line_start_idx || breaking_after_object {
                         if let Some(_) = last_break_token_idx {
                             results.push(LineBreakResult {
                                 start_idx: line_start_idx,
@@ -859,6 +926,7 @@ fn fill_lines_per_line(
                                 max_font_size: fs_at_last_break,
                                 has_line_break: false,
                     continues_line: false,
+                                object_height_hwp: line_max_obj_h,
                             });
                 current_line_idx += 1;
                             let mut next_start = last_break_char_idx;
@@ -875,6 +943,7 @@ fn fill_lines_per_line(
                             );
                             lw += w_hwp;
                             line_max_fs = *max_font_size;
+                            line_max_obj_h = 0;
                             is_first_line = false;
                             last_break_token_idx = None;
                             continue;
@@ -894,7 +963,12 @@ fn fill_lines_per_line(
                         is_first_line,
                         &cw_hwp,
                     );
-                    for r in results_part {
+                    for (k, mut r) in results_part.into_iter().enumerate() {
+                        if k == 0 {
+                            // 쪼개진 첫 줄만 진행 중이던 줄 — 개체가 있었다면 그 줄 소유.
+                            r.object_height_hwp = line_max_obj_h;
+                            line_max_obj_h = 0;
+                        }
                         results.push(r);
                         is_first_line = false;
                     }
@@ -917,6 +991,8 @@ fn fill_lines_per_line(
             BreakToken::Space { idx, .. }
             | BreakToken::Tab { idx, .. }
             | BreakToken::LineBreak { idx } => *idx + 1,
+            // 개체는 char 를 소비하지 않는다 — 뒤에 텍스트가 없으면 여기서 끝.
+            BreakToken::Object { idx, .. } => *idx,
         })
         .unwrap_or(text_chars.len());
 
@@ -927,6 +1003,7 @@ fn fill_lines_per_line(
             max_font_size: line_max_fs,
             has_line_break: false,
             continues_line: false,
+            object_height_hwp: line_max_obj_h,
         });
                 current_line_idx += 1;
     }
@@ -938,6 +1015,7 @@ fn fill_lines_per_line(
             max_font_size: 0.0,
             has_line_break: false,
             continues_line: false,
+            object_height_hwp: line_max_obj_h,
         });
                 current_line_idx += 1;
     }
@@ -1030,6 +1108,7 @@ fn char_level_break_hwp(
                 max_font_size: line_max_fs,
                 has_line_break: false,
                     continues_line: false,
+                object_height_hwp: 0,
             });
             *line_start_idx = ci;
             lw = char_w;
@@ -1094,6 +1173,73 @@ fn inline_control_size_hwp(ctrl: &Control) -> Option<(i32, i32)> {
         Some((width, height))
     } else {
         None
+    }
+}
+
+/// [oracle-corpus-mining-20260805 (h)] TAC 개체를 **폭을 가진 한 글자**로 토큰 흐름에
+/// 끼워 넣는다 — 개체가 놓이는 텍스트 char 인덱스(`control_text_positions`) 바로 앞.
+/// 이걸로 줄바꿈이 개체 폭을 보게 되고, 대형 표의 "자기 줄"은 특례가 아니라 폭 초과의
+/// 귀결이 된다(횡단 법칙 3).
+///
+/// end-anchored solo TAC 표만 예외로 뺀다: 그 축은 폭과 무관하게 자기 줄로 내리는
+/// 웹한글 편집 실측 오라클이고 아래 `end_anchored_solo_tac_table` 분기가 seg 를 직접
+/// 생산하므로, 여기서 또 끊으면 seg 가 하나 더 생긴다.
+fn insert_object_tokens(tokens: &mut Vec<BreakToken>, para: &Paragraph) {
+    if para.controls.is_empty() {
+        return;
+    }
+    let end_anchored = crate::renderer::height_measurer::end_anchored_solo_tac_table(para);
+    let positions = para.control_text_positions();
+    let mut objects: Vec<(usize, i32, i32)> = para
+        .controls
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| Some(*i) != end_anchored)
+        .filter_map(|(i, ctrl)| {
+            let (w_hwp, h_hwp) = inline_control_size_hwp(ctrl)?;
+            // 글리프 상자 = 표 + 바깥여백 (횡단 법칙 1, `end_anchored_solo_tac_table`
+            // 분기의 표 줄 산식과 동일). 폭: 기부 양식 s0#25 47813+570 vs sw 47833,
+            // aift s0#0 47624+566 vs sw 48188 — 맨몸 폭만 보면 둘 다 "들어감"이 된다.
+            // 높이: 저장 lh 32352=31782+570 / 15998=15432+566 을 그대로 재현한다.
+            let (outer, outer_v) = match ctrl {
+                Control::Table(t) => (
+                    t.outer_margin_left as i32 + t.outer_margin_right as i32,
+                    t.outer_margin_top as i32 + t.outer_margin_bottom as i32,
+                ),
+                _ => (0, 0),
+            };
+            Some((
+                positions.get(i).copied()?,
+                w_hwp + outer.max(0),
+                h_hwp + outer_v.max(0),
+            ))
+        })
+        .collect();
+    if objects.is_empty() {
+        return;
+    }
+    objects.sort_by_key(|(idx, ..)| *idx);
+    let token_char_idx = |t: &BreakToken| match t {
+        BreakToken::Text { start_idx, .. } => *start_idx,
+        BreakToken::Space { idx, .. }
+        | BreakToken::Tab { idx, .. }
+        | BreakToken::LineBreak { idx }
+        | BreakToken::Object { idx, .. } => *idx,
+    };
+    // 뒤에서부터 넣어 앞쪽 삽입 위치가 밀리지 않게 한다.
+    for (idx, width_hwp, height_hwp) in objects.into_iter().rev() {
+        let at = tokens
+            .iter()
+            .position(|t| token_char_idx(t) >= idx)
+            .unwrap_or(tokens.len());
+        tokens.insert(
+            at,
+            BreakToken::Object {
+                idx,
+                width_hwp,
+                height_hwp,
+            },
+        );
     }
 }
 
@@ -1326,7 +1472,7 @@ pub(crate) fn reflow_line_segs_with_bands(
     let tab_width = para_style.map(|s| s.default_tab_width).unwrap_or(0.0);
 
     // 토큰화 → 줄 채움 → LineSeg 생성
-    let tokens = tokenize_paragraph(
+    let mut tokens = tokenize_paragraph(
         &text_chars,
         &para.char_offsets,
         &para.char_shapes,
@@ -1334,6 +1480,7 @@ pub(crate) fn reflow_line_segs_with_bands(
         english_break_unit,
         korean_break_unit,
     );
+    insert_object_tokens(&mut tokens, para);
     // [officex/어울림 본편] 밴드가 있으면 줄별 폭으로 줄바꿈 — 고정점 반복.
     // 줄 top(문단 상단 기준) = Σ(이전 줄 line_height+line_spacing). 폭이 줄 수를 바꾸면
     // top 이 밀리므로, 이전 반복의 높이 목록으로 폭 함수를 만들고 다시 줄바꿈한다.
@@ -1558,9 +1705,25 @@ pub(crate) fn reflow_line_segs_with_bands(
                 seg.line_spacing = 0;
                 new_line_segs.push(seg);
             }
-        } else if let Some(height_hwp) = inline_control_line_height_hwp(para) {
-            if let Some(seg) = new_line_segs.first_mut() {
-                apply_inline_control_line_height(seg, height_hwp);
+        } else {
+            // 개체 높이는 **개체가 실제로 놓인 줄**에 얹는다 — 줄 배정은 위 폭 기준
+            // 줄바꿈(Object 토큰)이 이미 확정했다. 폭이 0이라 토큰이 안 만들어진
+            // 문단(폭 미상 개체)만 종전대로 첫 줄에 얹는다.
+            let mut applied = false;
+            for (i, lb) in line_breaks.iter().enumerate() {
+                if lb.object_height_hwp > 0 {
+                    if let Some(seg) = new_line_segs.get_mut(i) {
+                        apply_inline_control_line_height(seg, lb.object_height_hwp);
+                        applied = true;
+                    }
+                }
+            }
+            if !applied {
+                if let Some(height_hwp) = inline_control_line_height_hwp(para) {
+                    if let Some(seg) = new_line_segs.first_mut() {
+                        apply_inline_control_line_height(seg, height_hwp);
+                    }
+                }
             }
         }
     }
