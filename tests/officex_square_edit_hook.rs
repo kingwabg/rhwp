@@ -350,6 +350,52 @@ fn textbox_shape_does_not_pollute_para_tops() {
     }
 }
 
+// ─── 핀 9 (phase A): 텍스트 있는 그림 host 의 자기 줄 좁힘 ──────────────
+
+#[test]
+fn picture_text_host_self_wrap() {
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document().unwrap();
+    let long = "가나다라마바사 아자차카타파하 강물이 흐르고 산이 높다 바람이 분다 구름이 간다 하늘이 푸르다 나무가 자란다 새가 웃는다 경치가 아름답다 보리가 여무다 들판이 넓다 여기에 표를 놓으면 글이 어떻게 흐르는지 본다 뒤에 말을 더 붙여 여러 줄이 되도록 한다 그래야 어울림이 보인다";
+    doc.insert_text(0, 0, 0, long).unwrap();
+
+    // **텍스트가 있는** 문단 0 자신에 float Square 그림 삽입 — 표 host 와 달리
+    // 공백뿐 필터를 통과해야 한다(phase A).
+    let r: serde_json::Value = serde_json::from_str(
+        &doc.insert_picture(0, 0, 0, "[]", &PNG_1X1, 6000, 6000, 1, 1, "png", "", None, None)
+            .unwrap(),
+    )
+    .unwrap();
+    let ci = r["controlIdx"].as_u64().unwrap() as u32;
+    let pi = r["paraIdx"].as_u64().unwrap() as u32;
+    assert_eq!(pi, 0, "그림이 문단 0 에 앵커되어야 한다: {r}");
+
+    // 그림을 자기 문단 줄들 위(본문 좌단, 둘째 줄 언저리)로 배치.
+    doc.set_picture_properties(0, pi, ci, r#"{"vertOffset":10500,"horzOffset":8504}"#)
+        .unwrap();
+    let (ix, iy, iw, ih) = image_bbox(&doc).expect("그림 노드가 렌더트리에 없음");
+    assert_eq!(
+        body_overlap_with(&doc, ix, iy, iw, ih),
+        0,
+        "host 자신의 줄이 그림을 뚫음 — 자기 밴드 좁힘 미발화"
+    );
+    // 자기 줄에 좁힘 cs/sw 기록 — typeset 앵커 arming(cs/sw 소비)이 성립하는 전제.
+    assert!(
+        seg_cs(&doc, 0).iter().any(|&c| c > 0),
+        "host 문단 자기 줄에 좁힘 cs 기록이 없음: {:?}",
+        seg_cs(&doc, 0)
+    );
+
+    // host 문단에 타이핑 — 편집 훅이 자기 밴드 재줄바꿈을 유지하는지.
+    doc.insert_text(0, 0, 0, "머리말 ").unwrap();
+    let (ix, iy, iw, ih) = image_bbox(&doc).expect("타이핑 후 그림 노드가 렌더트리에 없음");
+    assert_eq!(
+        body_overlap_with(&doc, ix, iy, iw, ih),
+        0,
+        "타이핑 후 host 줄이 그림을 뚫음"
+    );
+}
+
 // ─── 핀 8: host 삭제 → 다른 페이지 흔적 문단의 전폭 원복 ────────────────
 
 #[test]

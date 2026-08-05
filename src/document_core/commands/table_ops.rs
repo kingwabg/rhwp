@@ -115,13 +115,20 @@ impl DocumentCore {
             };
             let mut hosts = Vec::new();
             for (pi, para) in section.paragraphs.iter().enumerate() {
-                if para.text.chars().any(|ch| !ch.is_whitespace()) {
-                    continue;
-                }
+                let para_has_text = para.text.chars().any(|ch| !ch.is_whitespace());
                 for (ci, ctrl) in para.controls.iter().enumerate() {
                     let Some(common) = square_band_float_common(ctrl) else {
                         continue;
                     };
+                    // [phase A 2026-08-05] 그림/도형 host 는 텍스트 허용 — host 문단
+                    // 자신도 아래 재줄바꿈 대상에 들어가 자기 밴드로 좁혀진다. typeset
+                    // 그림 앵커 arming 은 host line_segs 의 cs/sw 를 읽으므로 훅이
+                    // 재생성한 segs 와 자기정합. 표 host 는 공백뿐 전제 유지 —
+                    // layout 의 is_current_empty_para_float 옆흐름 계약(빈 host 전제)이
+                    // 확장되기 전까지는 텍스트 표 host 를 밴드로 삼지 않는다(v2).
+                    if para_has_text && matches!(ctrl, Control::Table(_)) {
+                        continue;
+                    }
                     // [2026-07-30] 가로·세로 기준은 무엇이든 무방 — 밴드 좌표는
                     // 렌더 트리 bbox(x 는 단 로컬, y 는 절대 흐름)에서 뽑으므로
                     // 기준 무관하게 정확하다. 가로를 종이(Paper)로 저장하는
@@ -366,12 +373,13 @@ impl DocumentCore {
         let para_count = section.paragraphs.len();
         for pi in 0..para_count {
             let para = &section.paragraphs[pi];
-            // float 개체(비 TAC) 보유 문단은 밴드의 생산자 쪽 — 재줄바꿈 대상이 아니다.
-            // (TAC 개체 보유 문단은 보통 문단과 같은 흐름이므로 대상에 남는다.)
+            // float 표 보유 문단만 생산자 전용으로 스킵 — 그림/도형 float 보유 문단은
+            // [phase A] 자기 밴드로 재줄바꿈되는 대상이다(TAC 개체 보유 문단도 대상).
             if para.text.is_empty()
-                || para.controls.iter().any(|c| {
-                    square_band_float_common(c).is_some_and(|a| !a.treat_as_char)
-                })
+                || para
+                    .controls
+                    .iter()
+                    .any(|c| matches!(c, Control::Table(t) if !t.common.treat_as_char))
             {
                 continue;
             }
@@ -420,6 +428,7 @@ impl DocumentCore {
                 .iter()
                 .map(|s| (s.text_start, s.column_start, s.segment_width))
                 .collect();
+            let orig_segs = para.line_segs.clone();
             crate::renderer::composer::reflow_line_segs_with_bands(
                 para,
                 available_width,
@@ -428,6 +437,15 @@ impl DocumentCore {
                 ptop,
                 &bands,
             );
+            // [phase A 게이트 2026-08-05] 전폭→전폭 재줄바꿈은 무변경으로 되돌린다:
+            // 닭-달걀 윈도(밴드 아래 band_h+50px)로 들어왔지만 결과에 좁힘이 전혀 없는
+            // 문단은 시각 배치가 그대로인데 저장 lineseg 만 합성본으로 갈린다 —
+            // 저장 문서(파일 실측 줄바꿈)의 줄 경계를 보존한다(#2027 앵커 왕복 핀).
+            let now_narrow = paragraph_has_narrow_trace(para, full_hu);
+            if !had_narrow && !now_narrow {
+                para.line_segs = orig_segs;
+                continue;
+            }
             let after: Vec<(u32, i32, i32)> = para
                 .line_segs
                 .iter()
