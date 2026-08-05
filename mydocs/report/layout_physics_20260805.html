@@ -99,8 +99,9 @@ ul { padding-left: 22px; } li { margin: 3px 0; }
 <a href="#s6">6. 모드 전환 물리 — rebase 부재</a>
 <a href="#s7">7. 버그에서 귀납한 12법칙</a>
 <a href="#s8">8. 사례 연구 — 2026-08-05 실증 2건</a>
-<a href="#s9">9. 갭 대장 (P0/P1/P2)</a>
-<a href="#s10">10. 수리 전략 — 법칙 단위로 고치기</a>
+<a href="#s9">9. 특수 개체와 조합 매트릭스</a>
+<a href="#s10">10. 갭 대장 (P0/P1/P2)</a>
+<a href="#s11">11. 수리 전략 — 법칙 단위로 고치기</a>
 </nav>
 
 <!-- ============================================================ -->
@@ -329,9 +330,43 @@ ul { padding-left: 22px; } li { margin: 3px 0; }
 </div>
 
 <!-- ============================================================ -->
-<h2 id="s9"><span class="no">9</span>갭 대장 (P0/P1/P2)</h2>
+<h2 id="s9"><span class="no">9</span>특수 개체와 조합 매트릭스</h2>
+<p class="lead">이모지·도장·양식(라디오 등)·이미지도 같은 물리 축 위에 있다 — 그리고 이 절의 매트릭스가 이 코드베이스의 진짜 약점을 보여준다: <b>원시 법칙은 정의돼 있으나, 개체 × 맥락 "조합"의 배선이 열거식이라 새 조합은 미정의로 남는다.</b></p>
+
+<h3>특수 개체 물리 (조사 완료분)</h3>
+<table>
+<tr><th>개체</th><th>물리</th><th>근거</th></tr>
+<tr><td>이모지</td><td>줄박스가 글리프를 감싸 <b>아래로</b> 자란다: lh=1.15em, baseline=0.96em ("끌어올리기만" — TAC와 같은 규칙 축). 선택 상자·캐럿도 TextLine bbox를 쓰므로 같이 커진다. 이모지는 그리기 무보정(글자 크기 그대로).</td><td class="ref">line_breaking.rs:1108-1119, 1498-1512</td></tr>
+<tr><td>도장</td><td>오버레이 "흐름 기여 0"의 유일 예외 — 텍스트 없는 InFront+Para host는 한컴처럼 <b>한 줄 진행량을 예약</b>한다. BehindText 배경은 비예약 유지.</td><td class="ref">layout.rs:786-808</td></tr>
+<tr><td>양식 개체<br><span class="kv">라디오·체크박스·콤보·에디트·푸시버튼 (Control::Form)</span></td><td>treat_as_char 비트와 <b>무관하게 항상 인라인</b> — 폭·높이 그대로 줄 높이에 계상되고 배치 모드 축 자체가 없다. 누름틀 안내문은 문단 높이에서 안내문 줄을 차감하는 별도 물리(form_caption). 기본 개체 높이 = 글자 잉크 1.0em.</td><td class="ref">line_breaking.rs:1062, 1089 · height_measurer.rs:584-587 · form_caption.rs</td></tr>
+<tr><td>이미지(그림)</td><td>본 보고서의 "개체" 전반에 포함: TAC 그림(줄에 직접 push + TAC 토글 마이그레이션 — 유일하게 완성된 전환 경로), Square 그림(저장 wrap_anchor 재생), 오버레이 그림(커서 되감기), 회전 그림(외접 프레임 공식), 셀 안 그림(required_cell_height 동기).</td><td class="ref">paragraph_layout.rs:4990-5009 · picture_footnote.rs:78-124 · object_ops/table.rs:156-235</td></tr>
+</table>
+
+<h3>조합 매트릭스 — 개체 × 배치 맥락</h3>
+<p>● = 정의 + 핀 있음 · ◐ = 정의는 있으나 핀 부족/부분 배선 · ○ = <b>미정의(갭)</b>. 조사에서 실증된 것만 표기.</p>
+<table>
+<tr><th>개체 \ 맥락</th><th>본문 TAC(인라인)</th><th>본문 어울림</th><th>표와 병존(표 옆)</th><th>셀 안</th><th>글상자 안</th><th>오버레이</th></tr>
+<tr><td><b>표</b></td><td>● end-anchor 포함 핀 다수</td><td>● 부록4 종결 <span class="kv">단 host 자격 제한 ◐</span></td><td>◐ 빈 host 다중 float lane — <b>2개 이상만</b> 가로 배치</td><td>● 중첩표 분할 법칙</td><td>○</td><td>● 본문보다 크면 본문표 재분류</td></tr>
+<tr><td><b>그림</b></td><td>● 토글 마이그레이션 완비</td><td>◐ 저장 재생 O · <b>편집 훅 미배선</b></td><td>○ <b>훅·lane 모두 표 전용 — "표 옆 이미지"는 미정의</b></td><td>● required_cell_height 동기</td><td>◐ 세로쓰기 열엔 미배치</td><td>● 도장 특례 포함</td></tr>
+<tr><td><b>도형·글상자</b></td><td>◐ 토글 마이그레이션 <b>없음</b>(stale)</td><td>◐ 그림과 동일</td><td>○</td><td>◐ 기준계 대체는 정의</td><td>◐ (중첩)</td><td>●</td></tr>
+<tr><td><b>수식</b></td><td>● baseline 정합(equation_tac_flow)</td><td>○ (실사용 드묾)</td><td>○</td><td>◐</td><td>◐</td><td>○</td></tr>
+<tr><td><b>양식(라디오 등)</b></td><td>● 항상 인라인</td><td colspan="2" style="text-align:center">— 배치 모드 축 없음 —</td><td>◐</td><td>◐</td><td>—</td></tr>
+<tr><td><b>이모지</b></td><td>● 줄박스 핀</td><td>◐ 좁힌 줄에서 미검증</td><td>◐</td><td>◐</td><td>◐</td><td>—</td></tr>
+</table>
+
+<h3>판정 — "조합에 약하다"는 가설은 맞다. 단, 약한 곳은 법칙이 아니라 배선이다</h3>
+<ul>
+<li><b>원시 법칙(§1–5)은 견고하다</b>: 5모드·좌표 공식·밴드 물리·단일 진실 계약은 코드에 일관되게 존재한다.</li>
+<li><b>약점 ①: 배선이 열거식이다.</b> 어울림 훅은 <code>Control::Table</code>만 매치(그림·도형 host 제외), lane은 빈 host 표 2개 이상만, host 자격은 공백 문단만 — 각 조합이 개별 조건문으로 등재돼야 동작한다. <b>"표 옆에 이미지"가 정확히 이 틈에 있다.</b></li>
+<li><b>약점 ②: 경로 사이 중간 케이스.</b> 두 경로의 발동 조건이 상호배타를 가정하나 합집합이 전체를 덮지 못한다(예: "표 앞 무텍스트·뒤 유텍스트" host — §10 P0).</li>
+<li><b>처방은 케이스 추가가 아니라 배선의 보편화다</b>: 훅을 "개체 종류·host 종류 열거"에서 "어울림 개체 보유 문단 전부"로, 전환을 "경로별 특판"에서 "rebase 유틸 공유"로. 그 뒤 이 매트릭스의 ○를 한컴 오라클 채취 → 핀 승격으로 하나씩 닫는다 — 매트릭스가 곧 테스트 계획표다.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="s10"><span class="no">10</span>갭 대장 (P0/P1/P2)</h2>
 <p class="lead">P0 = 표·개체 배치 정확성에 직결(어울림 지연의 원인들), P1 = 정확성·왕복 리스크, P2 = 구조 부채. 각 항목은 코드 실증 완료.</p>
 
+<p class="kv">§9 매트릭스의 ○ 항목은 여기 P0/P1로 대응된다.</p>
 <h3>P0 — 어울림·배치 직결</h3>
 <div class="law p0"><b class="t"><span class="pri p0">P0</span>모드/기준계 전환 오프셋 rebase 부재 (전 개체)</b>§6 참조. rebase 유틸 하나(§2 공식의 역산)로 표·그림·도형이 공유 가능. <span class="ref">object_ops/common.rs:174-217</span></div>
 <div class="law p0"><b class="t"><span class="pri p0">P0</span>어울림 훅 미배선 4종</b>Enter/병합/붙여넣기 · Square 그림·도형 host · 텍스트 있는 host · 다단(v2). §5 표 참조. 훅을 "편집 커밋 지점" 한 곳으로 모으면 4종이 한 번에 해소된다. <span class="ref">table_ops.rs:100 · text_editing.rs:538,719</span></div>
@@ -354,7 +389,7 @@ ul { padding-left: 22px; } li { margin: 3px 0; }
 <div class="law p2"><b class="t"><span class="pri p2">P2</span>EMPTY 세그 미생산 · RowBreak 톨러런스 상수 캘리브레이션 · 문서 특정 하드코딩(sample16 등)</b>저장 구조 차이(시각 동일)와 실측 튜닝값들 — 새 문서 형상에서 어긋날 수 있음을 인지하고 유지.</div>
 
 <!-- ============================================================ -->
-<h2 id="s10"><span class="no">10</span>수리 전략 — 법칙 단위로 고치기</h2>
+<h2 id="s11"><span class="no">11</span>수리 전략 — 법칙 단위로 고치기</h2>
 <p class="lead">"하나하나 수정"이 늦어지는 이유는 증상 하나가 법칙 위반 하나에서 방사되기 때문이다. 다음 순서를 권장한다 — 각 항목이 여러 증상을 한 번에 닫는다.</p>
 <ol>
 <li><b>rebase 유틸 신설</b> (P0-1): §2 공식의 역산 함수 하나 + 모든 배치 setter가 경유. "속성 바꾸면 튐" 계열 전부 종결. 검증: 전환 전후 화면 bbox 불변 핀.</li>
