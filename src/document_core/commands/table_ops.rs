@@ -155,41 +155,63 @@ impl DocumentCore {
         // [개선 트랙2 선행 2026-08-05] 흔적 판정은 아래 had_narrow(:271)와 같은 어법 —
         // 전폭 segment_width 는 흔적이 아니다. 저장 lineseg 문서는 전 줄에 sw 가
         // 채워져 있어 종전 `sw > 0` 판정은 조기 탈출을 사실상 죽였다.
-        if square_hosts.is_empty() {
-            let full_hu = {
-                let Some(sec) = self.document.sections.get(section_idx) else {
-                    return false;
-                };
-                let column_def = Self::find_initial_column_def(&sec.paragraphs);
-                let layout = crate::renderer::page_layout::PageLayoutInfo::from_page_def(
-                    &sec.section_def.page_def,
-                    &column_def,
-                    self.dpi,
-                );
-                let col_w = layout
-                    .column_areas
-                    .first()
-                    .map(|a| a.width)
-                    .unwrap_or(layout.body_area.width);
-                crate::renderer::px_to_hwpunit(col_w, self.dpi)
-            };
-            let has_narrow_trace = self
-                .document
-                .sections
-                .get(section_idx)
-                .map(|sec| {
-                    sec.paragraphs
-                        .iter()
-                        .any(|p| paragraph_has_narrow_trace(p, full_hu))
-                })
-                .unwrap_or(false);
-            if !has_narrow_trace {
+        // 렌더트리 없이 전폭(HU) 계산 — 로드 보정(reflow_zero_height_paragraphs)과
+        // 동일 레시피. 조기 탈출과 아래 페이지 집합 산출이 공유한다.
+        let model_full_hu = {
+            let Some(sec) = self.document.sections.get(section_idx) else {
                 return false;
-            }
+            };
+            let column_def = Self::find_initial_column_def(&sec.paragraphs);
+            let layout = crate::renderer::page_layout::PageLayoutInfo::from_page_def(
+                &sec.section_def.page_def,
+                &column_def,
+                self.dpi,
+            );
+            let col_w = layout
+                .column_areas
+                .first()
+                .map(|a| a.width)
+                .unwrap_or(layout.body_area.width);
+            crate::renderer::px_to_hwpunit(col_w, self.dpi)
+        };
+        // 좁힘 흔적 문단 목록 — 조기 탈출(호스트도 흔적도 없으면 반환)과 전폭 원복
+        // 경로의 페이지 집합에 쓴다.
+        let trace_paras: Vec<usize> = self
+            .document
+            .sections
+            .get(section_idx)
+            .map(|sec| {
+                sec.paragraphs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| paragraph_has_narrow_trace(p, model_full_hu))
+                    .map(|(pi, _)| pi)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if square_hosts.is_empty() && trace_paras.is_empty() {
+            return false;
         }
 
-        // 페이지 수 확보(조판 유발) 후 렌더트리에서 (개체 상자, 문단 첫줄 y, 페이지) 수집.
-        let page_count = DocumentCore::page_count(self).max(1) as usize;
+        // [훅 비용 축소 2026-08-05] 페이지 전수 순회 대신 'host 문단 페이지 ∪ 좁힘 흔적
+        // 문단 페이지' 집합만 걷는다. 흔적 페이지를 포함해야 밴드 빈 페이지의 전폭 원복
+        // 경로가 산다. 밴드 옆 후보 문단들은 host 개체와 같은 페이지에 있으므로 host
+        // 페이지가 덮는다.
+        // ponytail: 밴드 존재 캐시 구조체는 두지 않는다 — 모델 스캔은 O(문단) 수준.
+        //           프로파일링에서 걸리면 구역별 host 캐시로 승급.
+        let visit_pages: std::collections::BTreeSet<usize> = {
+            let mut set = std::collections::BTreeSet::new();
+            for pi in square_hosts
+                .iter()
+                .map(|&(pi, _)| pi)
+                .chain(trace_paras.iter().copied())
+            {
+                if let Ok(pages) = self.find_pages_for_paragraph(section_idx, pi) {
+                    set.extend(pages.into_iter().map(|p| p as usize));
+                }
+            }
+            set
+        };
         struct Probe {
             // (page, host (pi,ci), band) — host 키를 함께 담아 flow 페어링이 어긋나지 않는다
             bands: Vec<(usize, (usize, usize), crate::renderer::composer::ReflowBand)>,
@@ -300,7 +322,7 @@ impl DocumentCore {
                 walk(c, page, square_hosts, probe);
             }
         }
-        for pg in 0..page_count {
+        for pg in visit_pages {
             if let Ok(tree) = self.build_page_render_tree(pg as u32) {
                 walk(&tree.root, pg, &square_hosts, &mut probe);
             }
