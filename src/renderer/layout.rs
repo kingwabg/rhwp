@@ -5971,6 +5971,7 @@ impl LayoutEngine {
                 para_index,
                 control_index,
             } => {
+                let flow_y_before = y_offset;
                 y_offset = self.layout_shape_item(
                     tree,
                     col_node,
@@ -5981,6 +5982,22 @@ impl LayoutEngine {
                     *control_index,
                     &ctx,
                     y_offset,
+                );
+                // [트랙4 ① 2026-08-05] 앵커선행 host Square 가족 float 그림/도형/수식 —
+                // 표 팔(layout_table_control_block :6734)과 등가의 라이브 밴드 등록.
+                // 부분폭(옆 공간 ≥ MIN_SIDE_PX)이면 x-범위 밴드(옆 흐름 — 뒤 문단을 밀지
+                // 않고 편집 훅의 좁힘 cs/sw 재생이 옆에 세운다), 전폭에 가까우면 전폭
+                // 밴드(뒤 문단 줄을 상자 아래로 — composer 는 전폭 줄을 "layout 이 밴드
+                // 아래로 민다"에 위임한다, line_breaking segs_for_top 참조).
+                self.push_square_float_object_band(
+                    col_node,
+                    paragraphs,
+                    *para_index,
+                    *control_index,
+                    col_area,
+                    layout,
+                    flow_y_before,
+                    visible_float_exclusions,
                 );
             }
             PageItem::EndnoteSeparator {
@@ -6006,6 +6023,84 @@ impl LayoutEngine {
             }
         }
         (y_offset, false)
+    }
+
+    /// [트랙4 ① 2026-08-05] Square 가족 float **개체**(그림/도형/수식)의 라이브 밴드 등록.
+    /// 표는 layout_table_control_block(:6734) 이 담당 — 판정(is_para_square_family_float ×
+    /// text_is_blank_before_control)과 부분폭/전폭 분류(MIN_SIDE_PX)를 표 팔과 동일하게 쓴다.
+    ///
+    /// bbox 는 1차 패스에서 방금 emit 된 그림(Image) 노드의 실측을 우선한다(렌더가 정본 —
+    /// 표 팔과 같은 이유). 그리기 도형·수식은 2차 패스(layout_column_shapes_pass) 렌더라
+    /// 이 시점 실측이 없어 공용 수평 헬퍼(horizontal_range)와 흐름 y + voff 로 추정한다.
+    /// ponytail: 수식은 layout_shape 가 정렬 기반 x 를 쓰므로 Center/Right 문단에서 추정
+    ///           x 가 어긋날 수 있다 — x 는 부분폭/전폭 분류에만 쓰여 실해가 없고, 정렬
+    ///           수식 실측이 필요해지면 2차 패스 자리로 옮긴다.
+    #[allow(clippy::too_many_arguments)]
+    fn push_square_float_object_band(
+        &self,
+        col_node: &RenderNode,
+        paragraphs: &[Paragraph],
+        para_index: usize,
+        control_index: usize,
+        col_area: &LayoutRect,
+        layout: &PageLayoutInfo,
+        flow_y_before: f64,
+        visible_float_exclusions: &mut Vec<VisibleFloatExclusion>,
+    ) {
+        let Some(para) = paragraphs.get(para_index) else {
+            return;
+        };
+        let common = match para.controls.get(control_index) {
+            Some(Control::Picture(p)) => &p.common,
+            Some(Control::Shape(s)) => s.common(),
+            Some(Control::Equation(e)) => &e.common,
+            _ => return,
+        };
+        if !super::float_placement::is_para_square_family_float(common)
+            || !para.text_is_blank_before_control(control_index)
+        {
+            return;
+        }
+        let ml = hwpunit_to_px(common.margin.left as i32, self.dpi);
+        let mr = hwpunit_to_px(common.margin.right as i32, self.dpi);
+        let mb = hwpunit_to_px(common.margin.bottom as i32, self.dpi);
+        let measured = col_node.children.iter().rev().find_map(|n| {
+            let pc = match &n.node_type {
+                RenderNodeType::Image(v) => v.para_index.zip(v.control_index),
+                _ => None,
+            };
+            (pc == Some((para_index, control_index)))
+                .then(|| (n.bbox.x - col_area.x, n.bbox.x + n.bbox.width - col_area.x, n.bbox.y, n.bbox.y + n.bbox.height))
+        });
+        let (x0, x1, top, bottom) = measured.unwrap_or_else(|| {
+            let w_px = hwpunit_to_px(common.width as i32, self.dpi);
+            let h_px = hwpunit_to_px(common.height as i32, self.dpi);
+            let ctx = super::float_placement::FloatPlacementContext::new(*col_area)
+                .with_body_area(layout.body_area)
+                .with_paper_width(layout.page_width);
+            let (ax0, ax1) =
+                super::float_placement::horizontal_range(common, w_px, ctx, self.dpi);
+            let top =
+                flow_y_before + hwpunit_to_px(signed_hwpunit(common.vertical_offset), self.dpi);
+            (ax0 - col_area.x, ax1 - col_area.x, top, top + h_px)
+        });
+        if bottom <= top + 0.5 {
+            return;
+        }
+        let (bx0, bx1) = (x0 - ml, x1 + mr);
+        let side_room = (col_area.width - (bx1 - bx0).max(0.0)).max(0.0);
+        let band = if side_room >= crate::renderer::composer::MIN_SIDE_PX && bx0.is_finite() {
+            VisibleFloatExclusion {
+                x_start: bx0,
+                x_end: bx1,
+                top,
+                bottom: bottom + mb,
+                owner_para: None,
+            }
+        } else {
+            VisibleFloatExclusion::full_width(top, bottom + mb, None)
+        };
+        visible_float_exclusions.push(band);
     }
 
     #[allow(clippy::too_many_arguments)]
