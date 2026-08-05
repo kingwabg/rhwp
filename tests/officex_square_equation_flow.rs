@@ -1,8 +1,14 @@
 //! [트랙4 ④ 2026-08-05] 어울림 수식 — Equation.common.text_wrap 첫 실소비.
 //!
-//! 1단계(가드): 비-TAC 수식은 렌더러가 항상 인라인 취급하므로 end-anchor solo 판정에
-//! 무조건 계상된다(height_measurer, Phase 0) — TAC 표와 병존해도 표가 자기 줄로
-//! 오분리되지 않는다.
+//! 1단계: TAC 표 + 비-TAC 수식이 병존해도 **폭이 남는 한 한 줄**이다.
+//!
+//! [oracle-pdf-mining-20260806] 이 테스트는 원래 "end-anchor solo TAC 표는 자기 줄"
+//! 규칙을 사전조건(seg 2개)으로 깔고, 비-TAC 수식이 solo 를 깨서 표가 자기 줄로
+//! 오분리되지 않는지를 가드했다. 그 규칙 자체가 **코퍼스·PDF 오라클로 반증돼
+//! 제거**되었으므로(§1-B/§1-C: 자기 줄은 폭 초과의 귀결일 뿐) 가드의 전제가 사라졌다.
+//! 지금 잠그는 것은 그 후속 계약이다 — 인라인 컨트롤이 몇 개든, 편집을 어떻게 하든
+//! **폭 규칙만이 줄을 가른다**. (수식을 무조건 인라인으로 계상하는 height_measurer
+//! 가드는 로드측 게이트에서 여전히 쓰인다.)
 //! 2단계(옆 흐름): 비-TAC Square 수식이 밴드 host 가 되어(훅 일반화 Equation arm)
 //! 옆 문단 줄이 수식 상자를 피해 cs/sw 로 좁혀진다.
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
@@ -23,7 +29,7 @@ fn seg_cs(doc: &HwpDocument, para_idx: u32) -> Vec<i32> {
 // ─── 1단계: 비-TAC Square 수식 + TAC 표 병존 — solo 오판정 가드 ──────────
 
 #[test]
-fn non_tac_square_equation_blocks_end_anchor_solo() {
+fn tac_table_with_non_tac_equation_stays_on_one_line() {
     let mut doc = HwpDocument::create_empty();
     doc.create_blank_document().unwrap();
     doc.insert_text(0, 0, 0, "왼쪽").unwrap();
@@ -35,11 +41,15 @@ fn non_tac_square_equation_blocks_end_anchor_solo() {
     )
     .unwrap();
     assert_eq!(c["paraIdx"].as_u64(), Some(0), "TAC 표 앵커: {c}");
-    // 사전조건: end-anchor solo TAC 표 → 자기 줄(2 seg) — officex_tac_end_anchor_own_line 계약.
-    assert_eq!(seg_count(&doc, 0), 2, "사전조건: solo end-anchor 표는 자기 줄");
+    // 소형 표(3000HU)는 앞 텍스트와 한 줄 — 폭이 남으므로 줄이 갈리지 않는다(§1-B).
+    assert_eq!(
+        seg_count(&doc, 0),
+        1,
+        "소형 end-anchor 표는 앞 텍스트와 한 줄(seg 1개)"
+    );
 
-    // 같은 문단에 수식 추가(표 뒤) 후 비-TAC Square 로 — 인라인 컨트롤 2개가 되어
-    // solo 가 깨진다. 비-TAC 이어도 렌더러는 수식을 인라인 취급하므로 무조건 계상.
+    // 같은 문단에 수식 추가(표 뒤) 후 비-TAC Square 로 — 인라인 컨트롤이 2개가 된다.
+    // 비-TAC 이어도 렌더러는 수식을 인라인 취급하므로 폭에 계상된다.
     let e: serde_json::Value = serde_json::from_str(
         &doc.insert_equation(0, 0, 3, "a over b", 1000, 0).unwrap(),
     )
@@ -54,12 +64,13 @@ fn non_tac_square_equation_blocks_end_anchor_solo() {
         r#"{"treatAsChar":false,"textWrap":"Square"}"#,
     )
     .unwrap();
-    // 편집으로 재줄바꿈 유발 — 가드가 없으면 표가 다시 자기 줄로 내려가 2+ seg.
+    // 편집으로 재줄바꿈 유발 — 폭이 남는 한 여전히 한 줄이어야 한다.
     doc.insert_text(0, 0, 0, "덧").unwrap();
     assert_eq!(
         seg_count(&doc, 0),
         1,
-        "비-TAC 수식 병존 문단이 solo end-anchor 로 오판정돼 표가 자기 줄로 분리됨"
+        "폭이 남는데 줄이 갈렸다 — 폭 규칙 외의 자기 줄 시멘틱이 되살아났는지 확인: {}",
+        doc.debug_line_seg_tags(0, 0).unwrap()
     );
 }
 
