@@ -123,6 +123,26 @@ is_tac_table_inline_in_para 를 end-anchor 에서 false 로 바꿔봤으나 **�
   (d) 한컴 오라클로 여러 TAC 변종(start-anchor, 다중 표, 셀 안 TAC) 교차 확인. 긴 세션
   끝에 급히 칠 변경이 아님.
 
+### 🧪 실제 시도 결과 (rhwp 세션 2026-08-05 — 데시ンク 실증, 반드시 참고)
+"진행" 지시로 (a)+(b) 를 실제 코딩해봄:
+- (a) is_tac_table_inline_in_para end-anchor→false: **render 불변**(line_seg 여전히 1,
+  layout 표@136·텍스트@182 그대로). 게이트는 tac_controls 수집에만 영향, line_seg 생성엔
+  무영향.
+- (b) line_breaking.rs finalize(1519)에서 end-anchor 표를 새 line_seg 로 append:
+  **line_seg 는 2개**([[0,..],[1600,..]])가 됐으나 **render 여전히 표@136·텍스트@182**.
+  ⇒ **render 는 line_seg 가 아니라 `composer.rs::compose_paragraph` 의 `composed.lines`
+    (compose_lines)를 쓴다.** line_seg 만 바꾸면 line_seg(2줄)↔composed(1줄) **데시ンク** —
+    저장/쪽분할(line_seg 기반)과 렌더(composed 기반)가 서로 다른 줄 구조를 보게 됨(조용한
+    부패 위험). 둘 다 커밋 안 하고 revert.
+- **결론**: 이 수리는 **네 곳 일관 변경** 필수 —
+  ① height_measurer 게이트(end-anchor 판정)
+  ② line_breaking.rs reflow (line_seg 분리; utf16 offset·vpos·tag 정확히)
+  ③ composer.rs compose_lines (composed.lines 도 표를 자기 줄로)
+  ④ typeset pre_table_end_line + layout 순서 검증
+  ①~③ 이 같은 "end-anchor 표 = 자기 줄" 계약을 공유해야 하며, 한 곳만 바꾸면 desync.
+  line_seg 의 두 번째 seg text_start 인코딩(위 1600 은 utf16=2 기대와 불일치 — 디버그
+  포맷/단위 확인 필요)도 정밀화 대상.
+
 ## 참고
 - studio 쪽 재현 스크립트는 sc- 세션이 보유(요청 시 공유). DEV 훅(__inputHandler) 기반.
 - 엔진 재현: "왼쪽" insert → createTableEx(charOffset=2, 2×2, treatAsChar, [7087,7087]).
