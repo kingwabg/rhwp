@@ -389,6 +389,22 @@ impl DocumentCore {
     ) -> Result<String, HwpError> {
         use crate::document_core::helpers::{json_bool, json_i32, json_str};
 
+        // [개선 트랙1] 기준계/정렬 전환 rebase — mutation 전에 실측 프로브.
+        let dpi = self.dpi;
+        let rebase_plan = self
+            .resolve_shape_control_ref(section_idx, parent_para_idx, control_idx)
+            .ok()
+            .map(|s| s.common().clone())
+            .and_then(|old| {
+                self.plan_object_rebase(
+                    section_idx,
+                    parent_para_idx,
+                    control_idx,
+                    props_json,
+                    &old,
+                )
+            });
+
         let shape = self.resolve_shape_control_mut(section_idx, parent_para_idx, control_idx)?;
 
         // CommonObjAttr 업데이트
@@ -400,6 +416,15 @@ impl DocumentCore {
         let new_h = crate::document_core::helpers::json_u32(props_json, "height")
             .map(|h| h.max(MIN_SHAPE_SIZE));
         Self::apply_common_obj_attr_from_json(c, props_json);
+        if let Some(plan) = rebase_plan.as_ref() {
+            let (h, v) = Self::rebased_offsets(plan, c, dpi);
+            if let Some(h) = h {
+                c.horizontal_offset = h as u32;
+            }
+            if let Some(v) = v {
+                c.vertical_offset = v as u32;
+            }
+        }
 
         // Polygon/Curve: original_width/height는 생성 시 값으로 유지해야 렌더러의
         // 스케일 팩터(sx = current/original)가 올바르게 동작한다.
