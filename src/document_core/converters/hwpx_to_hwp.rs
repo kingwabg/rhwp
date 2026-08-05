@@ -1487,7 +1487,9 @@ fn materialize_table_record_attr(table: &mut Table, report: &mut AdapterReport) 
     if table.repeat_header {
         attr |= 0x04;
     }
-    if (table.attr | table.raw_table_record_attr) & 0x08 != 0 {
+    // bit3 은 TABLE 레코드 attr 소속이다. `table.attr`(CommonObjAttr FLAGS 미러)의
+    // bit3 은 vert_rel_to 하위 비트라 OR 하면 안 된다 — serializer/hwpx/table.rs 와 동형.
+    if table.raw_table_record_attr & 0x08 != 0 {
         attr |= 0x08;
     }
     // HWPX inMargin 값만 쓰면 한컴 에디터의 "셀 안쪽 여백 지정"이 꺼진
@@ -1660,7 +1662,12 @@ mod tests {
                 .collect(),
             page_break: TablePageBreak::RowBreak,
             repeat_header: true,
-            attr: 0x08,
+            // noAdjust: HWPX 파서는 이 비트를 **TABLE 레코드 attr** 로 넣는다
+            // (parser/hwpx/section.rs:1593 → raw_table_record_attr, 같은 파일 6662 핀:
+            //  `table.attr == 0x01` / `raw_table_record_attr == 0x0400_000e`).
+            // 종전 픽스처는 `attr: 0x08` 로 CommonObjAttr FLAGS 미러에 심었는데, FLAGS
+            // bit3 은 vert_rel_to 하위 비트라 파서가 만들 수 없는 조합이었다.
+            raw_table_record_attr: 0x08,
             common: CommonObjAttr {
                 treat_as_char: true,
                 text_wrap: TextWrap::TopAndBottom,

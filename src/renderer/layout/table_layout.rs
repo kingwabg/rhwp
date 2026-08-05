@@ -3549,103 +3549,15 @@ impl LayoutEngine {
                                 }
                             }
                         } else {
-                            // 비-TAC 표: 기존 수직 배치
-                            // 앞 텍스트 너비만큼 x 오프셋 적용.
-                            // 물리(`common.treat_as_char`)만 읽는다 — 종전엔 미러
-                            // (`nested_table.attr & 0x01`)를 읽었고, 이 분기는
-                            // `if is_tac_table` 의 else 라 물리와 모순된 조건이었다
-                            // (전 파서가 bit0 을 treat_as_char 로 채우므로 실제로는
-                            //  항상 false = 도달 불가 블록).
-                            let tac_text_offset = if nested_table.common.treat_as_char {
-                                let mut text_w = 0.0;
-                                for line in &composed.lines {
-                                    for run in &line.runs {
-                                        if !run.text.is_empty() {
-                                            let ts = resolved_to_text_style(
-                                                styles,
-                                                run.char_style_id,
-                                                run.lang_index,
-                                            );
-                                            // [Task #555] PUA 옛한글 변환 후 자모 시퀀스 폭.
-                                            text_w += estimate_text_width(
-                                                effective_text_for_metrics(run),
-                                                &ts,
-                                            );
-                                        }
-                                    }
-                                }
-                                text_w
-                            } else {
-                                0.0
-                            };
-                            // TAC 표 앞 텍스트 렌더링 (문단부호 등 표시용)
-                            if tac_text_offset > 0.0 {
-                                let line_h = composed
-                                    .lines
-                                    .first()
-                                    .map(|l| hwpunit_to_px(l.line_height, self.dpi))
-                                    .unwrap_or(12.0);
-                                let baseline = line_h * 0.85;
-                                let line_id = tree.next_id();
-                                let mut line_node = RenderNode::new(
-                                    line_id,
-                                    RenderNodeType::TextLine(TextLineNode::new(line_h, baseline)),
-                                    BoundingBox::new(
-                                        inner_area.x,
-                                        nested_y,
-                                        tac_text_offset,
-                                        line_h,
-                                    ),
-                                );
-                                let mut run_x = inner_area.x;
-                                for line in &composed.lines {
-                                    for run in &line.runs {
-                                        if run.text.is_empty() {
-                                            continue;
-                                        }
-                                        let ts = resolved_to_text_style(
-                                            styles,
-                                            run.char_style_id,
-                                            run.lang_index,
-                                        );
-                                        // [Task #555] PUA 옛한글 변환 후 자모 시퀀스 폭.
-                                        let run_w = estimate_text_width(
-                                            effective_text_for_metrics(run),
-                                            &ts,
-                                        );
-                                        let run_id = tree.next_id();
-                                        let run_node = RenderNode::new(
-                                            run_id,
-                                            RenderNodeType::TextRun(TextRunNode {
-                                                text: run.text.clone(),
-                                                style: ts,
-                                                char_shape_id: Some(run.char_style_id),
-                                                para_shape_id: Some(para.para_shape_id),
-                                                section_index: Some(section_index),
-                                                para_index: None,
-                                                char_start: None,
-                                                cell_context: cell_context.clone(),
-                                                is_para_end: false,
-                                                is_line_break_end: false,
-                                                rotation: 0.0,
-                                                is_vertical: false,
-                                                char_overlap: None,
-                                                border_fill_id: 0,
-                                                baseline,
-                                                field_marker: FieldMarkerType::None,
-                                            }),
-                                            BoundingBox::new(run_x, nested_y, run_w, line_h),
-                                        );
-                                        line_node.children.push(run_node);
-                                        run_x += run_w;
-                                    }
-                                }
-                                cell_node.children.push(line_node);
-                            }
+                            // 비-TAC 표: 기존 수직 배치.
+                            // 종전엔 여기서 앞 텍스트 폭으로 x 오프셋(`tac_text_offset`)을
+                            // 잡고 그 텍스트를 직접 렌더하는 ~90줄이 있었다. 조건이
+                            // `nested_table.common.treat_as_char` 인데 이 분기는 같은 물리로
+                            // 갈라진 `if is_tac_table` 의 else 라 항상 false — 도달 불가였다.
                             let ctrl_area = LayoutRect {
-                                x: inner_area.x + tac_text_offset,
+                                x: inner_area.x,
                                 y: nested_y,
-                                width: (inner_area.width - tac_text_offset).max(0.0),
+                                width: inner_area.width,
                                 height: (inner_area.height - (nested_y - inner_area.y)).max(0.0),
                             };
                             let table_h = self.layout_table(
