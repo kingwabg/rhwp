@@ -1,0 +1,70 @@
+# 한컴 오라클 코퍼스 채굴 결과 (정적 파일 기준)
+
+스캔 범위: `samples/` 재귀 637파일(hwp+hwpx) 전부 파싱 성공. 방법: 임시 스캐너 example로 IR 순회(본문·셀·글상자 재귀) 후 후보 문단의 CommonObjAttr·저장 line_segs 덤프, (a)(b)는 한컴 인쇄 PDF의 벡터 좌표(CTM 추적)와 대조 실측. 임시 example 2본은 삭제 완료(작업 트리 클린). 수치 단위는 HWPUNIT(7200/inch), PDF는 pt(=100HU).
+
+## 질문별 결론표
+
+**(a) Right + offset≠0 — 부호·방향** · **확정: 우리 역산과 일치(안쪽 뺌)**
+- `samples/exam_math.hwp` s0#0 ctrl6 Shape(원 도장): Paper/Right hoff=5203 w=4252, 용지폭 77102. 안쪽 뺌 예측 x_left=676.47pt ↔ `samples/exam_math.pdf` p1 실측 x[676.56..719.04] (오차 0.09pt). 바깥 방향이면 728pt로 용지 밖.
+- `samples/exam_eng.hwp` s0#102 Table: Page/Right hoff=34865 w=31747, 본문폭 66612 → 66612−31747−34865=0, 예측 x_left=87.88pt ↔ `samples/exam_eng.pdf` p2 실측 87.84pt. 세로 보너스: Page/Bottom voff=0 → 표 하단 실측 1067.28pt = 용지−하여백−꼬리말(1067.20).
+- `samples/exam_kor.hwp` s1#33 (37·40·47·50 동형) Table: Column/Right hoff=708 w=1722 mg.left=425, 단폭 31746. 저장 seg 자체가 증거: sw=28039, 우측 잔여 31746−(850+28039)=2857 ≈ w+mg.left+hoff=2855(±2HU) — 오프셋만큼 안쪽으로 들어온 표를 피해 줄폭 기록.
+- 결론: Right의 저장 오프셋은 오른쪽 기준선에서 **안쪽(−x)으로 빼는 양수** — 트랙1 역산 공식 `off = ref_x+(ref_w−w)−x` 그대로.
+
+**(b) Paper 기준 + outer margin — 외곽박스 기준(Task #898)** · **확정: 외곽박스 기준**
+- `samples/basic/issue1994_behindtext_table_20200830.hwp` s0#33 Table: Paper hoff=3229 voff=3818 w=35998 h=34018, outer 852 전방향 ↔ `samples/issue1994/issue_1994.pdf` p3 실측 표 테두리 x=40.76pt top=46.65pt = **offset+outer(40.81/46.70)**, 테두리 직접 가설(32.29/38.18)과 8.5pt 괴리로 기각.
+- 같은 파일 s0#34(voff=38007)도 동일: 실측 top 388.35pt ≈ 380.07+8.52.
+- 결론: 저장 오프셋은 **바깥여백 포함 외곽 박스의 좌상단** 위치 — 테두리는 그만큼 더 안쪽.
+
+**(c) 음수 오프셋 저장 표본·비트 표현** · **확정: 존재(144건), 비트캐스트**
+- HWP5: `samples/2025 행정업무운영 편람(최종).hwp` s4#43 hoff=−283 → 저장 u32 `0xfffffee5`(2의 보수). s3#64 voff=−600(`0xfffffda8`), s12#18 voff=−2040 등.
+- HWPX: 동일 문서 hwpx의 XML이 `horzOffset="4294967013"`(=2³²−283), `vertOffset="4294966696"`(=2³²−600) — **음수를 u32 비트캐스트 십진수로 기록**(부호 문자 없음). Phase 0의 json_i32 통일 방향과 정합.
+- `samples/2022년 국립국어원 업무계획.hwp` s0#586 voff=−1796 등 다수. UI 허용 여부만 정적으로 판별 불가.
+
+**(d) 어울림 그림+표 병존 문단/인접** · **코퍼스 부재 — 대화형 실측 필요**
+- 같은 문단 0건, 인접(±1) 문단 0건 (Square/Tight/Through 비-TAC 조합 전수 스캔).
+
+**(e) 어울림 표 옆 표 — 병치 vs 스택** · **판별력 있는 표본 부재 — 대화형 실측 필요**
+- 유일 후보 `samples/issue1891_external_bindata_link.hwpx` s0#145→146→147: Square 표들이 w=47903/47620으로 단폭(48188) 사실상 전폭 → 저장 vpos는 스택이지만 폭상 병치가 불가능한 케이스라 40%+40% 질문에 답하지 못함.
+
+**(f) 글상자 안 표 — 내부 line_seg 인코딩** · **TAC 한정 확정, Square는 부재**
+- `samples/hwpspec.hwp` s3#93/tbox 내부#1: TAC 표 h=5764 mg(t/b)=140 → 자기 줄 seg lh=6044=h+280, sw=14572(글상자 내폭 그대로), cs=200.
+- `samples/table-in-tbox.hwp` s0#0 내부#2·#6: h=3825→lh=4107(+282), h=50837→lh=51117(+280), sw=46572 유지. `samples/rowbreak-problem-pages.hwp(x)`도 동형(mg=0이면 lh=h 정확 일치).
+- 결론: 글상자 내부 문단도 본문과 **동일한 lineseg 물리**(표=큰 글자, 줄높이=h+外상하마진, 줄폭 안 좁힘). 비-TAC(Square) 글상자 안 표는 코퍼스 부재.
+
+**(g) 셀 안 TAC 표 — 셀 문단 linesegarray** · **확정(549건): 본문과 동일 물리**
+- 자기 줄형: `samples/2025 행정업무운영 편람(최종).hwp` s2#417/cell0#0 h=39049→seg lh=39331(+282), sw=38096(셀 내폭). 중첩 셀 속 셀도 동일(s2#417/cell0#0/cell45#2).
+- 인라인형: 같은 파일 s2#413/cell5#0 텍스트+소형 표 h=1848 → **seg 1개** lh=1848(표와 텍스트 같은 줄).
+- 표+후행 텍스트 분리형: s2#580/cell0#1/cell45#8 → seg0 lh=3046(표 줄), seg1 ts=10 lh=1200(텍스트 줄).
+- 결론: 셀 문단도 linesegarray를 저장하며 TAC 표는 셀 안에서도 "큰 글자" — 자기 줄 여부는 별도 시멘틱이 아니라 폭 기준 줄바꿈 결과.
+
+**(h) start-anchor·다중 TAC — seg 수와 높이** · **확정: 순수 폭 기준 줄바꿈, 자기 줄 시멘틱 없음**
+- start-anchor 대형: `samples/2025년 기부·답례품 실적 지자체 보고서_양식.hwpx` s0#25 표 w=47813+마진570>sw 잔여 → seg0 lh=32352=h(31782)+570(표만의 줄), seg1 ts=8 v=0(후행 텍스트 "1. 기부통계" 다음 페이지 첫 줄). `samples/aift.hwp` s0#0 동형(lh=15998=15432+566).
+- start-anchor 소형(인라인): `samples/exam_science.hwp` s0#61 표 w=14745, sw=18939 → seg0에 표+후행 텍스트 동거, lh=2864=표높이(外마진 0).
+- 다중 대형: `samples/aift.hwp` s2#394 표 2개(각 w≈48000=전폭) → seg 2개, 각 lh=h+280 (28424/28990), vpos 간격에 line_spacing 780 가산.
+- 다중 소형: `samples/basic/calendar_year.hwp` s0#4 표 3개(각 w=16219, 합+마진 49503≤sw 53576) → **seg 1개** lh=13960=h+282 (가로 병치). `samples/basic/request.hwp` s0#14도 3개 인라인 1줄.
+
+## 횡단 법칙 (여러 질문에서 반복 실증)
+
+1. **TAC 표 글리프 높이 = h + outer_margin(top+bottom)** — 편차 0~4HU로 전 표본 일치 (280/282/566/570, 마진 0이면 lh=h 정확).
+2. **baseline = 0.85 × 글리프 높이** — 기부 27499/32352, calendar 11866/13960, aift 24160/28424 모두 0.8500. 그림 TAC의 baseline 0.85 계약이 표에도 동일(트랙3 마이그레이션 4필드 가설 지지).
+3. 자기 줄/인라인/병치는 전부 **폭 기준 줄바꿈의 귀결**(12법칙 #4 "TAC 표는 큰 글자다" 그대로) — start-anchor·다중·셀·글상자 어디서도 특례 없음.
+4. 음수 오프셋 인코딩: HWP5 = u32 2의 보수, HWPX = u32 비트캐스트 십진 문자열.
+
+## 남은 대화형 실측 (코퍼스 부재)
+
+(d) 어울림 그림+표 병존 밴드 합집합 · (e) 40%+40% 표 옆 표 병치 여부 · (f) 글상자 안 **Square** 표 · (a)의 rel_to 전환 시 위치/숫자 보존(부록 #1–4, 정적으로 원리상 불가) · (c)의 음수 UI 허용 여부.
+
+이 결과는 `mydocs/eng/plans/` 채록 문서 초안으로 사용 가능. 근거 파일은 모두 `/Users/king/dev/rhwp/samples/` 아래 위 경로 그대로이며, 임시 스캐너(`examples/oracle_scan.rs`, `examples/oracle_probe.rs`)는 삭제했다.
+
+## 편입 메모 (메인 세션, 2026-08-05)
+
+**긴장 지점 — end-anchor 자기 줄 vs 코퍼스 "폭 기준" 법칙**: 횡단 법칙 3("자기
+줄/인라인은 전부 폭 기준 줄바꿈의 귀결, 특례 없음")은 저장 파일 기준이고, 웹한글
+편집 실측(tac-inline-baseline-report-20260805)은 end-anchor 소형 표를 자기 줄로
+내렸다. 코퍼스에는 "본문 end-anchor 소형" 표본이 없어 직접 상충은 미확정.
+현행 엔진은 안전하게 양다리: 로드 문서는 저장 조판(textless own-line seg 증거)을
+따르고, 편집 생성만 자기 줄을 생산한다. 웹한글에서 end-anchor 소형을 만들고
+**저장**했을 때 lineseg가 1개인지 2개인지 채취하면 종결된다(대화형 항목에 추가).
+
+**트랙1 정합 확인**: (a) Right 안쪽-뺌, (b) Paper 외곽박스, (c) u32 비트캐스트 —
+전부 구현과 일치. 별도 수정 불요.

@@ -1956,14 +1956,19 @@ export class PicturePropsDialog {
       if (hr !== 'TakePlace' && hr !== this.props.horzRelTo) updated['horzRelTo'] = hr;
       const ha = this.horzAlignSelect.value;
       if (ha !== this.props.horzAlign) updated['horzAlign'] = ha;
-      const ho = mmToHwp(parseFloat(this.horzOffsetInput.value) || 0);
-      if (ho !== this.props.horzOffset) updated['horzOffset'] = ho;
+      // 오프셋은 populate 문자열과 비교 — mm 왕복 반올림(±수 HWPUNIT)으로 미변경
+      // 값이 "변경"으로 오판되면 엔진의 기준계 전환 rebase(오프셋 키 부재 = 위치
+      // 보존)가 영영 발동하지 않는다. 사용자가 실제로 입력을 바꿨을 때만 동봉한다.
+      if (this.horzOffsetInput.value !== hwpToMm(this.props.horzOffset).toFixed(2)) {
+        updated['horzOffset'] = mmToHwp(parseFloat(this.horzOffsetInput.value) || 0);
+      }
       const vr = this.vertRelSelect.value;
       if (vr !== this.props.vertRelTo) updated['vertRelTo'] = vr;
       const va = this.vertAlignSelect.value;
       if (va !== this.props.vertAlign) updated['vertAlign'] = va;
-      const vo = mmToHwp(parseFloat(this.vertOffsetInput.value) || 0);
-      if (vo !== this.props.vertOffset) updated['vertOffset'] = vo;
+      if (this.vertOffsetInput.value !== hwpToMm(this.props.vertOffset).toFixed(2)) {
+        updated['vertOffset'] = mmToHwp(parseFloat(this.vertOffsetInput.value) || 0);
+      }
       const restrictInPage = this.pageAreaLimitCheck.checked;
       if (restrictInPage !== (this.props.restrictInPage ?? true)) {
         updated['restrictInPage'] = restrictInPage;

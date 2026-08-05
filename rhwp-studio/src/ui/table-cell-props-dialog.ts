@@ -1386,10 +1386,8 @@ export class TableCellPropsDialog extends ModalDialog {
       textWrap: this.getSelectedWrap(),
       vertRelTo: this.vertRelSelect.value,
       vertAlign: this.vertAlignSelect.value,
-      vertOffset: mmToHwpunit(parseFloat(this.vertOffsetInput.value) || 0),
       horzRelTo: this.horzRelSelect.value,
       horzAlign: this.horzAlignSelect.value,
-      horzOffset: mmToHwpunit(parseFloat(this.horzOffsetInput.value) || 0),
       restrictInPage: this.restrictInPageCheck.checked,
       allowOverlap: this.allowOverlapCheck.checked,
       keepWithAnchor: this.keepWithAnchorCheck.checked,
@@ -1406,6 +1404,15 @@ export class TableCellPropsDialog extends ModalDialog {
       outerTop: mmToHwp16(parseFloat(this.marginOuterInputs['top'].value) || 0),
       outerBottom: mmToHwp16(parseFloat(this.marginOuterInputs['bottom'].value) || 0),
     };
+    // 오프셋은 사용자가 실제로 입력을 바꿨을 때만 동봉 — populate 문자열(1289/1292)과
+    // 비교. 항상 동봉하면 엔진의 기준계 전환 rebase(오프셋 키 부재 = 화면 위치 보존)가
+    // 영영 발동하지 않는다.
+    if (this.vertOffsetInput.value !== hwpunitToMm(this.tableProps.vertOffset ?? 0).toFixed(1)) {
+      newTableProps.vertOffset = mmToHwpunit(parseFloat(this.vertOffsetInput.value) || 0);
+    }
+    if (this.horzOffsetInput.value !== hwpunitToMm(this.tableProps.horzOffset ?? 0).toFixed(1)) {
+      newTableProps.horzOffset = mmToHwpunit(parseFloat(this.horzOffsetInput.value) || 0);
+    }
 
     // 캡션 속성 (가운데 = 캡션 없음)
     const activeCapBtn = this.captionPosBtns.find(b => b.classList.contains('active'));
