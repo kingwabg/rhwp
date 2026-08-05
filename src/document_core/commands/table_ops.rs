@@ -2632,6 +2632,22 @@ impl DocumentCore {
     ) -> Result<String, HwpError> {
         use super::super::helpers::{json_bool, json_i16, json_i32, json_str, json_u32, json_u8};
 
+        // [개선 트랙1] 기준계/정렬 전환 rebase — mutation 전에 실측 프로브.
+        let dpi = self.dpi;
+        let rebase_plan = self
+            .document
+            .sections
+            .get(section_idx)
+            .and_then(|s| s.paragraphs.get(parent_para_idx))
+            .and_then(|p| p.controls.get(control_idx))
+            .and_then(|c| match c {
+                Control::Table(t) => Some(t.common.clone()),
+                _ => None,
+            })
+            .and_then(|old| {
+                self.plan_object_rebase(section_idx, parent_para_idx, control_idx, json, &old)
+            });
+
         let caption_style = self
             .document
             .doc_info
@@ -3009,6 +3025,29 @@ impl DocumentCore {
                         &self.styles,
                         self.dpi,
                     );
+                }
+            }
+        }
+
+        // [개선 트랙1] 기준계/정렬 전환 rebase 적용 — 기존 오프셋 경로와 동일하게
+        // common + raw_ctrl_data V_OFFSET/H_OFFSET 이중 기록해야 저장 유실이 없다
+        // (직렬화기는 raw_ctrl_data 가 있으면 그대로 기록).
+        if let Some(plan) = rebase_plan {
+            let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+            let (h, v) = Self::rebased_offsets(&plan, &table.common, dpi);
+            if h.is_some() || v.is_some() {
+                while table.raw_ctrl_data.len() < common_obj_offsets::H_OFFSET.end {
+                    table.raw_ctrl_data.push(0);
+                }
+                if let Some(v_off) = v {
+                    table.raw_ctrl_data[common_obj_offsets::V_OFFSET]
+                        .copy_from_slice(&v_off.to_le_bytes());
+                    table.common.vertical_offset = v_off as u32;
+                }
+                if let Some(h_off) = h {
+                    table.raw_ctrl_data[common_obj_offsets::H_OFFSET]
+                        .copy_from_slice(&h_off.to_le_bytes());
+                    table.common.horizontal_offset = h_off as u32;
                 }
             }
         }

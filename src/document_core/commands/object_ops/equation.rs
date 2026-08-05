@@ -199,6 +199,24 @@ impl DocumentCore {
         props_json: &str,
     ) -> Result<String, HwpError> {
         let dpi = self.dpi;
+        // [개선 트랙1] 기준계/정렬 전환 rebase — 본문 수식만 (셀 내부는 Para=셀
+        // 컨테이너 기준이라 v1 프로브 미지원 → 현행 유지).
+        let rebase_plan = if cell_idx.is_none() && cell_para_idx.is_none() {
+            self.find_equation_ref(section_idx, parent_para_idx, control_idx, None, None)
+                .ok()
+                .map(|eq| eq.common.clone())
+                .and_then(|old| {
+                    self.plan_object_rebase(
+                        section_idx,
+                        parent_para_idx,
+                        control_idx,
+                        props_json,
+                        &old,
+                    )
+                })
+        } else {
+            None
+        };
         let eq = self.find_equation_mut(
             section_idx,
             parent_para_idx,
@@ -207,6 +225,15 @@ impl DocumentCore {
             cell_para_idx,
         )?;
         Self::apply_equation_properties(eq, dpi, props_json);
+        if let Some(plan) = rebase_plan {
+            let (h, v) = Self::rebased_offsets(&plan, &eq.common, dpi);
+            if let Some(h) = h {
+                eq.common.horizontal_offset = h as u32;
+            }
+            if let Some(v) = v {
+                eq.common.vertical_offset = v as u32;
+            }
+        }
 
         // 표 셀 내 수식인 경우 표 dirty 플래그 설정
         if cell_idx.is_some() {

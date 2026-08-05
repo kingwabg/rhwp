@@ -467,6 +467,22 @@ impl DocumentCore {
                 "그림 속성 props가 유효한 JSON 객체가 아닙니다".into(),
             ));
         }
+        // [개선 트랙1] 기준계/정렬 전환 rebase — mutation 전에 실측 프로브.
+        // tac 토글은 plan 이 None 이라 아래 migration 계약과 간섭하지 않는다.
+        let dpi = self.dpi;
+        let rebase_plan = self
+            .resolve_picture_control_ref(section_idx, parent_para_idx, control_idx)
+            .ok()
+            .map(|p| p.common.clone())
+            .and_then(|old| {
+                self.plan_object_rebase(
+                    section_idx,
+                    parent_para_idx,
+                    control_idx,
+                    props_json,
+                    &old,
+                )
+            });
         // JSON 파싱 (serde_json 사용 대신 수동 파싱 — 기존 패턴)
         // [Task #825] 픽쳐 속성 mutation 은 helper 로 분리 (머리말/꼬리말 path 와 공유).
         let (
@@ -489,6 +505,18 @@ impl DocumentCore {
                 was_tac && !now_tac,
             )
         };
+
+        if let Some(plan) = rebase_plan {
+            let pic =
+                self.resolve_picture_control_mut(section_idx, parent_para_idx, control_idx)?;
+            let (h, v) = Self::rebased_offsets(&plan, &pic.common, dpi);
+            if let Some(h) = h {
+                pic.common.horizontal_offset = h as u32;
+            }
+            if let Some(v) = v {
+                pic.common.vertical_offset = v as u32;
+            }
+        }
 
         // [Task #1151 v2] floating → inline migration (H1 정합, samples/tac-verify/).
         // 한컴 산출물 Scenario A~D 분석: tac false→true 시 picture 의 control 위치는
