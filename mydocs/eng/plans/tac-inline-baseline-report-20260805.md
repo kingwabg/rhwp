@@ -97,6 +97,32 @@ is_tac_table_inline_in_para 를 end-anchor 에서 false 로 바꿔봤으나 **�
   현재는 para 상단 flow anchor 를 무조건 써서 순서를 무시한다. 이건 게이트가 아니라
   layout.rs 표 배치 y 계산의 문단내 순서 반영 문제 — 규모 있음.
 
+## 완전한 인과 사슬 종결 (rhwp 세션 2026-08-05, composer 까지 추적)
+"왼쪽"+2×2 TAC 표(작은 폭)의 line_seg 를 debug_line_seg_tags 로 확인: **1개** (텍스트와
+표가 **한 줄**로 묶임). 사슬 전체:
+1. **composer**(line_breaking.rs `inline_control_line_height_hwp`/`apply_inline_control_line_height`):
+   TAC 표가 든 줄의 **높이만 키우고 같은 줄 유지** — 표를 자기 줄로 쪼개는 로직이 없다.
+   작은 TAC 표(width<seg)는 항상 1 line_seg 로 인라인.
+2. **typeset.rs:13410 pre_table_end_line**: total_lines==1 이라 0 → 표 앞 텍스트
+   PartialParagraph 미생성, Table item 만 push.
+3. **layout.rs:6578**: Table item 을 para 상단(y136)에 배치, 텍스트는 그 뒤 y182 로 밀림.
+4. **한컴 오라클**: 2 줄(텍스트 위·표 아래)로 렌더.
+
+→ **진짜 수리 지점 = composer**: end-anchored(앞 텍스트·뒤 없음) TAC 표를 자기 line_seg
+  (2번째 줄)로 줄바꿈하도록 line_breaking 생성 로직 추가. total_lines 가 2가 되면 typeset
+  pre_table_end_line 이 표 줄 인덱스(1)를 찾아 텍스트 PartialParagraph 를 먼저 push →
+  layout 순서·y 자동 정합, hit_test 밴드도 표가 제 줄에 서므로 자동 정합.
+
+## ⚠️ 리스크 평가 (다음 세션 착수 전 필독)
+- 이 수리는 **line_seg 생성 변경 = core**. line_seg 는 HWP/HWPX 저장 왕복·쪽분할·전
+  렌더의 근간이라, 잘못 건드리면 저장 왕복·페이지네이션이 조용히 깨진다(단위 테스트가
+  전부 못 잡을 수 있음).
+- TAC 회귀 이력 밀집(issue_1070/1071/1285, 64쪽 핀, 복학원서 PUA 필러, sample16 pi394…).
+- **권장**: 별도 집중 세션에서 (a) end-anchor 판정 정밀화(뒤에 가시 텍스트 없음), (b)
+  line_breaking 에서 그 표를 새 line_seg 로 분리, (c) 저장 왕복·pagination·핀 전수 검증,
+  (d) 한컴 오라클로 여러 TAC 변종(start-anchor, 다중 표, 셀 안 TAC) 교차 확인. 긴 세션
+  끝에 급히 칠 변경이 아님.
+
 ## 참고
 - studio 쪽 재현 스크립트는 sc- 세션이 보유(요청 시 공유). DEV 훅(__inputHandler) 기반.
 - 엔진 재현: "왼쪽" insert → createTableEx(charOffset=2, 2×2, treatAsChar, [7087,7087]).
