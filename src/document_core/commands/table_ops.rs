@@ -22,6 +22,19 @@ pub(crate) fn paragraph_has_narrow_trace(
     })
 }
 
+/// [훅 일반화 2026-08-05] 어울림 밴드 host 자격이 있는 float 개체의 공통 속성.
+/// Table·Picture·Shape(그리기 개체 전반)가 대상 — treat_as_char/wrap/rel 판정은 호출부.
+pub(crate) fn square_band_float_common(
+    ctrl: &Control,
+) -> Option<&crate::model::shape::CommonObjAttr> {
+    match ctrl {
+        Control::Table(t) => Some(&t.common),
+        Control::Picture(p) => Some(&p.common),
+        Control::Shape(s) => Some(s.common()),
+        _ => None,
+    }
+}
+
 impl DocumentCore {
     pub(crate) fn get_table_mut(
         &mut self,
@@ -92,37 +105,48 @@ impl DocumentCore {
         let dpi = self.dpi;
         let styles = self.styles.clone();
 
-        // 섹션에 "빈 host Square 가족(Para 기준)" 표가 있는지 — 없으면(과거 좁힘 흔적도
-        // 없으면) 아무것도 안 한다. 흔적 원복을 위해 흔적 여부는 아래에서 함께 본다.
-        let square_hosts: Vec<usize> = {
+        // 섹션에 "빈 host Square 가족(Para 기준)" float 개체(표·그림·도형)가 있는지 —
+        // 없으면(과거 좁힘 흔적도 없으면) 아무것도 안 한다. 흔적 원복을 위해 흔적
+        // 여부는 아래에서 함께 본다. host 는 (문단, 컨트롤) 쌍 — 다개체 페어링의 키.
+        let square_hosts: Vec<(usize, usize)> = {
             let Some(section) = self.document.sections.get(section_idx) else {
                 return false;
             };
-            section
-                .paragraphs
-                .iter()
-                .enumerate()
-                .filter(|(_, para)| !para.text.chars().any(|ch| !ch.is_whitespace()))
-                .filter(|(_, para)| {
-                    para.controls.iter().any(|ctrl| {
-                        matches!(ctrl, Control::Table(t)
-                            if !t.common.treat_as_char
-                                && matches!(t.common.text_wrap, TextWrap::Square | TextWrap::Tight | TextWrap::Through)
-                                // [2026-07-30] 가로·세로 기준은 무엇이든 무방 — 밴드 좌표는
-                                // 렌더 트리 bbox(x 는 단 로컬, y 는 절대 흐름)에서 뽑으므로
-                                // 기준 무관하게 정확하다. 가로를 종이(Paper)로 저장하는
-                                // 배치 UX 때문에 rewrap 이 통째로 죽은 실사고를 먼저 고쳤고,
-                                // 세로도 같은 계통임을 실측으로 확인했다: 표를 같은 위치
-                                // (y≈180)에 두어도 vertRelTo=Paper/Page 면 2조각이 0이 되어
-                                // 텍스트가 표 밑에 깔렸다(부록4 갭 #5).
-                                && matches!(t.common.vert_rel_to,
-                                    VertRelTo::Para | VertRelTo::Paper | VertRelTo::Page)
-                                && matches!(t.common.horz_rel_to,
-                                    HorzRelTo::Column | HorzRelTo::Para | HorzRelTo::Paper | HorzRelTo::Page))
-                    })
-                })
-                .map(|(pi, _)| pi)
-                .collect()
+            let mut hosts = Vec::new();
+            for (pi, para) in section.paragraphs.iter().enumerate() {
+                if para.text.chars().any(|ch| !ch.is_whitespace()) {
+                    continue;
+                }
+                for (ci, ctrl) in para.controls.iter().enumerate() {
+                    let Some(common) = square_band_float_common(ctrl) else {
+                        continue;
+                    };
+                    // [2026-07-30] 가로·세로 기준은 무엇이든 무방 — 밴드 좌표는
+                    // 렌더 트리 bbox(x 는 단 로컬, y 는 절대 흐름)에서 뽑으므로
+                    // 기준 무관하게 정확하다. 가로를 종이(Paper)로 저장하는
+                    // 배치 UX 때문에 rewrap 이 통째로 죽은 실사고를 먼저 고쳤고,
+                    // 세로도 같은 계통임을 실측으로 확인했다: 표를 같은 위치
+                    // (y≈180)에 두어도 vertRelTo=Paper/Page 면 2조각이 0이 되어
+                    // 텍스트가 표 밑에 깔렸다(부록4 갭 #5).
+                    if !common.treat_as_char
+                        && matches!(
+                            common.text_wrap,
+                            TextWrap::Square | TextWrap::Tight | TextWrap::Through
+                        )
+                        && matches!(
+                            common.vert_rel_to,
+                            VertRelTo::Para | VertRelTo::Paper | VertRelTo::Page
+                        )
+                        && matches!(
+                            common.horz_rel_to,
+                            HorzRelTo::Column | HorzRelTo::Para | HorzRelTo::Paper | HorzRelTo::Page
+                        )
+                    {
+                        hosts.push((pi, ci));
+                    }
+                }
+            }
+            hosts
         };
 
         // [편집 훅 2026-08-04] 값싼 조기 탈출 — 어울림 host 도 없고 과거 좁힘 흔적도
@@ -164,11 +188,12 @@ impl DocumentCore {
             }
         }
 
-        // 페이지 수 확보(조판 유발) 후 렌더트리에서 (표 상자, 문단 첫줄 y, 페이지) 수집.
+        // 페이지 수 확보(조판 유발) 후 렌더트리에서 (개체 상자, 문단 첫줄 y, 페이지) 수집.
         let page_count = DocumentCore::page_count(self).max(1) as usize;
         struct Probe {
-            bands: Vec<(usize, crate::renderer::composer::ReflowBand)>, // (page, band)
-            para_tops: std::collections::HashMap<usize, (usize, f64)>,  // pi -> (page, top)
+            // (page, host (pi,ci), band) — host 키를 함께 담아 flow 페어링이 어긋나지 않는다
+            bands: Vec<(usize, (usize, usize), crate::renderer::composer::ReflowBand)>,
+            para_tops: std::collections::HashMap<usize, (usize, f64)>, // pi -> (page, top)
             col_x: f64,
             col_w: f64,
         }
@@ -178,13 +203,36 @@ impl DocumentCore {
             col_x: 0.0,
             col_w: 0.0,
         };
-        fn walk(
-            n: &RenderNode,
-            page: usize,
-            square_hosts: &[usize],
-            probe: &mut Probe,
-            in_table: bool,
-        ) {
+        fn walk(n: &RenderNode, page: usize, square_hosts: &[(usize, usize)], probe: &mut Probe) {
+            // host (pi,ci) 매치 시 개체 bbox 를 밴드로 등록 — true 반환(하위 미탐색 지시).
+            fn push_host_band(
+                n: &RenderNode,
+                page: usize,
+                pi: Option<usize>,
+                ci: Option<usize>,
+                square_hosts: &[(usize, usize)],
+                probe: &mut Probe,
+            ) -> bool {
+                let (Some(pi), Some(ci)) = (pi, ci) else {
+                    return false;
+                };
+                if !square_hosts.contains(&(pi, ci)) {
+                    return false;
+                }
+                probe.bands.push((
+                    page,
+                    (pi, ci),
+                    crate::renderer::composer::ReflowBand {
+                        top_px: n.bbox.y,
+                        bottom_px: n.bbox.y + n.bbox.height,
+                        x0_px: n.bbox.x - probe.col_x,
+                        x1_px: n.bbox.x + n.bbox.width - probe.col_x,
+                        // 본문위치는 아래에서 host 개체 모델로 보강한다
+                        flow: crate::model::shape::TextFlow::LargestOnly,
+                    },
+                ));
+                true
+            }
             match &n.node_type {
                 RenderNodeType::Column { .. } => {
                     // 첫 컬럼 기하 채택(다단 문서의 옆 흐름은 v2)
@@ -194,64 +242,94 @@ impl DocumentCore {
                     }
                 }
                 RenderNodeType::Table(t) => {
-                    if let Some(host) = t.para_index {
-                        if square_hosts.contains(&host) {
-                            probe.bands.push((
-                                page,
-                                crate::renderer::composer::ReflowBand {
-                                    top_px: n.bbox.y,
-                                    bottom_px: n.bbox.y + n.bbox.height,
-                                    x0_px: n.bbox.x - probe.col_x,
-                                    x1_px: n.bbox.x + n.bbox.width - probe.col_x,
-                                    // 본문위치는 아래에서 host 문단의 표 모델로 보강한다
-                                    flow: crate::model::shape::TextFlow::LargestOnly,
-                                },
-                            ));
-                        }
-                    }
+                    push_host_band(n, page, t.para_index, t.control_index, square_hosts, probe);
                     // 셀 내부 줄은 본문이 아니다
                     return;
                 }
+                RenderNodeType::Image(v) => {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe)
+                    {
+                        return;
+                    }
+                }
+                RenderNodeType::Line(v) => {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe)
+                    {
+                        return;
+                    }
+                }
+                RenderNodeType::Rectangle(v) => {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe)
+                    {
+                        return;
+                    }
+                }
+                RenderNodeType::Ellipse(v) => {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe)
+                    {
+                        return;
+                    }
+                }
+                RenderNodeType::Path(v) => {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe)
+                    {
+                        return;
+                    }
+                }
+                RenderNodeType::Group(v) => {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe)
+                    {
+                        return;
+                    }
+                }
+                // 글상자 내부 TextLine 은 본문이 아니다 — para_tops 오염 차단.
+                RenderNodeType::TextBox => return,
+                // 머리말/꼬리말/각주 내부의 para_index 는 내부 문단 기준 — 본문과 충돌.
+                RenderNodeType::Header
+                | RenderNodeType::Footer
+                | RenderNodeType::FootnoteArea
+                | RenderNodeType::MasterPage => return,
                 RenderNodeType::TextLine(tl) => {
-                    if !in_table {
-                        if let (Some(pi), Some(0)) = (tl.para_index, tl.line_index) {
-                            probe.para_tops.entry(pi).or_insert((page, n.bbox.y));
-                        }
+                    if let (Some(pi), Some(0)) = (tl.para_index, tl.line_index) {
+                        probe.para_tops.entry(pi).or_insert((page, n.bbox.y));
                     }
                 }
                 _ => {}
             }
             for c in &n.children {
-                walk(c, page, square_hosts, probe, in_table);
+                walk(c, page, square_hosts, probe);
             }
         }
         for pg in 0..page_count {
             if let Ok(tree) = self.build_page_render_tree(pg as u32) {
-                walk(&tree.root, pg, &square_hosts, &mut probe, false);
+                walk(&tree.root, pg, &square_hosts, &mut probe);
             }
         }
         if probe.col_w <= 0.0 {
             return false;
         }
-        // 밴드 flow 보강: square_hosts 문단의 표 모델에서 본문위치를 읽는다.
+        // 밴드 flow 보강: host (pi,ci) 키로 개체 모델의 본문위치를 읽는다 — index 병렬
+        // 페어링(flows[i])은 다개체·이종개체 혼재 시 어긋나므로 키 매칭으로 푼다.
         {
             let Some(section) = self.document.sections.get(section_idx) else {
                 return false;
             };
-            let mut flows: Vec<crate::model::shape::TextFlow> = Vec::new();
-            for &host in &square_hosts {
-                if let Some(para) = section.paragraphs.get(host) {
-                    for ctrl in &para.controls {
-                        if let Control::Table(t) = ctrl {
-                            if !t.common.treat_as_char {
-                                flows.push(t.common.text_flow);
-                            }
-                        }
-                    }
+            let mut flows: std::collections::HashMap<
+                (usize, usize),
+                crate::model::shape::TextFlow,
+            > = std::collections::HashMap::new();
+            for &(pi, ci) in &square_hosts {
+                if let Some(common) = section
+                    .paragraphs
+                    .get(pi)
+                    .and_then(|p| p.controls.get(ci))
+                    .and_then(square_band_float_common)
+                {
+                    flows.insert((pi, ci), common.text_flow);
                 }
             }
-            for (i, (_, band)) in probe.bands.iter_mut().enumerate() {
-                if let Some(f) = flows.get(i) {
+            for (_, key, band) in probe.bands.iter_mut() {
+                if let Some(f) = flows.get(key) {
                     band.flow = *f;
                 }
             }
@@ -265,11 +343,12 @@ impl DocumentCore {
         let para_count = section.paragraphs.len();
         for pi in 0..para_count {
             let para = &section.paragraphs[pi];
+            // float 개체(비 TAC) 보유 문단은 밴드의 생산자 쪽 — 재줄바꿈 대상이 아니다.
+            // (TAC 개체 보유 문단은 보통 문단과 같은 흐름이므로 대상에 남는다.)
             if para.text.is_empty()
-                || para
-                    .controls
-                    .iter()
-                    .any(|c| matches!(c, Control::Table(_)))
+                || para.controls.iter().any(|c| {
+                    square_band_float_common(c).is_some_and(|a| !a.treat_as_char)
+                })
             {
                 continue;
             }
@@ -279,8 +358,8 @@ impl DocumentCore {
             let bands: Vec<crate::renderer::composer::ReflowBand> = probe
                 .bands
                 .iter()
-                .filter(|(bpage, _)| *bpage == page)
-                .map(|(_, b)| *b)
+                .filter(|(bpage, _, _)| *bpage == page)
+                .map(|(_, _, b)| *b)
                 .collect();
             let pheight: f64 = para
                 .line_segs
