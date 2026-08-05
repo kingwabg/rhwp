@@ -6598,7 +6598,9 @@ impl LayoutEngine {
                         self.dpi,
                     );
                 }
-                if is_first_empty_para_float_control && !is_tac {
+                if is_first_empty_para_float_control && !is_tac && !para_has_visible_text(para) {
+                    // [트랙3] 앵커선행 확장으로 텍스트 있는 host 도 이 분기에 들어오게 됐다 —
+                    // 빈 문단부호는 진짜 빈 host 에만 찍는다(텍스트 host 는 post-text 가 표시).
                     let marker_x = tbl_inline_x.unwrap_or(col_area.x + effective_margin);
                     // FullParagraph에서 빈 줄 진행을 생략한 대신, 표와 같은 줄에
                     // host 문단부호를 렌더링한다. 표 뒤 빈 문단은 그대로 남아
@@ -6616,7 +6618,7 @@ impl LayoutEngine {
                         &t.common,
                     ) && {
                         let w_px = hwpunit_to_px(t.common.width as i32, self.dpi);
-                        col_area.width - w_px >= 40.0
+                        col_area.width - w_px >= crate::renderer::composer::MIN_SIDE_PX
                     };
                     let marker_y = if (is_para_topbottom_float(&t.common) || square_side_flow)
                         && signed_hwpunit(t.common.vertical_offset) > 0
@@ -6678,9 +6680,11 @@ impl LayoutEngine {
                 } else if is_current_empty_para_float
                     && super::float_placement::is_para_square_family_float(&t.common)
                     && {
-                        // 부분폭(옆 공간 40px 이상) Square 만 — 등록 분기와 같은 판정.
+                        // 부분폭(옆 공간 MIN_SIDE_PX 이상) Square 만 — 등록 분기와 같은 판정.
+                        // [트랙3] 임계를 composer(줄바꿈)와 통일 — 훅 34 vs layout 40 이
+                        // 어긋나 [34,40) 구간에서 '좁힌 줄이 표 아래' 모순이 났다.
                         let w_px = hwpunit_to_px(t.common.width as i32, self.dpi);
-                        col_area.width - w_px >= 40.0
+                        col_area.width - w_px >= crate::renderer::composer::MIN_SIDE_PX
                     }
                 {
                     // 옆 흐름 계약: 본문 흐름은 표 앞에서 계속되고(다음 문단이 표 옆에
@@ -6736,7 +6740,7 @@ impl LayoutEngine {
                     // 등록하면: 세로로 겹치는 줄은 아래 소비부(paragraph_layout 의
                     // live_band_narrow)가 옆 남은 폭으로 좁히고, 가로로 안 겹치는 항목은
                     // skip_float_bands 의 x_range 게이트가 그냥 통과시킨다. 전폭에 가까운
-                    // 표(남는 폭 < 40px)는 옆 흐름이 무의미하므로 전폭 밴드와 동일하게 둔다.
+                    // 표(남는 폭 < MIN_SIDE_PX)는 옆 흐름이 무의미하므로 전폭 밴드와 동일하게 둔다.
                     let table_visual_top = table_visual_end - table_visual_height;
                     if table_visual_end > table_visual_top + 0.5 {
                         // 방금 layout_table 이 col_node 에 붙인 Table 노드의 실측 x 를 쓴다
@@ -6766,7 +6770,9 @@ impl LayoutEngine {
                         // square_bands, 2-패스)이 밴드 기준으로 재줄바꿈해 line_segs 에
                         // 줄별 cs/sw 로 기록하고, 렌더는 그 저장값을 재생 소비한다.
                         // 1차 조판(기록 전)의 일시 겹침은 재조판에서 해소된다.
-                        let band = if side_room >= 40.0 && x0.is_finite() {
+                        let band = if side_room >= crate::renderer::composer::MIN_SIDE_PX
+                            && x0.is_finite()
+                        {
                             VisibleFloatExclusion {
                                 x_start: x0,
                                 x_end: x1,
@@ -6994,6 +7000,10 @@ impl LayoutEngine {
                 .get(control_index)
                 .map(|c| matches!(c, Control::Table(t) if t.common.treat_as_char))
                 .unwrap_or(false);
+            // [트랙3 2026-08-05] square 팔은 "빈 문단"에서 "앵커선행"(컨트롤 앞 공백뿐,
+            // 뒤 텍스트 허용)으로 확장 — host post-text 가 표 옆(table_y_before)으로
+            // 흐르는 중간 케이스를 layout 경로에 배정한다. topbottom 팔은
+            // !para_has_visible_text 유지(voff>0 분기 6665/6713 격리).
             let is_current_empty_para_float = para
                 .controls
                 .get(control_index)
@@ -7002,8 +7012,9 @@ impl LayoutEngine {
                         c,
                         Control::Table(t)
                             if (is_para_topbottom_float(&t.common)
-                                || super::float_placement::is_para_square_family_float(&t.common))
-                                && !para_has_visible_text(para)
+                                && !para_has_visible_text(para))
+                                || (super::float_placement::is_para_square_family_float(&t.common)
+                                    && para.text_is_blank_before_control(control_index))
                     )
                 })
                 .unwrap_or(false);
@@ -7020,13 +7031,14 @@ impl LayoutEngine {
                 })
                 .unwrap_or(false);
             let is_first_empty_para_float_control = is_current_empty_para_float
-                && para.controls.iter().position(|c| {
+                && para.controls.iter().enumerate().position(|(ci, c)| {
                     matches!(
                         c,
                         Control::Table(t)
                             if (is_para_topbottom_float(&t.common)
-                                || super::float_placement::is_para_square_family_float(&t.common))
-                                && !para_has_visible_text(para)
+                                && !para_has_visible_text(para))
+                                || (super::float_placement::is_para_square_family_float(&t.common)
+                                    && para.text_is_blank_before_control(ci))
                     )
                 }) == Some(control_index);
             // ── 표 위 간격 ──

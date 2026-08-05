@@ -123,10 +123,15 @@ impl DocumentCore {
                     // [phase A 2026-08-05] 그림/도형 host 는 텍스트 허용 — host 문단
                     // 자신도 아래 재줄바꿈 대상에 들어가 자기 밴드로 좁혀진다. typeset
                     // 그림 앵커 arming 은 host line_segs 의 cs/sw 를 읽으므로 훅이
-                    // 재생성한 segs 와 자기정합. 표 host 는 공백뿐 전제 유지 —
-                    // layout 의 is_current_empty_para_float 옆흐름 계약(빈 host 전제)이
-                    // 확장되기 전까지는 텍스트 표 host 를 밴드로 삼지 않는다(v2).
-                    if para_has_text && matches!(ctrl, Control::Table(_)) {
+                    // 재생성한 segs 와 자기정합.
+                    // [트랙3 2026-08-05] 표 host 는 "공백뿐 문단"에서 "앵커선행"(해당
+                    // 컨트롤 앞이 공백뿐)으로 완화 — layout 의 옆흐름 계약이 같은
+                    // 판정(text_is_blank_before_control)으로 확장돼 자기정합.
+                    // 앵커 앞에 본문 텍스트가 있는 표 host 는 여전히 대상 밖(v2).
+                    if para_has_text
+                        && matches!(ctrl, Control::Table(_))
+                        && !para.text_is_blank_before_control(ci)
+                    {
                         continue;
                     }
                     // [2026-07-30] 가로·세로 기준은 무엇이든 무방 — 밴드 좌표는
@@ -375,11 +380,14 @@ impl DocumentCore {
             let para = &section.paragraphs[pi];
             // float 표 보유 문단만 생산자 전용으로 스킵 — 그림/도형 float 보유 문단은
             // [phase A] 자기 밴드로 재줄바꿈되는 대상이다(TAC 개체 보유 문단도 대상).
+            // [트랙3] 단, square_hosts 에 든 앵커선행 표 host 는 자기 밴드로 좁혀지는
+            // 대상 — reflow_line_segs_with_bands 가 비-TAC 표를 폭 0 으로 통과시키므로
+            // (line_breaking inline_control_dims 는 TAC 만 매치) 앵커는 자연 통과한다.
             if para.text.is_empty()
-                || para
-                    .controls
-                    .iter()
-                    .any(|c| matches!(c, Control::Table(t) if !t.common.treat_as_char))
+                || para.controls.iter().enumerate().any(|(ci, c)| {
+                    matches!(c, Control::Table(t) if !t.common.treat_as_char)
+                        && !square_hosts.contains(&(pi, ci))
+                })
             {
                 continue;
             }

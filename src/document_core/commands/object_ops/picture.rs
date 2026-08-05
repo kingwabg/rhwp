@@ -738,22 +738,33 @@ impl DocumentCore {
         line_segs: &mut Vec<crate::model::paragraph::LineSeg>,
         pic: &mut crate::model::image::Picture,
     ) {
+        let height_hu = pic.common.height as i32;
+        Self::migrate_float_common_to_inline(line_segs, &mut pic.common, height_hu);
+    }
+    /// [트랙3] floating → inline 마이그레이션의 개체 일반화 본체 — 위 그림 계약
+    /// (rel_to=Para · offset=0 · line_segs[0] 높이 · baseline 0.85)의 4 필드는
+    /// 도형·글상자에도 동일하다. 높이만 개체별로 다르다 (그림 = common.height,
+    /// 도형 = max(common.height, shape_attr.current_height)) — 호출자가 넘긴다.
+    pub(crate) fn migrate_float_common_to_inline(
+        line_segs: &mut Vec<crate::model::paragraph::LineSeg>,
+        common: &mut crate::model::shape::CommonObjAttr,
+        height_hu: i32,
+    ) {
         use crate::model::shape::{HorzRelTo, VertRelTo};
-        pic.common.horz_rel_to = HorzRelTo::Para;
-        pic.common.vert_rel_to = VertRelTo::Para;
-        pic.common.horizontal_offset = 0;
-        pic.common.vertical_offset = 0;
+        common.horz_rel_to = HorzRelTo::Para;
+        common.vert_rel_to = VertRelTo::Para;
+        common.horizontal_offset = 0;
+        common.vertical_offset = 0;
 
-        let picture_height_hu = pic.common.height as i32;
-        let baseline = (picture_height_hu as f64 * 0.85).round() as i32;
+        let baseline = (height_hu as f64 * 0.85).round() as i32;
         if let Some(seg) = line_segs.first_mut() {
-            seg.line_height = picture_height_hu;
-            seg.text_height = picture_height_hu;
+            seg.line_height = height_hu;
+            seg.text_height = height_hu;
             seg.baseline_distance = baseline;
         } else {
             line_segs.push(crate::model::paragraph::LineSeg {
-                line_height: picture_height_hu,
-                text_height: picture_height_hu,
+                line_height: height_hu,
+                text_height: height_hu,
                 baseline_distance: baseline,
                 line_spacing: 600,
                 ..Default::default()
