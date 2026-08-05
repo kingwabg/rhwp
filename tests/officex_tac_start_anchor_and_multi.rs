@@ -9,14 +9,16 @@
 //!   (2025년 기부·답례품 실적 지자체 보고서_양식 s0#25)
 //!
 //! 현행 엔진(end_anchored_solo_tac_table 이 start-anchor·다중에 None → 기존 인라인
-//! 유지)의 **저장 조판**은 소형·다중에서 코퍼스와 정합(seg 1개)이다. 어긋남 3건은
-//! 고치지 않고 어긋남 명시 characterization 으로 고정(수리는 별도 결정):
-//! - (a) 렌더 세로 데싱크: 소형 start-anchor 의 후행 텍스트가 표와 같은 줄(seg 1)
-//!   인데 렌더는 텍스트 상자를 표 아래(46px 데싱크)에 그림 — line_seg/composed
-//!   데싱크 실증 문서(0747e431a) 계열.
-//! - (b) 다중 소형 렌더: 코퍼스는 1줄 가로 병치인데 렌더는 같은 x 에 세로 스택.
+//! 유지)의 **저장 조판**은 소형·다중에서 코퍼스와 정합(seg 1개)이다.
+//! - (a) 소형 start-anchor 렌더 세로 데싱크 — **수리 완료**. 원인은 조판 라우터가
+//!   아니라 편집 생성 표의 `Table.attr`(=CommonObjAttr FLAGS 미러) 오설정이었다:
+//!   bit0(글자처럼취급)이 0 이라 `paragraph_has_table` 이 인라인 TAC 표를 블록 표로
+//!   오판 → 표가 `PageItem::Table` 로 따로 나가 흐름 y 를 전진시키고, 같은 줄의
+//!   후행 텍스트가 그 아래에 그려졌다.
+//! - (b) 다중 소형 렌더 세로 스택 — **수리 완료**(같은 원인, 같은 수리).
 //! - (c) 대형 start-anchor: 코퍼스는 seg 2개(표 줄+텍스트 줄)인데 현행은 seg 1개
-//!   유지 + 표가 줄폭을 넘겨 우측으로 넘침.
+//!   유지 + 표가 줄폭을 넘겨 우측으로 넘침 — **어긋남 명시 유지**(폭 기준 줄바꿈
+//!   생산이 별도 과제).
 use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
 use rhwp::wasm_api::HwpDocument;
 
@@ -88,16 +90,81 @@ fn start_anchor_small_table_shares_line_with_following_text() {
     );
     let (tbs, txs) = tables_and_texts(&mut doc);
     assert_eq!(tbs.len(), 1, "본문 표 1개");
-    let (tx, _ty, tw, _th) = tbs[0];
-    let (xx, _xy, _xw, _xh) = txs[0];
+    let (tx, ty, tw, th) = tbs[0];
+    let (xx, xy, _xw, xh) = txs[0];
     // 같은 줄 순서: 텍스트는 표 오른쪽에서 시작(가로 인라인 동거).
     assert!(
         (xx - (tx + tw)).abs() <= 1.5,
         "후행 텍스트는 표 바로 오른쪽에서 시작해야 한다: 표 우변={} 텍스트 x={xx}",
         tx + tw
     );
-    // 코퍼스 어긋남(보고 대상, 수리 별도): 렌더는 텍스트 상자를 표 아래(46px
-    // 데싱크)에 그린다 — 같은 줄 baseline 공유가 아님. 여기서는 y 를 핀하지 않는다.
+    // 한 줄 공유(코퍼스): 텍스트 상자가 표와 세로로 겹친다 — 표 아래로 내려가면 안 된다.
+    let overlap = (ty + th).min(xy + xh) - ty.max(xy);
+    assert!(
+        overlap > 0.0,
+        "후행 텍스트가 표와 같은 줄에 있어야 한다(세로 겹침): 표 y=[{ty},{}] 텍스트 y=[{xy},{}]",
+        ty + th,
+        xy + xh
+    );
+    // 코퍼스 횡단법칙: 뒤 텍스트 baseline = 표 바닥. TextRun bbox 높이가 baseline
+    // 거리이므로 baseline = xy + xh 이고, 표 세로 구간 안에 있어야 한다.
+    // (정확한 일치는 저장 line_height 가 표 바깥여백 상하를 포함해야 성립 — 현행
+    //  줄높이는 표 본체 높이라 baseline 이 표 바닥에서 바깥여백만큼 위에 clamp 된다.
+    //  이 잔차는 line_seg 생산(줄높이) 과제 몫이라 여기선 구간으로만 핀한다.)
+    let baseline = xy + xh;
+    assert!(
+        baseline > ty && baseline <= ty + th + 0.5,
+        "텍스트 baseline({baseline})은 표 세로 구간[{ty},{}] 안이어야 한다",
+        ty + th
+    );
+}
+
+/// (a-2) 같은 줄 공유의 캐럿·클릭 정합. 표 뒤 오프셋의 캐럿과 표 우측 클릭이
+/// 가리키는 위치가 같아야 한다 — 렌더가 세로로 갈리면 둘이 45px 어긋났다.
+#[test]
+fn start_anchor_caret_and_click_agree_on_shared_line() {
+    let mut doc = make_start_anchor_doc("[7087,7087]");
+    let (tbs, _) = tables_and_texts(&mut doc);
+    let (tx, ty, tw, th) = tbs[0];
+
+    let caret: serde_json::Value =
+        serde_json::from_str(&doc.get_cursor_rect(0, 0, 1).unwrap()).unwrap();
+    let (cx, cy, ch) = (
+        caret["x"].as_f64().unwrap(),
+        caret["y"].as_f64().unwrap(),
+        caret["height"].as_f64().unwrap(),
+    );
+    assert!(
+        (cx - (tx + tw)).abs() <= 1.5,
+        "표 뒤(offset 1) 캐럿은 표 우변에 서야 한다: 표 우변={} 캐럿 x={cx}",
+        tx + tw
+    );
+    assert!(
+        cy >= ty - 0.5 && cy + ch <= ty + th + 0.5,
+        "표 뒤 캐럿은 표와 같은 줄 안에 있어야 한다: 표 y=[{ty},{}] 캐럿 y=[{cy},{}]",
+        ty + th,
+        cy + ch
+    );
+    assert!(
+        ch < th - 1.0,
+        "표 뒤 캐럿 높이는 표 높이가 아니라 텍스트 줄 높이여야 한다: 캐럿 h={ch} 표 h={th}"
+    );
+
+    // 표 우측 클릭 → 표 뒤 오프셋, 그리고 그 커서 위치가 캐럿 API 와 같은 줄.
+    let click = doc
+        .hit_test_native(0, tx + tw + 5.0, ty + th / 2.0)
+        .unwrap();
+    let hit: serde_json::Value = serde_json::from_str(&click).unwrap();
+    assert_eq!(
+        hit["charOffset"].as_u64().unwrap(),
+        1,
+        "표 우측 클릭은 표 뒤 오프셋이어야 한다: {hit}"
+    );
+    let hy = hit["cursorRect"]["y"].as_f64().unwrap();
+    assert!(
+        (hy - cy).abs() <= 2.0,
+        "클릭 커서 y({hy})와 캐럿 API y({cy})가 어긋나면 안 된다"
+    );
 }
 
 /// (b) 다중 소형 TAC 표 3개: 합폭≤줄폭 → 저장 조판 seg 1개 — 코퍼스 calendar_year 동형.
@@ -126,13 +193,27 @@ fn three_small_tac_tables_stay_on_single_line_seg() {
     );
     let (tbs, _) = tables_and_texts(&mut doc);
     assert_eq!(tbs.len(), 3, "표 3개 전부 렌더");
-    // 코퍼스 어긋남(보고 대상, 수리 별도): 코퍼스는 1줄 가로 병치(같은 y, 다른 x)
-    // 인데 현행 렌더는 같은 x(줄 시작)에 표 높이 간격 세로 스택으로 그린다.
-    // 현행 characterization: 세 표 모두 줄 시작 x 에서 시작.
-    let x0 = tbs[0].0;
+    // 코퍼스(calendar_year s0#4 · request s0#14): 1줄 가로 병치 — 같은 y, x 는
+    // 앞 표 폭만큼 전진.
+    let y0 = tbs[0].1;
     assert!(
-        tbs.iter().all(|(x, ..)| (x - x0).abs() < 1.0),
-        "현행 렌더 고정(어긋남 명시): 세 표가 같은 x 세로 스택 — 코퍼스는 가로 병치. {tbs:?}"
+        tbs.iter().all(|(_, y, ..)| (y - y0).abs() < 1.0),
+        "세 표가 한 줄(같은 y)에 나란히 서야 한다: {tbs:?}"
+    );
+    for w in tbs.windows(2) {
+        let (px, _, pw, _) = w[0];
+        let (nx, ..) = w[1];
+        assert!(
+            nx >= px + pw - 0.5,
+            "다음 표는 앞 표 오른쪽에서 시작해야 한다(겹침 금지): 앞 우변={} 다음 x={nx}",
+            px + pw
+        );
+    }
+    let (lx, _, lw, _) = tbs[2];
+    assert!(
+        lx + lw <= 113.4 + 566.9 + 0.5,
+        "합폭이 줄폭 안이므로 세 표가 본문 폭을 넘지 않아야 한다: 마지막 우변={}",
+        lx + lw
     );
     // 저장 왕복(HWPX): 저장 조판 seg 1개 보존.
     let bytes = doc.export_hwpx().unwrap();
