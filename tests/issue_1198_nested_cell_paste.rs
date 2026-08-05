@@ -5,9 +5,11 @@
 
 use std::path::Path;
 
-use rhwp::renderer::render_tree::{RenderNode, RenderNodeType};
 use rhwp::wasm_api::HwpDocument;
 use serde_json::Value;
+
+mod common;
+use common::nested_input_cell_point;
 
 fn load_sample(name: &str) -> HwpDocument {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -37,37 +39,6 @@ fn path_tuples(hit: &Value) -> Vec<(usize, usize, usize)> {
             )
         })
         .collect()
-}
-
-/// `성명` 오른쪽 빈 입력칸(중첩 표) 내부의 한 점을 **렌더 트리에서** 구한다.
-///
-/// 종전엔 (250, 210) 을 하드코딩했는데, 그 y 는 입력칸 상단 경계에서 1.6px 밖이라
-/// 정당한 배치 변경에도 깨졌다 — 2026-08-06 TAC 세로 배치식 정정(오라클 §2-C: 글리프
-/// 상자가 기준선을 r:(1−r) 로 가른다)으로 입력칸이 바깥여백만큼(≈3.8px) 아래로
-/// 내려가자 점이 칸 밖으로 나가 중첩 경로가 한 단계로 줄었다. 칸 **중심**을 쓰면
-/// 배치가 정상 범위에서 움직여도 이 핀은 "중첩 셀 경로 보존"만 검사한다.
-fn nested_input_cell_point(doc: &mut HwpDocument) -> (f64, f64) {
-    const PROBE_X: f64 = 250.0; // 성명 입력칸이 걸치는 x
-    const BAND: (f64, f64) = (180.0, 260.0); // 1쪽 상단 답안지 영역
-    let tree = doc.build_page_render_tree(0).expect("page 0 render tree");
-    // 가장 깊은(=중첩) Table 노드를 찾는다.
-    let mut best: Option<(usize, f64, f64)> = None; // (depth, cy, cx)
-    fn walk(n: &RenderNode, depth: usize, best: &mut Option<(usize, f64, f64)>) {
-        if matches!(n.node_type, RenderNodeType::Table(_)) {
-            let b = &n.bbox;
-            let hits_x = b.x <= PROBE_X && PROBE_X <= b.x + b.width;
-            let in_band = b.y >= BAND.0 && b.y + b.height <= BAND.1;
-            if hits_x && in_band && best.map_or(true, |(d, ..)| depth > d) {
-                *best = Some((depth, b.y + b.height / 2.0, PROBE_X));
-            }
-        }
-        for c in &n.children {
-            walk(c, depth + 1, best);
-        }
-    }
-    walk(&tree.root, 0, &mut best);
-    let (_, cy, cx) = best.expect("성명 입력칸(중첩 표)을 렌더 트리에서 찾지 못했다");
-    (cx, cy)
 }
 
 fn first_copyable_char(doc: &HwpDocument) -> (u32, u32, String) {

@@ -8,6 +8,9 @@ use std::path::Path;
 use rhwp::wasm_api::HwpDocument;
 use serde_json::Value;
 
+mod common;
+use common::nested_input_cell_point;
+
 fn load_sample(name: &str) -> HwpDocument {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("samples")
@@ -77,8 +80,9 @@ fn assert_name_insert_by_path(
     outer_control_index: u64,
     expected_path: &[(usize, usize, usize)],
 ) {
-    // 1쪽 상단 답안지 `성명` 오른쪽 빈 입력칸 내부 좌표.
-    let hit = hit_json(doc, 0, 250.0, 210.0);
+    // 1쪽 상단 답안지 `성명` 오른쪽 빈 입력칸 내부 좌표(렌더 트리에서 중심을 잡는다).
+    let (px, py) = nested_input_cell_point(doc);
+    let hit = hit_json(doc, 0, px, py);
     assert_answer_sheet_name_hit(&hit, outer_control_index, expected_path);
 
     let path = path_tuples(&hit);
