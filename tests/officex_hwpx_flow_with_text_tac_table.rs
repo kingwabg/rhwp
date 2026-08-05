@@ -36,7 +36,8 @@ fn flow_with_text_zero_hwpx() -> Vec<u8> {
         created["controlIdx"].as_u64().unwrap() as u32,
     );
     // 줄폭 안에 넉넉히 들어가는 소형 표 — 폭 기준 줄바꿈이면 후행 텍스트와 한 줄.
-    doc.set_table_column_widths(0, pi, ci, "[7087,7087]").unwrap();
+    doc.set_table_column_widths(0, pi, ci, "[7087,7087]")
+        .unwrap();
     doc.insert_text(0, 0, 1, "다음글").unwrap();
     doc.set_table_properties(0, pi, ci, r#"{"restrictInPage":false}"#)
         .unwrap();
@@ -134,7 +135,8 @@ fn hwp5_and_hwpx_roundtrips_agree_on_flow_with_text_zero_tac_table() {
         created["paraIdx"].as_u64().unwrap() as u32,
         created["controlIdx"].as_u64().unwrap() as u32,
     );
-    doc.set_table_column_widths(0, pi, ci, "[7087,7087]").unwrap();
+    doc.set_table_column_widths(0, pi, ci, "[7087,7087]")
+        .unwrap();
     doc.insert_text(0, 0, 1, "다음글").unwrap();
     doc.set_table_properties(0, pi, ci, r#"{"restrictInPage":false}"#)
         .unwrap();
@@ -160,5 +162,38 @@ fn hwp5_and_hwpx_roundtrips_agree_on_flow_with_text_zero_tac_table() {
         geometry[0],
         (true, true),
         "두 포맷 모두 후행 텍스트가 표 오른쪽·같은 줄이어야 한다"
+    );
+}
+
+/// 미러 정합: HWPX 파스가 만든 `Table.attr` bit0 은 물리와 일치해야 한다.
+/// `set_table_properties` 가 이 값을 raw_ctrl_data FLAGS 로 되쓰므로
+/// (table_ops.rs:2875) 어긋나 있으면 표 속성을 한 번 만지는 순간 저장 파일에서
+/// 글자처럼취급 비트가 유실된다 — 게이트 시절 실측 `attr=0x0` / `tac=true`.
+#[test]
+fn hwpx_mirror_bit0_matches_physics() {
+    use rhwp::model::control::Control;
+    let bytes = flow_with_text_zero_hwpx();
+    let doc = HwpDocument::from_bytes(&bytes).unwrap();
+    let tables: Vec<_> = doc.document().sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| p.controls.iter())
+        .filter_map(|c| match c {
+            Control::Table(t) => Some(t),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tables.len(), 1, "표 1개를 찾아야 한다");
+    let t = tables[0];
+    assert!(
+        t.common.treat_as_char,
+        "물리(treat_as_char)가 저장 왕복에서 유실됐다"
+    );
+    assert!(!t.common.flow_with_text, "flowWithText=0 이 유실됐다");
+    assert_eq!(
+        t.attr & 0x01,
+        0x01,
+        "미러 bit0 이 물리와 어긋난다 (attr={:#x})",
+        t.attr
     );
 }
