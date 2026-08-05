@@ -1838,15 +1838,19 @@ fn materialize_hwpx_table_attrs(table: &mut Table, table_record_flags: u32) {
     const HWPX_TABLE_NUMBERING_BIT: u32 = 0x0800_0000;
 
     table.common.attr = pack_hwpx_common_obj_attr(&table.common) | HWPX_TABLE_NUMBERING_BIT;
-    // HWPX keeps semantic placement in hp:pos, while legacy layout code still reads
-    // table.attr bit0 for some inline-table decisions. Only mirror the minimum
-    // renderer compatibility bit here; the HWP5 storage attr is packed later by
-    // the HWP adapter.
-    table.attr = if table.common.treat_as_char && table.common.flow_with_text {
-        0x01
-    } else {
-        0
-    };
+    // HWPX 는 시멘틱 배치를 hp:pos 에 담으므로 HWP5 저장 attr 전체는 HWP 어댑터가
+    // 나중에 팩한다. 다만 bit0(글자처럼취급)은 여기서 물리와 **일치**시킨다 —
+    // HWP5(parser/control.rs:161)·HWP3(parser/hwp3/mod.rs:606) 파서가 게이트 없이
+    // 미러하는 값이고, `set_table_properties` 가 이 값을 raw_ctrl_data FLAGS 로
+    // 되쓰므로(table_ops.rs:2875) 어긋나 있으면 표 속성을 한 번 만지는 순간
+    // 저장 파일에서 글자처럼취급 비트가 유실된다.
+    //
+    // 종전엔 `treat_as_char && flow_with_text` 로 게이트했다(Task #1100 571101050).
+    // `flow_with_text`(bit13 = hp:pos@flowWithText = 한컴 "쪽 영역 안으로 제한")는
+    // 비-TAC floating 개체의 y 클램프·밀어내기 스위치이고 글자취급 여부와 무관하며,
+    // 그 커밋·계획·보고 문서 어디에도 게이트 근거가 없다. 게이트 때문에 같은
+    // 문서가 .hwp 면 인라인, .hwpx 면 블록으로 갈렸다.
+    table.attr = u32::from(table.common.treat_as_char);
     let mut record_attr = match table.page_break {
         TablePageBreak::CellBreak => 0x01,
         TablePageBreak::RowBreak => 0x02,

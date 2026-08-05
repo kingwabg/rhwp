@@ -3550,8 +3550,13 @@ impl LayoutEngine {
                             }
                         } else {
                             // 비-TAC 표: 기존 수직 배치
-                            // 앞 텍스트 너비만큼 x 오프셋 적용
-                            let tac_text_offset = if nested_table.attr & 0x01 != 0 {
+                            // 앞 텍스트 너비만큼 x 오프셋 적용.
+                            // 물리(`common.treat_as_char`)만 읽는다 — 종전엔 미러
+                            // (`nested_table.attr & 0x01`)를 읽었고, 이 분기는
+                            // `if is_tac_table` 의 else 라 물리와 모순된 조건이었다
+                            // (전 파서가 bit0 을 treat_as_char 로 채우므로 실제로는
+                            //  항상 false = 도달 불가 블록).
+                            let tac_text_offset = if nested_table.common.treat_as_char {
                                 let mut text_w = 0.0;
                                 for line in &composed.lines {
                                     for run in &line.runs {
