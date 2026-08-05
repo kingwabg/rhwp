@@ -6598,7 +6598,9 @@ impl LayoutEngine {
                         self.dpi,
                     );
                 }
-                if is_first_empty_para_float_control && !is_tac {
+                if is_first_empty_para_float_control && !is_tac && !para_has_visible_text(para) {
+                    // [트랙3] 앵커선행 확장으로 텍스트 있는 host 도 이 분기에 들어오게 됐다 —
+                    // 빈 문단부호는 진짜 빈 host 에만 찍는다(텍스트 host 는 post-text 가 표시).
                     let marker_x = tbl_inline_x.unwrap_or(col_area.x + effective_margin);
                     // FullParagraph에서 빈 줄 진행을 생략한 대신, 표와 같은 줄에
                     // host 문단부호를 렌더링한다. 표 뒤 빈 문단은 그대로 남아
@@ -6994,6 +6996,10 @@ impl LayoutEngine {
                 .get(control_index)
                 .map(|c| matches!(c, Control::Table(t) if t.common.treat_as_char))
                 .unwrap_or(false);
+            // [트랙3 2026-08-05] square 팔은 "빈 문단"에서 "앵커선행"(컨트롤 앞 공백뿐,
+            // 뒤 텍스트 허용)으로 확장 — host post-text 가 표 옆(table_y_before)으로
+            // 흐르는 중간 케이스를 layout 경로에 배정한다. topbottom 팔은
+            // !para_has_visible_text 유지(voff>0 분기 6665/6713 격리).
             let is_current_empty_para_float = para
                 .controls
                 .get(control_index)
@@ -7002,8 +7008,9 @@ impl LayoutEngine {
                         c,
                         Control::Table(t)
                             if (is_para_topbottom_float(&t.common)
-                                || super::float_placement::is_para_square_family_float(&t.common))
-                                && !para_has_visible_text(para)
+                                && !para_has_visible_text(para))
+                                || (super::float_placement::is_para_square_family_float(&t.common)
+                                    && para.text_is_blank_before_control(control_index))
                     )
                 })
                 .unwrap_or(false);
@@ -7020,13 +7027,14 @@ impl LayoutEngine {
                 })
                 .unwrap_or(false);
             let is_first_empty_para_float_control = is_current_empty_para_float
-                && para.controls.iter().position(|c| {
+                && para.controls.iter().enumerate().position(|(ci, c)| {
                     matches!(
                         c,
                         Control::Table(t)
                             if (is_para_topbottom_float(&t.common)
-                                || super::float_placement::is_para_square_family_float(&t.common))
-                                && !para_has_visible_text(para)
+                                && !para_has_visible_text(para))
+                                || (super::float_placement::is_para_square_family_float(&t.common)
+                                    && para.text_is_blank_before_control(ci))
                     )
                 }) == Some(control_index);
             // ── 표 위 간격 ──
