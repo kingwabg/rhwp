@@ -1125,10 +1125,10 @@ impl DocumentCore {
         // char_count 갱신 (확장 제어문자 8 + 기존)
         para.char_count += 8;
 
-        // LINE_SEG 갱신: reflow 가 진실을 쓴다 — 인라인 표는 첫 seg 높이 범프,
-        // end-anchored solo 표는 자기 줄 분리(line_breaking 의 단일 계약).
-        // [tac-inline-baseline-report-20260805] 종전 수동 첫 seg 범프는 end-anchor
-        // 케이스에서 표를 텍스트와 같은 줄에 묶어 세로 어긋남(표@문단상단)을 만들었다.
+        // LINE_SEG 갱신: reflow(line_breaking)가 유일한 생산자다 — 개체가 놓인 줄의
+        // 높이 범프도, 폭 초과 시의 줄 분리도 그 안의 한 규칙(`BreakToken::Object`)에서
+        // 나온다. 종전의 수동 "첫 seg 높이 범프"는 표가 둘째 줄로 밀리는 문단에서
+        // 엉뚱한 줄을 키웠다.
         self.reflow_paragraph(section_idx, para_idx);
 
         // rebuild

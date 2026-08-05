@@ -87,12 +87,13 @@ pub fn is_tac_table_inline_in_para(table: &Table, seg_width: i32, para: &Paragra
     let has_own_line_seg = para.line_segs.len() >= 2
         && para.line_segs.iter().skip(1).any(&seg_matches_table_line);
 
-    // [tac-inline-baseline-report-20260805] end-anchored solo TAC 표는 인라인이
-    // 아니라 블록(자기 줄) — 한컴 오라클: 앞 텍스트는 표 위 줄, 표는 아래 줄.
-    // 단, 게이트(소비자)는 line_seg 가 실제로 표 자기 줄(**텍스트 없는** 후행 seg,
-    // 높이 = 표높이+outer 여백)을 인코딩했을 때만 블록으로 본다 — 자기 줄 생산은
-    // reflow(line_breaking)의 몫이다. 높이 일치만 보면 텍스트 줄 높이와의 우연
-    // 일치로 로드 문서가 오분류돼 쪽수가 틀어진다(issue_2243 결재 sliver 핀 실측).
+    // 로드측 게이트: **저장 파일이** end-anchor 표를 자기 줄(**텍스트 없는** 후행 seg,
+    // 높이 = 표높이+outer 여백)로 인코딩했으면 그 조판을 존중해 블록으로 본다
+    // (`samples/basic/shortcut.hwp` 처럼 폭 초과로 표가 자기 줄에 간 실재 표본).
+    // 높이 일치만 보면 텍스트 줄 높이와의 우연 일치로 로드 문서가 오분류돼 쪽수가
+    // 틀어진다(issue_2243 결재 sliver 핀 실측) — 그래서 textless 증거를 요구한다.
+    // 자기 줄을 **생산**하는 규칙은 없다(oracle-pdf-mining-20260806 §1-B: 폭이 남으면
+    // 표는 앞 텍스트와 같은 줄).
     let last_text_utf16 = para.char_offsets.last().copied();
     let textless_own_line_seg = para.line_segs.len() >= 2
         && para.line_segs.iter().skip(1).any(|ls| {
@@ -123,13 +124,16 @@ pub fn is_tac_table_inline_in_para(table: &Table, seg_width: i32, para: &Paragra
     is_tac_table_inline(table, seg_width, &para.text, &para.controls)
 }
 
-/// [tac-inline-baseline-report-20260805] end-anchored solo TAC 표 판정 — "end-anchor
-/// 표 = 자기 줄" 계약의 단일 소스. 게이트(위)와 composer line_breaking 이 함께 쓴다.
+/// end-anchored solo TAC 표(앞에만 가시 텍스트, 뒤에 없음) 판정 — 반환은 그 표의
+/// 컨트롤 인덱스. 문단의 유일한 글자취급 인라인 컨트롤인 표만 대상.
 ///
-/// 한컴 오라클(웹한글 실측): 앞에만 가시 텍스트가 있고 뒤에 없는 글자취급 표는 앞
-/// 텍스트 옆이 아니라 **자기 줄(다음 줄)** 로 내려간다. 문단의 유일한 글자취급 인라인
-/// 컨트롤인 표만 대상 — 다중 표·start-anchor 는 오라클 미채취라 현행 유지.
-/// 반환: 해당 표의 컨트롤 인덱스.
+/// **쓰는 곳은 위 로드측 게이트 하나뿐이다.** 종전엔 composer line_breaking 이 이 술어로
+/// "end-anchor 표 = 자기 줄" seg 를 **생산**했지만, `oracle-pdf-mining-20260806` §1-B/§1-C
+/// 가 저장 코퍼스 전수(END-anchor 25건)와 `samples/tac-case-001..005` 폭 임계 시리즈로
+/// 그 규칙을 반증해(폭이 남으면 표는 앞 텍스트와 같은 줄) 생산 쪽은 삭제됐다 —
+/// 이제 end-anchor 표도 다른 TAC 개체와 똑같이 `BreakToken::Object` 폭 규칙을 탄다.
+/// 게이트는 "저장 파일이 표를 textless own-line seg 로 인코딩했으면 존중"이라 저장
+/// 증거 기반이고 오라클과 정합이므로 남는다.
 pub fn end_anchored_solo_tac_table(para: &Paragraph) -> Option<usize> {
     // 강제 줄바꿈(\n)이 이미 줄 구조를 명시한 문단은 대상 밖 — 표는 \n 이 정한
     // 줄에 그대로 있고, 여기에 자기 줄을 또 만들면 기계생성 HWPX 로드 보정

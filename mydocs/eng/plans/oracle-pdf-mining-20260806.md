@@ -232,6 +232,16 @@ x 385.80…600.00 · **y 966.48…990.96** — **두 표의 잉크 y 가 완전�
 
 ### (A) end-anchor 자기 줄 **생산**을 제거 — 근거 소멸 + 저장 인코딩 반증
 
+> **적용 완료 (2026-08-06, officex/engine-fixes)**. 1·2 삭제, 3 유지(주석만 정정).
+> 핀: `tests/officex_tac_end_anchor_own_line.rs` 7본을 오라클 정답으로 반전,
+> `renderer::composer::tests::tac_case_width_threshold_series_matches_hancom_stored_layout`
+> 가 §1-C 폭 임계 시리즈를 실파일로 잠근다. 제거로 드러난 파생 결함 1건 동반 수리 —
+> `layout_inline_table_paragraph` 가 선행 표 수를 `char_offsets[0]/8`(선행 확장 컨트롤
+> 수)로 세어, SECTION_DEF/COLUMN_DEF 가 앞에 있는 문단(편집 문서 첫 문단)에서 end/mid-anchor
+> 표가 텍스트 **왼쪽**으로 튀었다(실측 표 x=113.4 / 텍스트 x=302.4). 표의 실제 char
+> 위치로 세도록 고쳤다. 3(로드측 게이트)의 "앵커 모양 무관하게 textless own-line seg 만
+> 보기"는 여전히 별건으로 남는다.
+
 1. `src/renderer/composer/line_breaking.rs:1156` — `insert_object_tokens` 가
    `end_anchored_solo_tac_table(para)` 인 표를 폭 토큰 흐름에서 **제외**한다.
    → 제외를 없애고 다른 TAC 개체와 동일하게 폭을 갖는 한 글자로 흘려야 한다

@@ -1146,20 +1146,20 @@ fn inline_control_glyph_box_hwp(ctrl: &Control) -> Option<(i32, i32)> {
 /// 이걸로 줄바꿈이 개체 폭을 보게 되고, 대형 표의 "자기 줄"은 특례가 아니라 폭 초과의
 /// 귀결이 된다(횡단 법칙 3).
 ///
-/// end-anchored solo TAC 표만 예외로 뺀다: 그 축은 폭과 무관하게 자기 줄로 내리는
-/// 웹한글 편집 실측 오라클이고 아래 `end_anchored_solo_tac_table` 분기가 seg 를 직접
-/// 생산하므로, 여기서 또 끊으면 seg 가 하나 더 생긴다.
+/// [oracle-pdf-mining-20260806 §1-B/§1-C] end-anchor 축도 예외가 아니다: 저장 코퍼스
+/// 656파일·글자취급 표 5,751건 전수에서 "폭이 남고 `\n` 도 없는" END-anchor 표는 전부
+/// seg 1개(표+글 한 줄)이고, `samples/tac-case-001..005` 는 표가 넓어질 때 **뒤 텍스트만**
+/// 다음 줄로 밀리고 표는 앞 텍스트 줄에 남음을 보인다. 종전의 end-anchor 제외(자기 줄
+/// 생산과 짝)는 이로써 폭 규칙 하나로 흡수됐다.
 fn insert_object_tokens(tokens: &mut Vec<BreakToken>, para: &Paragraph) {
     if para.controls.is_empty() {
         return;
     }
-    let end_anchored = crate::renderer::height_measurer::end_anchored_solo_tac_table(para);
     let positions = para.control_text_positions();
     let mut objects: Vec<(usize, i32, i32)> = para
         .controls
         .iter()
         .enumerate()
-        .filter(|(i, _)| Some(*i) != end_anchored)
         .filter_map(|(i, ctrl)| {
             // 글리프 상자 = 잉크 + 바깥여백 (`composer::tac_box_hwp` 단일 소스).
             // 폭: 기부 양식 s0#25 47813+570 vs sw 47833, aift s0#0 47624+566 vs sw 48188 —
@@ -1620,66 +1620,30 @@ pub(crate) fn reflow_line_segs_with_bands(
         new_line_segs.push(make_line_seg(0, 12.0));
     }
 
-    // 인라인 TAC 개체의 높이 반영: 개체가 포함된 줄의 line_height를 개체 높이 이상으로 보정
-    // [tac-inline-baseline-report-20260805] 단, end-anchored solo TAC 표는 자기 줄로
-    // 분리한다(한컴 오라클: 앞 텍스트는 표 위 줄, 표는 아래 줄). 첫 seg 는 텍스트
-    // 높이를 유지해야 typeset pre_table_end_line 이 표 줄(index 1)을 찾는다.
+    // 인라인 TAC 개체의 높이 반영: 개체가 포함된 줄의 line_height를 개체 높이 이상으로 보정.
+    // 개체 높이는 **개체가 실제로 놓인 줄**에 얹는다 — 줄 배정은 위 폭 기준 줄바꿈
+    // (Object 토큰)이 이미 확정했다. 폭이 0이라 토큰이 안 만들어진 문단(폭 미상 개체)만
+    // 종전대로 첫 줄에 얹는다.
+    //
+    // [oracle-pdf-mining-20260806 §1-B/§1-C/§2-B] end-anchor 표 전용 "자기 줄" seg 생산은
+    // 삭제됐다: 저장 코퍼스 전수와 한컴 인쇄 PDF 실측 모두 표가 앞 텍스트와 **같은 줄**에
+    // 있고(seg 1개), 자기 줄이 생기는 표본은 100% 폭 초과·강제 줄바꿈의 귀결이다.
+    // 그 블록이 쓰던 `baseline = 바깥여백상 + 표높이`(≈0.99·lh) 도 PDF 실측으로 반증됐다
+    // (표 바닥이 기준선보다 30.57pt 아래 = (1−0.85)·lh − 바깥여백하).
     {
-        if let Some(control_index) =
-            crate::renderer::height_measurer::end_anchored_solo_tac_table(para)
-        {
-            if let Control::Table(table) = &para.controls[control_index] {
-                // 표 컨트롤 문자의 스트림 오프셋: 컨트롤은 8 UTF-16 유닛을 차지하며
-                // 텍스트 char `position` 바로 앞에 놓인다. 문단 끝이면 마지막 문자 다음.
-                let position = para
-                    .control_text_positions()
-                    .get(control_index)
-                    .copied()
-                    .unwrap_or(para_chars.len());
-                let table_text_start = if position < para.char_offsets.len() {
-                    para.char_offsets[position].saturating_sub(8)
-                } else if !para.char_offsets.is_empty() {
-                    let last_idx = para.char_offsets.len() - 1;
-                    let last_char_utf16_len = para
-                        .text
-                        .chars()
-                        .nth(last_idx)
-                        .map(|c| c.len_utf16() as u32)
-                        .unwrap_or(1);
-                    para.char_offsets[last_idx] + last_char_utf16_len
-                } else {
-                    0
-                };
-                // 줄 높이는 outer margin 포함(한컴 저장 인코딩·typeset 표줄 finder 전제),
-                // 기준선 = outer_margin_top + 표 높이 (뒤 텍스트 baseline = 표 바닥).
-                let table_line_h = table.common.height as i32
-                    + table.outer_margin_top as i32
-                    + table.outer_margin_bottom as i32;
-                let mut seg = make_line_seg(table_text_start, 0.0);
-                seg.line_height = table_line_h;
-                seg.text_height = table_line_h;
-                seg.baseline_distance = table.outer_margin_top as i32 + table.common.height as i32;
-                seg.line_spacing = 0;
-                new_line_segs.push(seg);
-            }
-        } else {
-            // 개체 높이는 **개체가 실제로 놓인 줄**에 얹는다 — 줄 배정은 위 폭 기준
-            // 줄바꿈(Object 토큰)이 이미 확정했다. 폭이 0이라 토큰이 안 만들어진
-            // 문단(폭 미상 개체)만 종전대로 첫 줄에 얹는다.
-            let mut applied = false;
-            for (i, lb) in line_breaks.iter().enumerate() {
-                if lb.object_height_hwp > 0 {
-                    if let Some(seg) = new_line_segs.get_mut(i) {
-                        apply_inline_control_line_height(seg, lb.object_height_hwp);
-                        applied = true;
-                    }
+        let mut applied = false;
+        for (i, lb) in line_breaks.iter().enumerate() {
+            if lb.object_height_hwp > 0 {
+                if let Some(seg) = new_line_segs.get_mut(i) {
+                    apply_inline_control_line_height(seg, lb.object_height_hwp);
+                    applied = true;
                 }
             }
-            if !applied {
-                if let Some(height_hwp) = inline_control_line_height_hwp(para) {
-                    if let Some(seg) = new_line_segs.first_mut() {
-                        apply_inline_control_line_height(seg, height_hwp);
-                    }
+        }
+        if !applied {
+            if let Some(height_hwp) = inline_control_line_height_hwp(para) {
+                if let Some(seg) = new_line_segs.first_mut() {
+                    apply_inline_control_line_height(seg, height_hwp);
                 }
             }
         }
