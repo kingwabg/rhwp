@@ -534,8 +534,6 @@ impl DocumentCore {
             self.document.is_hwp3_variant,
         );
         self.recompose_paragraph(section_idx, para_idx);
-        // [어울림 편집 훅 2026-08-04] 어울림 표 옆 문단이면 밴드 기준 재줄바꿈
-        self.reflow_square_bands_after_edit(section_idx);
         self.paginate_if_needed();
 
         for _ in 0..2 {
@@ -713,10 +711,6 @@ impl DocumentCore {
             self.recompose_paragraph(section_idx, para_idx);
             self.paginate_if_needed();
         }
-        // [어울림 편집 훅 2026-08-04] 어울림 표 옆 문단이면 밴드 기준 재줄바꿈.
-        // ⚠ 다단 재계산 루프 **밖**이어야 한다 — 루프는 단이 바뀔 때만 도므로 그 안에
-        //   두면 평범한 지우기에서 훅이 아예 안 돌았다(테스트 실패로 잡음).
-        self.reflow_square_bands_after_edit(section_idx);
 
         // 캐럿 위치 갱신 (DocProperties)
         let para = &self.document.sections[section_idx].paragraphs[para_idx];

@@ -6,5 +6,6 @@ mod header_footer_ops;
 mod html_import;
 mod object_ops;
 mod table_ops;
+pub use table_ops::paragraph_has_narrow_trace;
 mod text_editing;
 mod track;
