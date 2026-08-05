@@ -6618,7 +6618,7 @@ impl LayoutEngine {
                         &t.common,
                     ) && {
                         let w_px = hwpunit_to_px(t.common.width as i32, self.dpi);
-                        col_area.width - w_px >= 40.0
+                        col_area.width - w_px >= crate::renderer::composer::MIN_SIDE_PX
                     };
                     let marker_y = if (is_para_topbottom_float(&t.common) || square_side_flow)
                         && signed_hwpunit(t.common.vertical_offset) > 0
@@ -6680,9 +6680,11 @@ impl LayoutEngine {
                 } else if is_current_empty_para_float
                     && super::float_placement::is_para_square_family_float(&t.common)
                     && {
-                        // 부분폭(옆 공간 40px 이상) Square 만 — 등록 분기와 같은 판정.
+                        // 부분폭(옆 공간 MIN_SIDE_PX 이상) Square 만 — 등록 분기와 같은 판정.
+                        // [트랙3] 임계를 composer(줄바꿈)와 통일 — 훅 34 vs layout 40 이
+                        // 어긋나 [34,40) 구간에서 '좁힌 줄이 표 아래' 모순이 났다.
                         let w_px = hwpunit_to_px(t.common.width as i32, self.dpi);
-                        col_area.width - w_px >= 40.0
+                        col_area.width - w_px >= crate::renderer::composer::MIN_SIDE_PX
                     }
                 {
                     // 옆 흐름 계약: 본문 흐름은 표 앞에서 계속되고(다음 문단이 표 옆에
@@ -6738,7 +6740,7 @@ impl LayoutEngine {
                     // 등록하면: 세로로 겹치는 줄은 아래 소비부(paragraph_layout 의
                     // live_band_narrow)가 옆 남은 폭으로 좁히고, 가로로 안 겹치는 항목은
                     // skip_float_bands 의 x_range 게이트가 그냥 통과시킨다. 전폭에 가까운
-                    // 표(남는 폭 < 40px)는 옆 흐름이 무의미하므로 전폭 밴드와 동일하게 둔다.
+                    // 표(남는 폭 < MIN_SIDE_PX)는 옆 흐름이 무의미하므로 전폭 밴드와 동일하게 둔다.
                     let table_visual_top = table_visual_end - table_visual_height;
                     if table_visual_end > table_visual_top + 0.5 {
                         // 방금 layout_table 이 col_node 에 붙인 Table 노드의 실측 x 를 쓴다
@@ -6768,7 +6770,9 @@ impl LayoutEngine {
                         // square_bands, 2-패스)이 밴드 기준으로 재줄바꿈해 line_segs 에
                         // 줄별 cs/sw 로 기록하고, 렌더는 그 저장값을 재생 소비한다.
                         // 1차 조판(기록 전)의 일시 겹침은 재조판에서 해소된다.
-                        let band = if side_room >= 40.0 && x0.is_finite() {
+                        let band = if side_room >= crate::renderer::composer::MIN_SIDE_PX
+                            && x0.is_finite()
+                        {
                             VisibleFloatExclusion {
                                 x_start: x0,
                                 x_end: x1,
