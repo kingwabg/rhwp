@@ -13505,6 +13505,8 @@ impl TypesetEngine {
             && pre_table_end_line > 0
             && pre_table_end_line < total_lines;
 
+        // [트랙3] 앵커선행 square host 의 표 높이 유예 회계 — post-text 가산 뒤 max 적용.
+        let mut deferred_square_host_base: Option<f64> = None;
         if is_wrap_around_table && pre_height > 0.0 {
             let v_off_px = crate::renderer::hwpunit_to_px(vertical_offset as i32, self.dpi);
             let table_bottom = v_off_px + table_total_height;
@@ -13573,6 +13575,14 @@ impl TypesetEngine {
             }
         } else if tac_wrap_split {
             st.current_height += table_total_height;
+        } else if is_wrap_around_table
+            && para_has_non_whitespace_text(para)
+            && para.text_is_blank_before_control(ctrl_idx)
+        {
+            // [트랙3] 앵커선행 square host — 표와 post-text 가 같은 세로 구간을 공유
+            // (옆 흐름)하므로 합산이 아니라 wrap 시멘틱(max). 표 높이 가산을 유예하고
+            // post-text 가산 직후 max 로 회계한다(13508 pre_height 케이스와 대칭).
+            deferred_square_host_base = Some(st.current_height);
         } else {
             // [officex/어울림 배선 3/3] 빈 host 단독 자리차지 float 를 위로 올린 경우
             // (판정식 probe-flow.mjs 의 구조 — createTable 분할로 표는 빈 문단에 앵커).
@@ -13669,6 +13679,14 @@ impl TypesetEngine {
                 end_line: total_lines,
             });
             st.current_height += post_height;
+        }
+        // [트랙3] 유예했던 표 높이 회계 — wrap 시멘틱: 흐름 하단 = max(post-text 하단,
+        // 표 배치 시점 + v_off + 표높이). post-text 미가산 케이스에서도 표 높이는 남는다.
+        if let Some(base) = deferred_square_host_base {
+            let v_off_px = hwpunit_to_px(signed_vertical_offset, self.dpi);
+            st.current_height = st
+                .current_height
+                .max(base + v_off_px + table_total_height);
         }
 
         // TAC 표: trailing line_spacing 복원 (Paginator place_table_fits:777-783 동일)
