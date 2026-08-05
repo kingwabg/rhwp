@@ -1122,58 +1122,23 @@ fn char_level_break_hwp(
     (results, lw, line_max_fs)
 }
 
-/// 문단의 line_segs를 텍스트 내용과 컬럼 너비에 맞게 재계산한다.
-///
-/// 텍스트 편집(삽입/삭제) 후 호출하여 줄 바꿈을 재배치한다.
-/// `available_width_px`는 문단 여백을 제외한 사용 가능 너비(px)이다.
+/// 문단 안 TAC 개체의 최대 **글리프 높이**(= 개체 높이 + 바깥여백 상하, 횡단 법칙 1).
+/// 상자 정의는 `composer::tac_box_hwp` 단일 소스.
 fn inline_control_line_height_hwp(para: &Paragraph) -> Option<i32> {
     para.controls
         .iter()
-        .filter_map(|ctrl| match ctrl {
-            Control::Picture(pic) if pic.common.treat_as_char => Some(pic.common.height as i32),
-            Control::Shape(shape) if shape.common().treat_as_char => {
-                let common_h = shape.common().height as i32;
-                let current_h = shape.shape_attr().current_height as i32;
-                Some(common_h.max(current_h))
-            }
-            Control::Table(table) if table.common.treat_as_char => Some(table.common.height as i32),
-            Control::Equation(eq) if eq.common.treat_as_char => Some(eq.common.height as i32),
-            Control::Form(form) => Some(form.height as i32),
-            _ => None,
-        })
+        .filter_map(super::tac_box_hwp)
+        .map(|b| b.glyph_height())
         .filter(|height| *height > 0)
         .max()
 }
 
-fn inline_control_size_hwp(ctrl: &Control) -> Option<(i32, i32)> {
-    let (width, height) = match ctrl {
-        Control::Picture(pic) if pic.common.treat_as_char => {
-            (pic.common.width as i32, pic.common.height as i32)
-        }
-        Control::Shape(shape) if shape.common().treat_as_char => {
-            let common = shape.common();
-            let shape_attr = shape.shape_attr();
-            (
-                (common.width as i32).max(shape_attr.current_width as i32),
-                (common.height as i32).max(shape_attr.current_height as i32),
-            )
-        }
-        Control::Table(table) if table.common.treat_as_char => {
-            let width = table.get_column_widths().iter().sum::<u32>() as i32;
-            (width, table.common.height as i32)
-        }
-        Control::Equation(eq) if eq.common.treat_as_char => {
-            (eq.common.width as i32, eq.common.height as i32)
-        }
-        Control::Form(form) => (form.width as i32, form.height as i32),
-        _ => return None,
-    };
-
-    if width > 0 && height > 0 {
-        Some((width, height))
-    } else {
-        None
-    }
+/// 줄 채움에 폭으로 참여하는 TAC 개체의 **글리프 상자**(폭, 높이). 잉크 크기가 미상인
+/// (폭·높이 0) 개체는 제외 — 폭 판정을 할 수 없다.
+fn inline_control_glyph_box_hwp(ctrl: &Control) -> Option<(i32, i32)> {
+    super::tac_box_hwp(ctrl)
+        .filter(super::TacBox::has_ink)
+        .map(|b| (b.glyph_width(), b.glyph_height()))
 }
 
 /// [oracle-corpus-mining-20260805 (h)] TAC 개체를 **폭을 가진 한 글자**로 토큰 흐름에
@@ -1196,23 +1161,12 @@ fn insert_object_tokens(tokens: &mut Vec<BreakToken>, para: &Paragraph) {
         .enumerate()
         .filter(|(i, _)| Some(*i) != end_anchored)
         .filter_map(|(i, ctrl)| {
-            let (w_hwp, h_hwp) = inline_control_size_hwp(ctrl)?;
-            // 글리프 상자 = 표 + 바깥여백 (횡단 법칙 1, `end_anchored_solo_tac_table`
-            // 분기의 표 줄 산식과 동일). 폭: 기부 양식 s0#25 47813+570 vs sw 47833,
-            // aift s0#0 47624+566 vs sw 48188 — 맨몸 폭만 보면 둘 다 "들어감"이 된다.
+            // 글리프 상자 = 잉크 + 바깥여백 (`composer::tac_box_hwp` 단일 소스).
+            // 폭: 기부 양식 s0#25 47813+570 vs sw 47833, aift s0#0 47624+566 vs sw 48188 —
+            // 맨몸 폭만 보면 둘 다 "들어감"이 된다.
             // 높이: 저장 lh 32352=31782+570 / 15998=15432+566 을 그대로 재현한다.
-            let (outer, outer_v) = match ctrl {
-                Control::Table(t) => (
-                    t.outer_margin_left as i32 + t.outer_margin_right as i32,
-                    t.outer_margin_top as i32 + t.outer_margin_bottom as i32,
-                ),
-                _ => (0, 0),
-            };
-            Some((
-                positions.get(i).copied()?,
-                w_hwp + outer.max(0),
-                h_hwp + outer_v.max(0),
-            ))
+            let (w_hwp, h_hwp) = inline_control_glyph_box_hwp(ctrl)?;
+            Some((positions.get(i).copied()?, w_hwp, h_hwp))
         })
         .collect();
     if objects.is_empty() {
@@ -1383,10 +1337,13 @@ pub(crate) fn reflow_line_segs_with_bands(
     };
 
     if para.text.is_empty() {
+        // 텍스트 없는 문단도 개체는 "큰 글자" — 줄 채움·줄 높이 모두 글리프 상자
+        // (잉크 + 바깥여백)로 잰다. 텍스트 있는 문단의 `BreakToken::Object` 경로와
+        // 같은 상자여야 표만 있는 문단과 표+글 문단의 줄높이가 갈리지 않는다.
         let inline_sizes = para
             .controls
             .iter()
-            .filter_map(inline_control_size_hwp)
+            .filter_map(inline_control_glyph_box_hwp)
             .collect::<Vec<_>>();
         if !inline_sizes.is_empty() {
             let max_line_width = seg_width_hwp.max(1);

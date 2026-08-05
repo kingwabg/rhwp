@@ -1787,12 +1787,14 @@ impl LayoutEngine {
                 let tbl_h = mt
                     .map(|m| m.total_height)
                     .unwrap_or_else(|| hwpunit_to_px(tbl.common.height as i32, self.dpi));
+                // 줄 넘김 판정 폭 = 글리프 상자(잉크 + 바깥여백 좌우) —
+                // `composer::tac_box_hwp` 단일 소스(줄바꿈 폭 판정과 같은 상자).
                 let table_footprint = tw.max(
-                    hwpunit_to_px(tbl.common.width as i32, self.dpi)
-                        + hwpunit_to_px(
-                            tbl.outer_margin_left as i32 + tbl.outer_margin_right as i32,
-                            self.dpi,
-                        ),
+                    para.controls
+                        .get(*ctrl_idx)
+                        .and_then(crate::renderer::composer::tac_box_hwp)
+                        .map(|b| hwpunit_to_px(b.glyph_width(), self.dpi))
+                        .unwrap_or(0.0),
                 );
                 let table_wrapped = should_wrap_middle_anchored_table(
                     control_positions.get(*ctrl_idx).copied(),

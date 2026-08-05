@@ -1157,3 +1157,84 @@ fn test_kbu1_line_start_forbidden_retraction() {
         "retraction 후 char_start 는 '다' 위치"
     );
 }
+
+/// [oracle-corpus-mining-20260805 횡단 법칙 1 / 12법칙 #2] TAC 개체의 글리프 상자는
+/// **단일 소스**(`composer::tac_box_hwp`)다 — 줄높이는 `개체 높이 + 바깥여백 상하`이고,
+/// 표만 있는 문단(텍스트 없는 경로)과 표+글 문단(`BreakToken::Object` 경로)이 **같은**
+/// 값을 내야 한다. 두 경로가 서로 다른 상자를 계산하던 회귀 가드.
+///
+/// - 바깥여백 0: lh = 표 높이 **정확 일치**(코퍼스 마진 0 표본 전부 — 수치 불변 핀).
+/// - 바깥여백 有: lh = 표 높이 + 상+하 (기부 양식 s0#25 32352 = 31782 + 570).
+#[test]
+fn test_reflow_tac_table_line_height_uses_single_glyph_box() {
+    use crate::model::table::{Cell, Table};
+
+    fn tac_table(height: u32, outer_margin: i16) -> Control {
+        let mut table = Table::default();
+        table.common.treat_as_char = true;
+        table.common.height = height;
+        table.common.width = 5000;
+        table.col_count = 1;
+        table.row_count = 1;
+        table.cells = vec![Cell {
+            col: 0,
+            row: 0,
+            col_span: 1,
+            row_span: 1,
+            width: 5000,
+            height,
+            ..Default::default()
+        }];
+        table.outer_margin_left = outer_margin;
+        table.outer_margin_right = outer_margin;
+        table.outer_margin_top = outer_margin;
+        table.outer_margin_bottom = outer_margin;
+        Control::Table(Box::new(table))
+    }
+
+    /// 표 하나가 든 문단을 reflow 한 뒤 표가 놓인 줄의 line_height.
+    fn table_line_height(text: &str, table: Control) -> i32 {
+        let styles = make_styles_with_font_size(10.0);
+        let chars: Vec<char> = text.chars().collect();
+        let mut para = Paragraph {
+            text: text.to_string(),
+            // 컨트롤(8 유닛)이 텍스트 앞에 놓인 문단 인코딩
+            char_offsets: (0..chars.len() as u32).map(|i| i + 8).collect(),
+            char_count: chars.len() as u32 + 9,
+            char_shapes: vec![CharShapeRef {
+                start_pos: 0,
+                char_shape_id: 0,
+            }],
+            controls: vec![table],
+            line_segs: vec![LineSeg {
+                text_start: 0,
+                segment_width: 40000,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        reflow_line_segs(&mut para, 533.0, &styles, 96.0);
+        para.line_segs
+            .iter()
+            .map(|ls| ls.line_height)
+            .max()
+            .unwrap_or(0)
+    }
+
+    // (1) 바깥여백 0 — 줄높이 = 표 높이 그대로(마진 0 문서 수치 불변).
+    assert_eq!(table_line_height("", tac_table(2864, 0)), 2864);
+    assert_eq!(table_line_height("뒷글", tac_table(2864, 0)), 2864);
+
+    // (2) 바깥여백 285 — 줄높이 = 표 높이 + 570 (상+하).
+    assert_eq!(table_line_height("", tac_table(31782, 285)), 32352);
+    assert_eq!(table_line_height("뒷글", tac_table(31782, 285)), 32352);
+
+    // (3) 두 경로(표만 / 표+글)가 같은 상자를 본다.
+    for (h, om) in [(1282u32, 283i16), (13678, 141), (2864, 0)] {
+        assert_eq!(
+            table_line_height("", tac_table(h, om)),
+            table_line_height("뒷글", tac_table(h, om)),
+            "표만 있는 문단과 표+글 문단의 줄높이가 다르다 (h={h} om={om})"
+        );
+    }
+}
