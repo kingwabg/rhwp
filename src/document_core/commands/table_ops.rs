@@ -58,36 +58,32 @@ impl DocumentCore {
     /// (qa:rhwp 앱 통합 워크플로 결함 — 실측: tall.hwp pi3 rows=42, segs lh=3600).
     /// reflow_line_segs 는 인라인 컨트롤 높이를 host 줄에 반영하므로(insert_text 경로와
     /// 동일 기계) 변형 직후 한 번 돌리면 저장이 진실을 쓴다.
-    /// [officex/어울림 본편] 어울림 표 이동/속성 변경 뒤 — 옆 문단 줄바꿈을 표 상자
-    /// 기준으로 재계산한다(2-패스). 좌표는 vpos(저장 축)가 아니라 **렌더트리**에서
-    /// 뽑는다: 이 케이스에서 vpos 축은 float 표의 흐름 소비를 반영하지 않아 렌더와
+    /// [officex/어울림 본편] 어울림 개체 편집 뒤 — 옆 문단 줄바꿈을 개체 상자 기준으로
+    /// 재계산한다(2-패스). 좌표는 vpos(저장 축)가 아니라 **렌더트리**에서 뽑는다:
+    /// 이 케이스에서 vpos 축은 float 개체의 흐름 소비를 반영하지 않아 렌더와
     /// 어긋난다(실측 34px). 렌더트리 1회 조회 비용은 편집당 조판 1회 추가 — 수용.
     /// 밴드에서 벗어난 문단은 전폭으로 자동 원복(빈 겹침 = 전폭 기록).
-    /// [어울림 편집 훅 2026-08-04] 글자 입력·삭제 뒤 어울림 밴드 재줄바꿈.
-    ///
-    /// 신고: 어울림 표 뒤에 글을 치면 옆으로 흐르지 않고 표를 뚫는다 — 배치를 껐다
-    /// 켜면 정상. 즉 엔진 계산은 맞고 **편집 시 훅이 안 돌아** 옛 전폭 줄이 재생되고
-    /// 있었다. 표 이동·속성 변경에만 걸려 있던 훅을 텍스트 편집에도 건다.
+    /// [편집 훅 단일화 2026-08-05] 개별 명령 배선을 걷고 paginate() 단일 소비로 —
+    /// square_reflow_pending 을 recompose_section·mark_section_dirty 가 세운다.
     /// 값싼 조기 탈출(어울림 host 도 좁힘 흔적도 없으면 즉시 반환)이 앞단에 있어
-    /// 평범한 문서의 타이핑에는 비용이 붙지 않는다.
-    pub(crate) fn reflow_square_bands_after_edit(&mut self, section_idx: usize) {
-        self.reflow_paras_for_square_bands(section_idx);
-    }
-
-    pub(crate) fn reflow_paras_for_square_bands(&mut self, section_idx: usize) {
+    /// 평범한 문서의 타이핑에는 비용이 붙지 않는다. 반환: line_segs 를 바꿨는지.
+    pub(crate) fn reflow_paras_for_square_bands(&mut self, section_idx: usize) -> bool {
         if self.suppress_square_reflow {
-            return;
+            return false;
         }
         // [어울림 수렴 2026-07-30] 좁힘 결정은 "현재 렌더 위치" 기준인데, 좁힌 결과가
         // 문단을 표 옆으로 되돌려 최종 배치가 결정 시점과 어긋난다(닭-달걀 — 특히 표를
         // **위로** 끌어 앞 문단들과 겹치는 케이스에서 좁힘이 엉뚱한 줄에 붙고 정작 밴드
         // 안 줄이 전폭으로 남았다, 실측). 고정점까지 최대 3회 반복 — 각 패스가 line_segs
         // 를 실제로 바꿨을 때만 계속한다(대부분 1회, 겹침 케이스 2회 수렴).
+        let mut any = false;
         for _ in 0..3 {
             if !self.reflow_paras_for_square_bands_once(section_idx) {
                 break;
             }
+            any = true;
         }
+        any
     }
 
     fn reflow_paras_for_square_bands_once(&mut self, section_idx: usize) -> bool {
@@ -2324,8 +2320,6 @@ impl DocumentCore {
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
         self.refresh_table_host_line_segs(section_idx, parent_para_idx);
-        // [officex/어울림 본편] 어울림 표가 움직였으면 옆 문단 줄바꿈을 밴드 기준 재계산
-        self.reflow_paras_for_square_bands(section_idx);
         self.paginate_if_needed();
 
         Ok(format!(
@@ -2902,8 +2896,6 @@ impl DocumentCore {
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
         self.refresh_table_host_line_segs(section_idx, parent_para_idx);
-        // [officex/어울림 본편] 배치/오프셋이 바뀌면 옆 문단 줄바꿈을 밴드 기준 재계산
-        self.reflow_paras_for_square_bands(section_idx);
         self.paginate_if_needed();
 
         if caption_created {

@@ -2718,6 +2718,9 @@ impl DocumentCore {
 
     /// 구역을 재조판하고 dirty로 표시한다.
     pub(crate) fn recompose_section(&mut self, section_idx: usize) {
+        // [편집 훅 단일화 2026-08-05] 모든 편집 명령이 이 관문(또는 mark_section_dirty)을
+        // 지나므로 여기서 어울림 재줄바꿈을 예약한다 — 소비는 paginate() 단일 지점.
+        self.square_reflow_pending = true;
         self.invalidate_page_tree_cache();
         self.composed[section_idx] = compose_section(&self.document.sections[section_idx]);
         if section_idx < self.dirty_sections.len() {
@@ -2732,6 +2735,9 @@ impl DocumentCore {
     /// 구역을 dirty로 표시만 한다 (재조판 없이).
     /// 셀 내부 편집처럼 composed 데이터가 불변인 경우 사용.
     pub(crate) fn mark_section_dirty(&mut self, section_idx: usize) {
+        // [편집 훅 단일화 2026-08-05] recompose_section 과 함께 편집 커밋의 두 관문 —
+        // 어울림 재줄바꿈 예약(소비는 paginate()).
+        self.square_reflow_pending = true;
         if section_idx < self.dirty_sections.len() {
             self.dirty_sections[section_idx] = true;
         }
@@ -2862,7 +2868,36 @@ impl DocumentCore {
         let sec_count = self.document.sections.len().max(1);
         let empty_breaks: Vec<std::collections::HashSet<usize>> =
             vec![std::collections::HashSet::new(); sec_count];
+        // [편집 훅 단일화 2026-08-05] 어울림 재줄바꿈은 편집 커밋이 세운 pending 을
+        // 여기서 단일 소비한다. 순서는 1차 조판 → 훅 → (segs 가 바뀌면) 2차 조판:
+        // 문단 분할/병합/붙여넣기는 문단 인덱스를 밀어, stale 페이지네이션 위 렌더트리의
+        // para_index ↔ 모델 대응이 어긋난다(host 미스매치 → 밴드 0 → 흔적 전폭 오원복).
+        // 훅을 1차 조판 **뒤**에 돌려야 밴드·para_tops 가 현재 모델과 정합한다.
+        // (설계 스펙의 "훅 → paginate" 는 인덱스 불변 편집에서만 성립 — 코드가 정본.)
+        // 드래그(suppress) 중엔 소비하지 않고 pending 을 유지한다 — 드롭 커밋이 소비.
+        let hook_sections: Vec<usize> =
+            if self.square_reflow_pending && !self.suppress_square_reflow {
+                self.dirty_sections
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, d)| d.then_some(i))
+                    .collect()
+            } else {
+                Vec::new()
+            };
         self.paginate_pass(&empty_breaks);
+        if self.square_reflow_pending && !self.suppress_square_reflow {
+            self.square_reflow_pending = false;
+            let mut changed = false;
+            for si in hook_sections {
+                changed |= self.reflow_paras_for_square_bands(si);
+            }
+            if changed {
+                self.paginate_pass(&empty_breaks);
+                // 훅 내부 recompose_section 이 되살린 pending 은 이번 소비의 산물 — 정리.
+                self.square_reflow_pending = false;
+            }
+        }
     }
 
     fn paginate_pass(&mut self, force_breaks: &[std::collections::HashSet<usize>]) {

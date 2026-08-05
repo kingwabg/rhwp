@@ -127,6 +127,7 @@ impl DocumentCore {
             document,
             pagination: Vec::new(),
             suppress_square_reflow: false,
+            square_reflow_pending: false,
             styles,
             composed,
             render_normalized: Vec::new(),
