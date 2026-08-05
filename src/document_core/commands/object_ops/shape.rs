@@ -411,11 +411,14 @@ impl DocumentCore {
         // 리사이즈 핸들을 반대편으로 끌어당길 때 studio가 width/height=0 을 보내
         // 도형이 렌더러상 사라지는 버그 방어: 최소 크기 clamp.
         let c = shape.common_mut();
+        // [트랙3] 그림(set_picture_properties)과 같은 TAC 토글 마이그레이션 검출 스냅샷.
+        let was_tac = c.treat_as_char;
         let new_w = crate::document_core::helpers::json_u32(props_json, "width")
             .map(|w| w.max(MIN_SHAPE_SIZE));
         let new_h = crate::document_core::helpers::json_u32(props_json, "height")
             .map(|h| h.max(MIN_SHAPE_SIZE));
         Self::apply_common_obj_attr_from_json(c, props_json);
+        let now_tac = c.treat_as_char;
         if let Some(plan) = rebase_plan.as_ref() {
             let (h, v) = Self::rebased_offsets(plan, c, dpi);
             if let Some(h) = h {
@@ -656,8 +659,87 @@ impl DocumentCore {
             group.shape_attr.raw_rendering = Vec::new();
         }
 
+        // [트랙3] TAC 마이그레이션용 높이 — 그림과의 차이: drawing 있는 도형은
+        // max(common.height, shape_attr.current_height) (한컴 저장본 계약,
+        // tac_control_height_for_empty_picture_para 와 동일 산식). 글상자 내부
+        // 콘텐츠는 상자 크기를 바꾸지 않으므로 상자 높이만으로 충분(자동 크기 v2).
+        let mig_height_hu = {
+            let common_h = shape.common().height as i32;
+            let current_h = shape.shape_attr().current_height as i32;
+            common_h.max(current_h)
+        };
+
         if caption_changed {
             crate::parser::assign_auto_numbers(&mut self.document);
+        }
+
+        // [트랙3] 도형·글상자 TAC 토글 마이그레이션 — 그림(set_picture_properties)
+        // 미러. false→true: rel_to=Para·offset=0·host line_segs[0] 갱신(공용 헬퍼).
+        // true→false: 빈 문단은 line_segs 재구성(기존 헬퍼가 Shape 대응),
+        // 텍스트 문단은 reflow + vpos 재계산.
+        let should_migrate_to_inline = !was_tac && now_tac;
+        let should_migrate_to_floating = was_tac && !now_tac;
+        let mut reflow_text_para_after_floating = false;
+        if should_migrate_to_inline || should_migrate_to_floating {
+            let section = self.document.sections.get_mut(section_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
+            })?;
+            let body_len = section.paragraphs.len();
+            let para = if parent_para_idx < body_len {
+                section.paragraphs.get_mut(parent_para_idx).ok_or_else(|| {
+                    HwpError::RenderError(format!("문단 인덱스 {} 범위 초과", parent_para_idx))
+                })?
+            } else {
+                let mut virtual_idx = parent_para_idx - body_len;
+                let mut found = None;
+                'outer: for body_para in &mut section.paragraphs {
+                    for ctrl in &mut body_para.controls {
+                        if let Control::Endnote(en) = ctrl {
+                            if virtual_idx < en.paragraphs.len() {
+                                found = en.paragraphs.get_mut(virtual_idx);
+                                break 'outer;
+                            }
+                            virtual_idx -= en.paragraphs.len();
+                        }
+                    }
+                }
+                found.ok_or_else(|| {
+                    HwpError::RenderError(format!("문단 인덱스 {} 범위 초과", parent_para_idx))
+                })?
+            };
+            if should_migrate_to_inline {
+                let crate::model::paragraph::Paragraph {
+                    line_segs,
+                    controls,
+                    ..
+                } = &mut *para;
+                if let Some(Control::Shape(shape)) = controls.get_mut(control_idx) {
+                    Self::migrate_float_common_to_inline(
+                        line_segs,
+                        shape.common_mut(),
+                        mig_height_hu,
+                    );
+                }
+            } else if para.text.is_empty() && para.char_offsets.is_empty() {
+                Self::migrate_empty_picture_para_inline_to_floating(para);
+            } else if !para.text.is_empty() && parent_para_idx < body_len {
+                reflow_text_para_after_floating = true;
+            }
+        }
+        if reflow_text_para_after_floating {
+            let stored_end_for_reset = crate::renderer::composer::paragraph_flow_end(
+                &self.document.sections[section_idx].paragraphs[parent_para_idx],
+            );
+            self.reflow_paragraph(section_idx, parent_para_idx);
+            crate::renderer::composer::recalculate_section_vpos(
+                &mut self.document.sections[section_idx].paragraphs,
+                parent_para_idx,
+                None,
+                stored_end_for_reset,
+                &self.styles,
+                self.dpi,
+                self.document.is_hwp3_variant,
+            );
         }
 
         // 리플로우 + 렌더 트리 캐시 무효화
