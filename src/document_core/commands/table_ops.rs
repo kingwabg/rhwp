@@ -13,7 +13,8 @@ use crate::model::shape::common_obj_offsets;
 /// 과거 어울림 좁힘 흔적 판정 — 전폭(=단 폭) segment_width 는 흔적이 아니다.
 /// column_start 가 있거나, sw 가 전폭보다 800HU(≈10.7px) 넘게 좁을 때만 흔적.
 /// 조기 탈출(:123)과 재줄바꿈 대상 선정(had_narrow)이 같은 판정을 공유한다.
-pub(crate) fn paragraph_has_narrow_trace(
+/// pub: 편집 훅 비용 핀(tests/officex_square_edit_hook.rs)이 직접 단위검증한다.
+pub fn paragraph_has_narrow_trace(
     para: &crate::model::paragraph::Paragraph,
     full_hu: i32,
 ) -> bool {

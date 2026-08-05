@@ -8,6 +8,7 @@ pub(crate) use helpers::*;
 
 pub mod builders;
 mod commands;
+pub use commands::paragraph_has_narrow_trace;
 pub mod converters;
 pub(crate) mod html_table_import;
 pub mod queries;
