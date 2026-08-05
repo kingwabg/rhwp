@@ -1354,6 +1354,24 @@ impl Paragraph {
         positions
     }
 
+    /// `controls[ctrl_idx]` 의 텍스트 위치 앞 구간이 전부 비가시 문자
+    /// (공백 · 제어문자 `c <= U+001F` · 개체 marker `U+FFFC`)인지 판정한다.
+    ///
+    /// "앵커선행 host"(컨트롤 앞은 공백뿐, 뒤에 본문 텍스트) 판정의 단일 진실 —
+    /// layout(옆 흐름 게이트)·table_ops(어울림 훅 host 자격)·typeset(회계)이 공유한다.
+    /// 문자 필터 기준은 layout `para_has_visible_text` 와 동일 (`> U+001F`, `!= U+FFFC`).
+    /// 위치 분배(char_offsets 갭 해석)는 `control_text_positions` 가 전담한다.
+    pub fn text_is_blank_before_control(&self, ctrl_idx: usize) -> bool {
+        let Some(&pos) = self.control_text_positions().get(ctrl_idx) else {
+            return false;
+        };
+        !self
+            .text
+            .chars()
+            .take(pos)
+            .any(|c| c > '\u{001F}' && c != '\u{FFFC}' && !c.is_whitespace())
+    }
+
     /// `char_offsets` 중 UTF-16 위치 `utf16_pos` 이상인 첫 번째 codepoint 의
     /// 인덱스를 반환한다. 모든 entry 가 작으면 `char_offsets.len()` (텍스트 끝).
     ///
