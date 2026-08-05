@@ -2607,8 +2607,12 @@ impl DocumentCore {
         } else {
             0
         };
-        let restrict_in_page = (table.attr >> 13) & 0x01 != 0;
-        let allow_overlap = (table.attr >> 14) & 0x01 != 0;
+        // 물리를 읽는다 — `table.attr` 은 HWP5 저장 attr 의 미러이고 HWPX 로드
+        // 문서에서는 bit0 만 채워지므로(parser/hwpx/section.rs), 미러에서 bit13/14 를
+        // 읽으면 HWPX 문서의 restrictInPage·allowOverlap 이 항상 false 로 보고돼
+        // 스튜디오 속성 패널이 거짓을 표시한다. (법칙 2: 같은 값 두 경로 계산 금지)
+        let restrict_in_page = table.common.flow_with_text;
+        let allow_overlap = table.common.allow_overlap;
         // prevent_page_break: CommonObjAttr::PREVENT_PAGE_BREAK
         let keep_with_anchor = if rd.len() >= common_obj_offsets::PREVENT_PAGE_BREAK.end {
             i32::from_le_bytes(

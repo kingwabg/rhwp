@@ -197,3 +197,66 @@ fn hwpx_mirror_bit0_matches_physics() {
         t.attr
     );
 }
+
+/// 속성 조회도 미러가 아니라 물리를 읽어야 한다.
+///
+/// HWPX 미러(`Table.attr`)는 bit0 만 채운다 — 그래서 **갓 로드한(setter 를 안 거친)**
+/// HWPX 표에서 미러의 bit13/14 를 읽으면 restrictInPage·allowOverlap 이 파일 내용과
+/// 무관하게 항상 false 로 보고돼, 스튜디오 속성 패널이 거짓을 표시한다.
+/// (set→get 왕복은 setter 가 미러를 갱신해 우연히 맞으므로 결함이 안 드러난다 —
+/// 이 핀이 굳이 "저장 후 재로드" 경로를 쓰는 이유다.)
+#[test]
+fn hwpx_table_properties_report_physics_not_mirror() {
+    use rhwp::model::control::Control;
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document().unwrap();
+    let created: serde_json::Value = serde_json::from_str(
+        &doc.create_table_ex(
+            r#"{"sectionIdx":0,"paraIdx":0,"charOffset":0,"rowCount":2,"colCount":2,"treatAsChar":true}"#,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let (pi, ci) = (
+        created["paraIdx"].as_u64().unwrap() as u32,
+        created["controlIdx"].as_u64().unwrap() as u32,
+    );
+    // 본문 영역 제한 ON(=flowWithText 1) 으로 저장한다.
+    doc.set_table_properties(0, pi, ci, r#"{"restrictInPage":true}"#)
+        .unwrap();
+    let bytes = doc.export_hwpx().unwrap();
+
+    let reloaded = HwpDocument::from_bytes(&bytes).unwrap();
+    let (pi, ci) = reloaded.document().sections[0]
+        .paragraphs
+        .iter()
+        .enumerate()
+        .find_map(|(pi, p)| {
+            p.controls
+                .iter()
+                .position(|c| matches!(c, Control::Table(_)))
+                .map(|ci| (pi as u32, ci as u32))
+        })
+        .expect("표를 찾아야 한다");
+    let table = match &reloaded.document().sections[0].paragraphs[pi as usize].controls[ci as usize]
+    {
+        Control::Table(t) => t.as_ref(),
+        _ => unreachable!(),
+    };
+    // 전제: 물리는 살아 있고 미러 bit13 은 비어 있다 — 결함의 성립 조건.
+    assert!(table.common.flow_with_text, "물리(flow_with_text)가 유실됐다");
+    assert_eq!(
+        (table.attr >> 13) & 0x01,
+        0,
+        "미러 bit13 이 채워졌다면 이 핀은 결함을 못 잡는다(전제 붕괴, attr={:#x})",
+        table.attr
+    );
+
+    let props: serde_json::Value =
+        serde_json::from_str(&reloaded.get_table_properties(0, pi, ci).unwrap()).unwrap();
+    assert_eq!(
+        props["restrictInPage"].as_bool(),
+        Some(true),
+        "갓 로드한 HWPX 표의 restrictInPage 조회가 물리와 어긋난다(미러 읽기 회귀): {props}"
+    );
+}
