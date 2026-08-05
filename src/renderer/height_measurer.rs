@@ -79,6 +79,35 @@ pub fn is_tac_table_inline_in_para(table: &Table, seg_width: i32, para: &Paragra
         return true;
     }
 
+    let tbl_line_h = table.common.height as i64
+        + table.outer_margin_top as i64
+        + table.outer_margin_bottom as i64;
+    let seg_matches_table_line =
+        |ls: &crate::model::paragraph::LineSeg| (ls.line_height as i64 - tbl_line_h).abs() <= 75;
+    let has_own_line_seg = para.line_segs.len() >= 2
+        && para.line_segs.iter().skip(1).any(&seg_matches_table_line);
+
+    // [tac-inline-baseline-report-20260805] end-anchored solo TAC 표는 인라인이
+    // 아니라 블록(자기 줄) — 한컴 오라클: 앞 텍스트는 표 위 줄, 표는 아래 줄.
+    // 단, 게이트(소비자)는 line_seg 가 실제로 표 자기 줄(**텍스트 없는** 후행 seg,
+    // 높이 = 표높이+outer 여백)을 인코딩했을 때만 블록으로 본다 — 자기 줄 생산은
+    // reflow(line_breaking)의 몫이다. 높이 일치만 보면 텍스트 줄 높이와의 우연
+    // 일치로 로드 문서가 오분류돼 쪽수가 틀어진다(issue_2243 결재 sliver 핀 실측).
+    let last_text_utf16 = para.char_offsets.last().copied();
+    let textless_own_line_seg = para.line_segs.len() >= 2
+        && para.line_segs.iter().skip(1).any(|ls| {
+            seg_matches_table_line(ls)
+                && last_text_utf16.is_none_or(|last| ls.text_start > last)
+        });
+    if textless_own_line_seg
+        && end_anchored_solo_tac_table(para).is_some_and(|control_index| {
+            matches!(&para.controls[control_index],
+                Control::Table(candidate) if std::ptr::eq(candidate.as_ref(), table))
+        })
+    {
+        return false;
+    }
+
     // [#2322] 저장 LINE_SEG 가 이 표를 자기 줄(후행 줄, 높이 = 표높이+outer 여백)
     // 로 인코딩한 **전면급(≥30000HU≈417px)** 표는 인라인이 아니다 — 텍스트-host
     // 전면 서식 표(예: 20862337 851px/866px TAC 표 2장)가 폭 기준으로 인라인
@@ -86,21 +115,52 @@ pub fn is_tac_table_inline_in_para(table: &Table, seg_width: i32, para: &Paragra
     // 불가능해지던 결함. 소형 TAC 표는 높이 우연 일치로 오발동할 수 있어
     // (sample16 pi=394 30px 1×1 표 — 64쪽 핀 회귀) 전면급으로 한정한다.
     const FULL_PAGE_SCALE_TABLE_HU: i64 = 30_000;
-    let tbl_line_h = table.common.height as i64
-        + table.outer_margin_top as i64
-        + table.outer_margin_bottom as i64;
-    let own_line_evidence = tbl_line_h >= FULL_PAGE_SCALE_TABLE_HU
-        && para.line_segs.len() >= 2
-        && para
-            .line_segs
-            .iter()
-            .skip(1)
-            .any(|ls| (ls.line_height as i64 - tbl_line_h).abs() <= 75);
+    let own_line_evidence = tbl_line_h >= FULL_PAGE_SCALE_TABLE_HU && has_own_line_seg;
     if own_line_evidence {
         return false;
     }
 
     is_tac_table_inline(table, seg_width, &para.text, &para.controls)
+}
+
+/// [tac-inline-baseline-report-20260805] end-anchored solo TAC 표 판정 — "end-anchor
+/// 표 = 자기 줄" 계약의 단일 소스. 게이트(위)와 composer line_breaking 이 함께 쓴다.
+///
+/// 한컴 오라클(웹한글 실측): 앞에만 가시 텍스트가 있고 뒤에 없는 글자취급 표는 앞
+/// 텍스트 옆이 아니라 **자기 줄(다음 줄)** 로 내려간다. 문단의 유일한 글자취급 인라인
+/// 컨트롤인 표만 대상 — 다중 표·start-anchor 는 오라클 미채취라 현행 유지.
+/// 반환: 해당 표의 컨트롤 인덱스.
+pub fn end_anchored_solo_tac_table(para: &Paragraph) -> Option<usize> {
+    // 강제 줄바꿈(\n)이 이미 줄 구조를 명시한 문단은 대상 밖 — 표는 \n 이 정한
+    // 줄에 그대로 있고, 여기에 자기 줄을 또 만들면 기계생성 HWPX 로드 보정
+    // (reflow_zero_height_paragraphs)에서 높이가 한 줄만큼 부풀어 쪽수가 틀어진다
+    // (issue_2243 결재 sewoon 핀 실측: 5→6쪽).
+    if para.text.contains('\n') {
+        return None;
+    }
+    let mut inline_tac = para.controls.iter().enumerate().filter(|(_, ctrl)| {
+        matches!(ctrl, Control::Table(t) if t.common.treat_as_char)
+            || matches!(ctrl, Control::Picture(p) if p.common.treat_as_char)
+            || matches!(ctrl, Control::Shape(s) if s.common().treat_as_char)
+            || matches!(ctrl, Control::Equation(e) if e.common.treat_as_char)
+            || matches!(ctrl, Control::Form(_))
+    });
+    let (control_index, ctrl) = inline_tac.next()?;
+    if inline_tac.next().is_some() {
+        return None; // solo 아님 — 다중 인라인 컨트롤은 기존 규칙 유지
+    }
+    if !matches!(ctrl, Control::Table(t) if t.common.treat_as_char) {
+        return None;
+    }
+    let position = *para.control_text_positions().get(control_index)?;
+    let chars: Vec<char> = para.text.chars().collect();
+    let before_has_text = chars
+        .get(..position)
+        .is_some_and(|before| before.iter().any(|ch| ch.is_alphanumeric()));
+    let after_has_text = chars
+        .get(position..)
+        .is_some_and(|after| after.iter().any(|ch| ch.is_alphanumeric()));
+    (before_has_text && !after_has_text).then_some(control_index)
 }
 
 fn empty_paragraph_fallback_line_metrics(

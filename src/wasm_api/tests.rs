@@ -23767,9 +23767,11 @@ fn test_create_inline_tac_table() {
         result
     );
 
-    // 5. 표 뒤에 "4 tacglkj 표 다음" 텍스트 추가
+    // 5. 표 뒤에 "4 tacglkj 표 다음" 텍스트 추가.
+    // 후행 컨트롤 뒤 삽입은 하이브리드 확장 오프셋(text_len + 컨트롤 수) — 텍스트
+    // 오프셋 text_len 은 "표 앞"이라 스트림상 표가 끝으로 밀려 end-anchor 가 된다.
     let para = &doc.document.sections[0].paragraphs[1];
-    let new_text_offset = para.text.chars().count();
+    let new_text_offset = para.text.chars().count() + 1;
     doc.insert_text_native(0, 1, new_text_offset, "4 tacglkj 표 다음")
         .unwrap();
 

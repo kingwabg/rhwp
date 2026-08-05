@@ -1517,8 +1517,48 @@ pub(crate) fn reflow_line_segs_with_bands(
     }
 
     // 인라인 TAC 개체의 높이 반영: 개체가 포함된 줄의 line_height를 개체 높이 이상으로 보정
+    // [tac-inline-baseline-report-20260805] 단, end-anchored solo TAC 표는 자기 줄로
+    // 분리한다(한컴 오라클: 앞 텍스트는 표 위 줄, 표는 아래 줄). 첫 seg 는 텍스트
+    // 높이를 유지해야 typeset pre_table_end_line 이 표 줄(index 1)을 찾는다.
     {
-        if let Some(height_hwp) = inline_control_line_height_hwp(para) {
+        if let Some(control_index) =
+            crate::renderer::height_measurer::end_anchored_solo_tac_table(para)
+        {
+            if let Control::Table(table) = &para.controls[control_index] {
+                // 표 컨트롤 문자의 스트림 오프셋: 컨트롤은 8 UTF-16 유닛을 차지하며
+                // 텍스트 char `position` 바로 앞에 놓인다. 문단 끝이면 마지막 문자 다음.
+                let position = para
+                    .control_text_positions()
+                    .get(control_index)
+                    .copied()
+                    .unwrap_or(para_chars.len());
+                let table_text_start = if position < para.char_offsets.len() {
+                    para.char_offsets[position].saturating_sub(8)
+                } else if !para.char_offsets.is_empty() {
+                    let last_idx = para.char_offsets.len() - 1;
+                    let last_char_utf16_len = para
+                        .text
+                        .chars()
+                        .nth(last_idx)
+                        .map(|c| c.len_utf16() as u32)
+                        .unwrap_or(1);
+                    para.char_offsets[last_idx] + last_char_utf16_len
+                } else {
+                    0
+                };
+                // 줄 높이는 outer margin 포함(한컴 저장 인코딩·typeset 표줄 finder 전제),
+                // 기준선 = outer_margin_top + 표 높이 (뒤 텍스트 baseline = 표 바닥).
+                let table_line_h = table.common.height as i32
+                    + table.outer_margin_top as i32
+                    + table.outer_margin_bottom as i32;
+                let mut seg = make_line_seg(table_text_start, 0.0);
+                seg.line_height = table_line_h;
+                seg.text_height = table_line_h;
+                seg.baseline_distance = table.outer_margin_top as i32 + table.common.height as i32;
+                seg.line_spacing = 0;
+                new_line_segs.push(seg);
+            }
+        } else if let Some(height_hwp) = inline_control_line_height_hwp(para) {
             if let Some(seg) = new_line_segs.first_mut() {
                 apply_inline_control_line_height(seg, height_hwp);
             }

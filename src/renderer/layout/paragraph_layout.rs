@@ -3476,6 +3476,13 @@ impl LayoutEngine {
                 total_text_width += missing_tac_width;
             }
             let is_last_line_of_para = line_idx == end - 1 && end == composed.lines.len();
+            // [tac-inline-baseline-report-20260805] 정렬용 "마지막 줄": 문단 전체에서
+            // 이 줄 뒤에 텍스트 있는 줄이 없으면 사실상 마지막 텍스트 줄 — end-anchor
+            // TAC 표의 자기 줄(빈 줄)이 뒤따를 때 양쪽정렬이 앞 텍스트를 줄 폭으로
+            // 벌리면 안 된다. PartialParagraph(end < len) 범위와 무관하게 전체를 본다.
+            let is_last_text_line_of_para = composed.lines[line_idx + 1..]
+                .iter()
+                .all(|l| l.runs.iter().all(|r| r.text.trim().is_empty()));
 
             // 정렬별 간격 분배 계산
             let has_forced_break = comp_line.has_line_break;
@@ -3492,7 +3499,7 @@ impl LayoutEngine {
             //   판정 자체는 split_align_flags() 로 떼어 두어 단위 테스트가 잡는다.
             let (needs_justify, needs_distribute) = align_spacing_flags(
                 alignment,
-                is_last_line_of_para && !is_header_footer_para,
+                is_last_text_line_of_para && !is_header_footer_para,
                 has_forced_break,
             );
 

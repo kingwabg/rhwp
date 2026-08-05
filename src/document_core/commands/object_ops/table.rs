@@ -1119,15 +1119,11 @@ impl DocumentCore {
         // char_count 갱신 (확장 제어문자 8 + 기존)
         para.char_count += 8;
 
-        // LINE_SEG 갱신: 표 높이를 반영
-        if let Some(seg) = para.line_segs.first_mut() {
-            let new_lh = (total_height as i32).max(seg.line_height);
-            if new_lh > seg.line_height {
-                seg.line_height = new_lh;
-                seg.text_height = new_lh;
-                seg.baseline_distance = (new_lh as f64 * 0.85) as i32;
-            }
-        }
+        // LINE_SEG 갱신: reflow 가 진실을 쓴다 — 인라인 표는 첫 seg 높이 범프,
+        // end-anchored solo 표는 자기 줄 분리(line_breaking 의 단일 계약).
+        // [tac-inline-baseline-report-20260805] 종전 수동 첫 seg 범프는 end-anchor
+        // 케이스에서 표를 텍스트와 같은 줄에 묶어 세로 어긋남(표@문단상단)을 만들었다.
+        self.reflow_paragraph(section_idx, para_idx);
 
         // rebuild
         self.rebuild_section(section_idx);
