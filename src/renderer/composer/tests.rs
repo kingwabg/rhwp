@@ -1327,3 +1327,76 @@ fn tac_case_width_threshold_series_matches_hancom_stored_layout() {
         }
     }
 }
+
+/// [oracle-pdf-mining-20260806 §2-A / §(C) 1층] 문단 모양 "세로 정렬"(`ParaShape.attr1`
+/// bit20-21 ↔ HWPX `hh:align@vertical`) 이 저장 왕복에서 살아남는지 잠근다.
+///
+/// HWP5 는 attr1 을 원시 보존하고(`serializer::doc_info::serialize_para_shape` 가
+/// bit20-21 을 마스킹하지 않는다), HWPX 는 `<hh:align vertical>` 로 파싱·직렬화한다.
+/// 표본: `samples/hwpx/exam_social.hwpx` 는 세로정렬 3종을 다 갖는다 —
+/// 글꼴기준 66개 / 가운데 6개(paraPr {25,40,43,48,54,63}) / 아래쪽 1개(paraPr 10).
+/// 오라클의 CENTER paraPr id 집합과 정확히 일치한다.
+#[test]
+fn para_vertical_align_survives_roundtrip_in_both_formats() {
+    // (파일, 그 파일이 가진 세로정렬 값 → 그 값을 쓰는 paraPr 수)
+    let cases: [(&str, &[(u32, usize)]); 2] = [
+        // 가운데 24개 (그 중 ps102 = exam_science s0#61 의 문단 모양)
+        ("samples/exam_science.hwp", &[(0, 88), (2, 24)]),
+        // 오라클 §2-A 의 HWPX 교차검증 표본 — 3종 전부
+        ("samples/hwpx/exam_social.hwpx", &[(0, 66), (2, 6), (3, 1)]),
+    ];
+    for (path, want_hist) in cases {
+        if !std::path::Path::new(path).exists() {
+            eprintln!("테스트 파일 없음: {path} — 건너뜀");
+            continue;
+        }
+        let data = std::fs::read(path).unwrap();
+        let core = crate::document_core::DocumentCore::from_bytes(&data).unwrap();
+        let valigns = |doc: &crate::model::document::Document| -> Vec<u32> {
+            doc.doc_info
+                .para_shapes
+                .iter()
+                .map(|ps| (ps.attr1 >> 20) & 0x03)
+                .collect()
+        };
+        let before = valigns(core.document());
+
+        // 표본 전제 — 이 파일이 정말 그 세로정렬 값들을 갖고 있나.
+        for &(value, count) in want_hist {
+            assert_eq!(
+                before.iter().filter(|v| **v == value).count(),
+                count,
+                "{path}: 세로정렬={value} paraPr 표본 전제 (분포 {:?})",
+                (0..4)
+                    .map(|v| before.iter().filter(|x| **x == v).count())
+                    .collect::<Vec<_>>()
+            );
+        }
+        // 오라클이 지목한 CENTER paraPr id 집합 (HWPX 표본만).
+        if path.ends_with("exam_social.hwpx") {
+            for id in [25usize, 40, 43, 48, 54, 63] {
+                assert_eq!(before[id], 2, "{path}: paraPr {id} 은 CENTER 여야 한다");
+            }
+            assert_eq!(before[10], 3, "{path}: paraPr 10 은 BOTTOM 여야 한다");
+        }
+
+        // 저장 → 재파스: HWP5·HWPX 두 방향 모두 값을 잃지 않아야 한다.
+        for (kind, bytes) in [
+            (
+                "hwp5",
+                crate::serializer::serialize_document(core.document()).unwrap(),
+            ),
+            (
+                "hwpx",
+                crate::serializer::hwpx::serialize_hwpx(core.document()).unwrap(),
+            ),
+        ] {
+            let re = crate::document_core::DocumentCore::from_bytes(&bytes).unwrap();
+            let after = valigns(re.document());
+            assert_eq!(
+                after, before,
+                "{path} → {kind} 왕복에서 문단 세로정렬이 바뀌었다"
+            );
+        }
+    }
+}
