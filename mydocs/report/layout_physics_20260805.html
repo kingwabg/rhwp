@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rhwp 레이아웃 물리 법칙 보고서 — 2026-08-05</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface: #fcfcfb; --page: #f9f9f7;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,.10);
+  --m-tac: #2a78d6;      /* 글자처럼취급 */
+  --m-wrap: #eb6834;     /* 어울림 */
+  --m-block: #1baf7a;    /* 자리차지 */
+  --m-overlay: #eda100;  /* 글앞/뒤 오버레이 */
+  --crit: #d03b3b; --warn: #fab219; --good: #0ca30c;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface: #1a1a19; --page: #0d0d0d;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,.10);
+    --m-tac: #3987e5; --m-wrap: #d95926; --m-block: #199e70; --m-overlay: #c98500;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--page); color: var(--ink);
+  font: 15px/1.65 system-ui, -apple-system, "Segoe UI", "Apple SD Gothic Neo", sans-serif;
+}
+.wrap { max-width: 1080px; margin: 0 auto; padding: 40px 28px 120px; }
+header.hero { padding: 36px 0 8px; }
+h1 { font-size: 27px; margin: 0 0 6px; letter-spacing: -.3px; }
+.sub { color: var(--ink-2); margin: 0 0 22px; }
+h2 { font-size: 20px; margin: 56px 0 6px; padding-top: 18px; border-top: 1px solid var(--grid); letter-spacing: -.2px; }
+h2 .no { color: var(--muted); font-weight: 600; margin-right: 8px; }
+h3 { font-size: 16px; margin: 26px 0 6px; }
+p.lead { color: var(--ink-2); margin: 4px 0 18px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit,minmax(150px,1fr)); gap: 10px; margin: 18px 0 8px; }
+.tile { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 14px 16px; }
+.tile b { display: block; font-size: 26px; letter-spacing: -.5px; }
+.tile span { color: var(--muted); font-size: 12.5px; }
+table { border-collapse: collapse; width: 100%; margin: 14px 0 6px; background: var(--surface); font-size: 13.5px; }
+th, td { border: 1px solid var(--grid); padding: 7px 10px; text-align: left; vertical-align: top; }
+th { background: color-mix(in oklab, var(--surface) 92%, var(--ink)); font-weight: 600; white-space: nowrap; }
+td.num { font-variant-numeric: tabular-nums; }
+code { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: color-mix(in oklab, var(--surface) 88%, var(--ink)); padding: 1px 5px; border-radius: 4px; word-break: break-all; }
+.ref { color: var(--muted); font-size: 11.5px; font-family: ui-monospace, Menlo, monospace; word-break: break-all; }
+.mode { display: inline-block; padding: 1px 9px 2px; border-radius: 999px; font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; }
+.mode.tac { background: var(--m-tac); } .mode.wrap { background: var(--m-wrap); }
+.mode.block { background: var(--m-block); } .mode.overlay { background: var(--m-overlay); color: #1a1a19; }
+.law { background: var(--surface); border: 1px solid var(--ring); border-left: 3px solid var(--axis); border-radius: 8px; padding: 12px 16px; margin: 10px 0; }
+.law b.t { display: block; margin-bottom: 3px; }
+.law.p0 { border-left-color: var(--crit); } .law.p1 { border-left-color: var(--warn); } .law.p2 { border-left-color: var(--axis); }
+.pri { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 4px; margin-right: 6px; }
+.pri.p0 { background: var(--crit); color: #fff; } .pri.p1 { background: var(--warn); color: #1a1a19; } .pri.p2 { background: var(--axis); color: var(--ink); }
+figure { margin: 20px 0; background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 18px; }
+figcaption { color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+svg text { font-family: system-ui, sans-serif; }
+.toc { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 14px 20px; columns: 2; font-size: 13.5px; }
+.toc a { color: var(--ink-2); text-decoration: none; display: block; padding: 2px 0; }
+.toc a:hover { color: var(--ink); }
+.formula { background: color-mix(in oklab, var(--surface) 92%, var(--ink)); border-radius: 8px; padding: 10px 16px; font-family: ui-monospace, Menlo, monospace; font-size: 13px; margin: 10px 0; overflow-x: auto; }
+.case { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 16px 20px; margin: 14px 0; }
+.kv { color: var(--muted); font-size: 12.5px; }
+ul { padding-left: 22px; } li { margin: 3px 0; }
+.foot { margin-top: 60px; padding-top: 16px; border-top: 1px solid var(--grid); color: var(--muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+<h1>rhwp 레이아웃 물리 법칙 보고서</h1>
+<p class="sub">2026-08-05 · officex/engine-fixes · 서브시스템 11곳 전수 정독(에이전트 13, 코드 실증 file:line 기반) — "하나하나 수정"에서 "물리 법칙 단위 수정"으로</p>
+
+<div class="tiles">
+  <div class="tile"><b>5</b><span>배치 모드 (물리 상태)</span></div>
+  <div class="tile"><b>4 × 3</b><span>좌표 기준계 (가로 × 세로)</span></div>
+  <div class="tile"><b>1</b><span>줄 구조의 진실 — line_segs</span></div>
+  <div class="tile"><b>209</b><span>실증 법칙 (file:line 근거)</span></div>
+  <div class="tile"><b>27</b><span>미해결 갭 (우선순위 분류)</span></div>
+</div>
+
+<p class="lead"><b>세 줄 요약.</b>
+① 모든 개체 배치는 <code>treat_as_char × text_wrap</code> 두 축이 정하는 <b>5개 물리 상태</b>와, <b>기준계 + 정렬 ± 오프셋</b> 좌표 공식 하나로 환원된다.
+② 사용자가 우려한 "속성 바꾸면 개체가 튀는" 현상은 코드로 실증됐다 — <b>모드/기준계 전환 시 오프셋 rebase 코드가 없다</b>(열거값만 교체, 오프셋은 옛 기준계 값 그대로).
+③ 표 어울림 수정이 늦어진 구조적 원인은 계산이 아니라 <b>배선</b>이다 — 어울림 리플로우 훅이 표·공백host·insert/delete에만 걸려 있고, 그 외 경로(Enter/병합/붙여넣기, 그림·도형 host, 텍스트 있는 host, 다단)는 전부 미배선이라 사례별 땜질이 반복됐다.</p>
+</header>
+
+<nav class="toc">
+<a href="#s1">1. 다섯 배치 모드 — 물리 상태</a>
+<a href="#s2">2. 좌표계 물리 — 기준계와 공식</a>
+<a href="#s3">3. 파이프라인과 단일 진실</a>
+<a href="#s4">4. 흐름(flow)과 배타 밴드</a>
+<a href="#s5">5. 어울림(Square) 상세 물리</a>
+<a href="#s6">6. 모드 전환 물리 — rebase 부재</a>
+<a href="#s7">7. 버그에서 귀납한 12법칙</a>
+<a href="#s8">8. 사례 연구 — 2026-08-05 실증 2건</a>
+<a href="#s9">9. 갭 대장 (P0/P1/P2)</a>
+<a href="#s10">10. 수리 전략 — 법칙 단위로 고치기</a>
+</nav>
+
+<!-- ============================================================ -->
+<h2 id="s1"><span class="no">1</span>다섯 배치 모드 — 물리 상태</h2>
+<p class="lead">배치 모드는 별도 개념이 아니라 <code>CommonObjAttr</code>의 두 비트 축 조합이다: <code>treat_as_char</code>(bit0) × <code>text_wrap</code>(bit21–23). <code>treat_as_char=1</code>이면 text_wrap과 무관하게 인라인이다. <span class="ref">parser/control/shape.rs:339-411 · float_placement.rs:27-45</span></p>
+
+<table>
+<tr><th>모드</th><th>판정식</th><th>흐름(y) 기여</th><th>텍스트 상호작용</th><th>좌표 결정</th></tr>
+<tr>
+<td><span class="mode tac">글자처럼취급 (TAC)</span></td>
+<td><code>treat_as_char=1</code> (wrap 무관)</td>
+<td>줄의 "큰 글자" — line_seg 높이에 포함되어 계상, 별도 예약 없음 <span class="ref">layout.rs:6819-6870</span></td>
+<td>줄 흐름에 편입. 폭=열폭 합/common.width. 뒤 텍스트 baseline = 표 바닥(margin_top+높이) <span class="ref">line_breaking.rs:1054-1106</span></td>
+<td>기준계·정렬·오프셋 <b>무시</b> — x는 텍스트 흐름+문단 정렬, y는 줄. 예외: depth0 TAC <b>표</b>만 v_offset 가산 <span class="ref">picture_footnote.rs:323-362 · table_layout.rs:2528-2543</span></td>
+</tr>
+<tr>
+<td><span class="mode wrap">어울림</span></td>
+<td><code>tac=0 ∧ wrap∈{Square, Tight, Through}</code><br><span class="kv">Tight/Through는 Square와 동일 취급(윤곽 미구현)</span></td>
+<td>host 텍스트와 세로 대역 공유: <code>max(pre_height, v_off+높이)</code> 1회 (가시 host) / 전진 0 + 부분폭 밴드 (공백 host) <span class="ref">typeset.rs:13508-13511 · layout.rs:6678-6688</span></td>
+<td>옆 흐름 — 밴드가 줄 폭을 좁히고(cs/sw를 line_seg에 기록), <code>text_flow</code>(양쪽/왼쪽/오른쪽/큰쪽)가 방향 결정 <span class="ref">line_breaking.rs:1360-1411</span></td>
+<td rowspan="2">공식 하나: <b>기준계 원점 + 정렬 보정 ± 오프셋</b> (§2)</td>
+</tr>
+<tr>
+<td><span class="mode block">자리차지</span></td>
+<td><code>tac=0 ∧ wrap=TopAndBottom</code></td>
+<td>x 없는 순수 y 배타 밴드(FloatBand) — 본문 줄을 아래로 민다. 예외: <code>vert=Page ∧ valign=Bottom</code>은 결재틀 경로(흐름 소비 0, 절대배치) <span class="ref">float_placement.rs:27-55, 207-314</span></td>
+<td>좌·우 텍스트 없음. x가 안 겹치는 lane끼리는 나란히 선다(FloatLaneSet) <span class="ref">float_placement.rs:148-196</span></td>
+</tr>
+<tr>
+<td><span class="mode overlay">글 뒤로</span></td>
+<td><code>tac=0 ∧ wrap=BehindText</code></td>
+<td rowspan="2"><b>0</b> — 흐름 공간을 소비하지 않는 절대 오버레이(PageItem::Shape, 높이 0). 예외: 텍스트 없는 InFront+Para host(도장)는 한 줄 예약 <span class="ref">pagination/engine.rs:1660-1678 · layout.rs:786-808</span></td>
+<td rowspan="2">겹침이 의도 — z-plane으로 분리: Behind=plane1 &lt; 본문=plane2 &lt; InFront=plane3, plane 안에서만 (z_order, stable_index) 정렬 <span class="ref">layout.rs:1591-1608</span></td>
+<td rowspan="2">공식 동일. z_order는 plane 안의 앞뒤만 결정(별도 i32 필드)</td>
+</tr>
+<tr>
+<td><span class="mode overlay">글 앞으로</span></td>
+<td><code>tac=0 ∧ wrap=InFrontOfText</code></td>
+</tr>
+</table>
+<p class="kv">주의: "글 앞으로/뒤로"는 z-order 값이 아니라 <b>TextWrap 값</b>이다. 사용자 멘탈모델의 "레이어 상승"은 코드에선 wrap 축의 상태이고, z-order는 같은 plane 안의 순서일 뿐이다.</p>
+
+<!-- ============================================================ -->
+<h2 id="s2"><span class="no">2</span>좌표계 물리 — 기준계와 공식</h2>
+<p class="lead">모든 비-TAC 개체의 좌표는 공식 하나다. 오프셋 값 자체가 아니라 <b>기준계와 정렬이 오프셋의 의미(원점·부호 방향)를 정한다</b> — "값은 그대로인데 기준점이 바뀌어 튄다"는 현상의 정확한 물리. <span class="ref">float_placement.rs:96-132 · table_layout.rs:2400-2465 · picture_footnote.rs:331-362</span></p>
+
+<div class="formula">x = ref_x + align_adjust(h_align, ref_w, w) ± h_offset<br>y = ref_y + align_adjust(v_align, ref_h, h) ± v_offset<br><br>align_adjust: Left/Top → +offset &nbsp;|&nbsp; Center → (ref−size)/2 + offset &nbsp;|&nbsp; Right/Bottom → (ref−size) − offset  ← 부호 반전!</div>
+
+<table>
+<tr><th>축</th><th>기준계</th><th>원점 (ref)</th></tr>
+<tr><td rowspan="4">가로<br><code>horz_rel_to</code></td><td>Paper</td><td>용지 원점 (x=0, 용지폭)</td></tr>
+<tr><td>Page</td><td>본문 영역 (body_area)</td></tr>
+<tr><td>Column</td><td>단 영역 (col_area)</td></tr>
+<tr><td>Para</td><td>단 영역 + host 문단 좌여백</td></tr>
+<tr><td rowspan="3">세로<br><code>vert_rel_to</code></td><td>Paper</td><td>용지 상단 (y=0) — 표만 outer_margin을 v_offset에 추가 가감</td></tr>
+<tr><td>Page</td><td>본문 영역 상단</td></tr>
+<tr><td>Para</td><td><b>앵커 문단의 현재 y</b> (para_y — 흐름에 따라 움직이는 유일한 기준계)</td></tr>
+</table>
+
+<ul>
+<li><b>"Char" 기준계는 없다</b> — <code>treat_as_char=1</code>이 기준계 축 전체를 대체한다(줄 인라인).</li>
+<li><b>크기도 기준계를 가진다</b>: width/height_criterion이 Absolute면 HWPUNIT 절대값, 아니면 기준 영역의 raw/10000 비율. <span class="ref">picture_footnote.rs:284-306</span></li>
+<li><b>bit13 flow_with_text(=UI restrictInPage)</b>: vert=Para 개체의 y를 본문 영역으로 클램프하고, 자리차지 push-down도 이 비트가 켜져야 적용. 켜지면 allow_overlap 강제 false. <span class="ref">table_layout.rs:2484-2524</span></li>
+<li><b>그룹 내부는 별도 좌표계</b>: ShapeComponentAttr의 그룹-로컬 offset + 아핀 행렬(render_*). 그룹 리사이즈는 자식 불변·스케일만. 자식 점 변환에는 최상위 그룹 anchor 하나만 더한다. <span class="ref">shape.rs:190-244 · shape_layout.rs:909-949</span></li>
+<li><b>셀 안은 기준계가 통째로 대체된다</b>: 셀 inner_area가 Paper/Page/Column을 대신하고 horz_rel_to는 무시(horz_align만 소비), vert는 Para(=para_y) vs 그외(=셀 inner) 2분법. <span class="ref">table_cell_content.rs:318-380</span></li>
+<li><b>글상자 내부</b>: 원점 = 도형 좌상단 + 글상자 여백, 내부 vpos는 글상자-로컬 누적(일부 파일은 페이지 절대값이라 원점 정규화 차감). <span class="ref">shape_layout.rs:2237-2247, 56-79</span></li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="s3"><span class="no">3</span>파이프라인과 단일 진실</h2>
+<p class="lead">줄 구조의 진실은 <code>Paragraph.line_segs</code> 하나다. 렌더(composed.lines)는 line_segs의 <b>파생(재생)</b>이고, 저장·쪽분할·측정·hit-test가 모두 여기에 매달린다. 이 축을 벗어난 "손 편집"이 데싱크 버그의 최대 공급원이다.</p>
+
+<figure>
+<svg viewBox="0 0 1040 260" role="img" aria-label="rhwp 레이아웃 파이프라인">
+<defs><marker id="ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--muted)"/></marker></defs>
+<g font-size="12.5" fill="var(--ink)">
+<rect x="8"   y="60" width="128" height="58" rx="8" fill="none" stroke="var(--axis)"/><text x="72"  y="84" text-anchor="middle" font-weight="600">모델</text><text x="72" y="101" text-anchor="middle" fill="var(--ink-2)" font-size="11">line_segs · CommonObjAttr</text>
+<rect x="166" y="60" width="128" height="58" rx="8" fill="none" stroke="var(--m-tac)" stroke-width="2"/><text x="230" y="84" text-anchor="middle" font-weight="600">reflow (생산)</text><text x="230" y="101" text-anchor="middle" fill="var(--ink-2)" font-size="11">line_breaking.rs</text>
+<rect x="324" y="60" width="118" height="58" rx="8" fill="none" stroke="var(--axis)"/><text x="383" y="84" text-anchor="middle" font-weight="600">compose (재생)</text><text x="383" y="101" text-anchor="middle" fill="var(--ink-2)" font-size="11">composed.lines</text>
+<rect x="472" y="60" width="118" height="58" rx="8" fill="none" stroke="var(--axis)"/><text x="531" y="84" text-anchor="middle" font-weight="600">측정</text><text x="531" y="101" text-anchor="middle" fill="var(--ink-2)" font-size="11">height_measurer</text>
+<rect x="620" y="60" width="128" height="58" rx="8" fill="none" stroke="var(--axis)"/><text x="684" y="84" text-anchor="middle" font-weight="600">typeset / 쪽분해</text><text x="684" y="101" text-anchor="middle" fill="var(--ink-2)" font-size="11">PageItem · vpos=0 권위</text>
+<rect x="778" y="60" width="118" height="58" rx="8" fill="none" stroke="var(--axis)"/><text x="837" y="84" text-anchor="middle" font-weight="600">layout (y/x 확정)</text><text x="837" y="101" text-anchor="middle" fill="var(--ink-2)" font-size="11">y_offset 스레딩</text>
+<rect x="926" y="60" width="106" height="58" rx="8" fill="none" stroke="var(--axis)"/><text x="979" y="84" text-anchor="middle" font-weight="600">render / hit-test</text><text x="979" y="101" text-anchor="middle" fill="var(--ink-2)" font-size="11">plane 정렬·역변환</text>
+<line x1="136" y1="89" x2="164" y2="89" stroke="var(--muted)" marker-end="url(#ar)"/>
+<line x1="294" y1="89" x2="322" y2="89" stroke="var(--muted)" marker-end="url(#ar)"/>
+<line x1="442" y1="89" x2="470" y2="89" stroke="var(--muted)" marker-end="url(#ar)"/>
+<line x1="590" y1="89" x2="618" y2="89" stroke="var(--muted)" marker-end="url(#ar)"/>
+<line x1="748" y1="89" x2="776" y2="89" stroke="var(--muted)" marker-end="url(#ar)"/>
+<line x1="896" y1="89" x2="924" y2="89" stroke="var(--muted)" marker-end="url(#ar)"/>
+<text x="230" y="35" text-anchor="middle" fill="var(--m-tac)" font-size="11.5" font-weight="600">line_segs의 유일한 생산자</text>
+<line x1="230" y1="42" x2="230" y2="57" stroke="var(--m-tac)" marker-end="url(#ar)"/>
+<text x="72" y="165" fill="var(--ink-2)" font-size="11.5">reflow 진입 경로 3종 (전부 같은 생산자를 지나야 한다):</text>
+<text x="72" y="186" fill="var(--ink)" font-size="11.5">① 편집 명령 (타이핑·삭제·개체 조작 → reflow_paragraph)</text>
+<text x="72" y="205" fill="var(--ink)" font-size="11.5">② 어울림 밴드 훅 (reflow_paras_for_square_bands — 렌더 bbox 기반 고정점 루프)</text>
+<text x="72" y="224" fill="var(--ink)" font-size="11.5">③ 로드 보정 (from_bytes → reflow_zero_height_paragraphs — 기계생성 HWPX의 0높이 lineseg 합성) ← 잊기 쉬움: 오늘 issue_2243 회귀의 진원</text>
+</g>
+</svg>
+<figcaption>단일 진실 계약: 렌더는 line_segs를 재생하고, 저장·쪽분할·측정이 같은 축을 본다. reflow 진입 경로는 편집만이 아니다 — <b>로드 보정(③)도 생산자다</b>. <span class="ref">composer.rs:472 (compose_lines가 para.line_segs 직접 순회) · document.rs:288-328</span></figcaption>
+</figure>
+
+<h3>파이프라인의 핵심 계약 5</h3>
+<ul>
+<li><b>인라인/블록 게이트는 단일 함수</b>(<code>is_tac_table_inline_in_para</code>)를 측정·pagination·composer·layout·typeset·paragraph_layout 6곳이 공용한다 — 판정이 갈리면 데싱크. <span class="ref">height_measurer.rs:58 · pagination/engine.rs:1703-1717</span></li>
+<li><b>게이트(소비자)는 line_seg 증거를 따르고, 자기 줄 생산은 reflow의 몫</b> — 게이트가 독자 재분류하면 로드 문서의 저장 조판과 어긋난다. <span class="ref">height_measurer.rs (2026-08-05 수리)</span></li>
+<li><b>저장 line_seg의 vpos==0(줄&gt;0)은 "이 줄부터 새 쪽"이라는 파일 권위 신호</b> — fit 여부와 무관하게 단/쪽을 진행한다. <span class="ref">typeset.rs:13272-13295 · pagination/engine.rs:1194-1228</span></li>
+<li><b>typeset의 items 순서 = layout의 그리기·y 진행 순서</b> (y_offset 스레딩). 흐름 항목만 y를 전진시키고 overlay/Paper-절대는 전진 0. <span class="ref">layout.rs:4471-4525</span></li>
+<li><b>선점은 등록부로 기록</b>: 한 개체를 두 경로(paragraph_layout ↔ layout/shape_layout)가 그릴 수 있으면 set/get_inline_shape_position으로 이중 emit을 막는다. <span class="ref">layout.rs:6131-6144 · shape_layout.rs:626-630</span></li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="s4"><span class="no">4</span>흐름(flow)과 배타 밴드</h2>
+<p class="lead">본문은 y_offset 하나가 아래로 흐르는 1차원 흐름이고, 개체는 세 가지 방식으로만 개입한다: <b>줄 안에 산다(TAC)</b>, <b>흐름을 밀거나 좁힌다(밴드)</b>, <b>흐름 밖에 떠 있다(오버레이·절대)</b>.</p>
+
+<table>
+<tr><th>밴드 종류</th><th>발생원</th><th>효과</th><th>근거</th></tr>
+<tr><td>전폭 y 밴드 (FloatBand)</td><td><span class="mode block">자리차지</span> vert=Para (+옆 공간 &lt; 40px인 어울림)</td><td>줄 시작이 밴드에 겹치면 band.bottom으로 y 점프. 프로브는 잉크 높이만(줄간격 제외, #1789). 자기 문단 소유 밴드는 스킵(제목-위 계약)</td><td class="ref">float_placement.rs:258-286</td></tr>
+<tr><td>부분폭 밴드 (ReflowBand)</td><td><span class="mode wrap">어울림</span> 공백 host + 옆 공간 ≥ 40px</td><td>y 점프가 아니라 <b>줄 폭 좁힘</b> — 겹치는 줄을 옆 조각(cs/sw)으로 재줄바꿈해 line_segs에 기록</td><td class="ref">layout.rs:6730-6785 · line_breaking.rs:1360-1411</td></tr>
+<tr><td>가로 lane (FloatLaneSet)</td><td>공백 host의 복수 float 표</td><td>x 범위가 겹치는 lane끼리만 top을 아래로 민다 — 좌·중·우 표가 나란히 서는 근거</td><td class="ref">float_placement.rs:148-196</td></tr>
+<tr><td>없음 (오버레이)</td><td><span class="mode overlay">글앞/뒤</span>, 결재틀(Page+Bottom), 본문 밖 Paper/Page 표</td><td>흐름 기여 0 — plane으로 시각 분리, y_offset 불변(InFront 그림은 커서 되감기)</td><td class="ref">layout.rs:8906-9141 · 6317-6348</td></tr>
+</table>
+
+<ul>
+<li><b>페이지 y 공식</b>: 페이지 y = 컬럼 앵커 y + px(vpos − page_vpos_base). base는 페이지 첫 항목의 첫 line_seg vpos. <span class="ref">layout.rs:1109-1160</span></li>
+<li><b>vpos에는 line_spacing이 포함</b>돼 누적된다(vpos += lh + ls) — 간격 계산에 vpos를 직접 쓰면 2배가 된다. <span class="ref">line_breaking.rs:1573</span></li>
+<li><b>fit 판정 ≠ advance 누적</b>: fit은 trailing line_spacing 제외(height_for_fit), 누적은 total_height — 혼용 시 항목 수 × trailing_ls 드리프트. <span class="ref">troubleshootings/typeset_fit_accumulation_drift.md</span></li>
+<li><b>어울림 wrap-around 문단은 높이 0</b>: 앵커의 (cs, sw) 시그니처와 일치하는 후속 문단은 표 옆에 배치되므로 쪽 채움에서 0으로 계상. <span class="ref">pagination/engine.rs:732-774</span></li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="s5"><span class="no">5</span>어울림(Square) 상세 물리</h2>
+<p class="lead">어울림은 "즉석 렌더 좁힘"이 아니라 <b>line_segs 재기록 → 재생</b>이다(즉석 좁힘은 양쪽정렬 압축 부작용으로 폐지). 좁힘의 결정은 렌더 위치 기반인데 좁힘 결과가 위치를 되바꾸는 닭-달걀이라, 고정점 반복 2중 루프로 수렴시킨다.</p>
+
+<h3>밴드 수명주기</h3>
+<ol>
+<li><b>생성</b>: 공백 host 문단에 앵커된 float 표의 렌더트리 Table bbox(±outer margin)가 ReflowBand가 된다. x는 단(column) 로컬, y는 절대 흐름 좌표. <span class="ref">table_ops.rs:89-118, 170-188</span></li>
+<li><b>좁힘</b>: 줄 구간이 밴드와 겹치면 옆 조각으로 재줄바꿈 — BothSides면 빈 구간 전부(≥34px), flow 혼재면 첫 밴드 기준 단일 조각(Left/Right/Largest, 동률은 오른쪽). <span class="ref">line_breaking.rs:1360-1411</span></li>
+<li><b>기록</b>: 좁은 줄만 cs/sw(HWPUNIT)를 얻고, 같은 시각 줄의 두 세그는 같은 vpos 공유, 태그 좌=FIRST(0x20000)·우=LAST(0x40000) — 한컴 저장 형식 그대로. <span class="ref">line_breaking.rs:1578-1630</span></li>
+<li><b>재생</b>: 렌더는 저장된 cs/sw를 그대로 소비(line x = col.x + margin + cs). typeset은 앵커 시그니처가 일치하는 문단을 WrapAroundPara로 흡수(높이 0). <span class="ref">paragraph_layout.rs:3251-3292 · typeset.rs:2743-2952</span></li>
+</ol>
+
+<h3>고정점 반복 — 2중 구조 (모순 판정 완료)</h3>
+<table>
+<tr><th>루프</th><th>위치</th><th>횟수</th><th>수렴 판정</th></tr>
+<tr><td>안쪽 (줄폭↔줄수)</td><td class="ref">line_breaking.rs:1422</td><td class="num">최대 4회 (주석 "3회"는 낡음 · 실측 2회 수렴)</td><td>줄 수 <b>그리고</b> 세그 계획(cs,w,cont) 0.01px 이내 동일 — 줄 수만 보면 한 패스 뒤처짐</td></tr>
+<tr><td>바깥 (렌더위치↔좁힘)</td><td class="ref">table_ops.rs:74-78</td><td class="num">최대 3회 (대부분 1회)</td><td>패스가 line_segs를 실제로 바꿨을 때만 계속</td></tr>
+</table>
+
+<h3>폭 임계 4종 — 서로 다른 게이트다 (모순 판정 완료)</h3>
+<table>
+<tr><th>값</th><th>무엇을 게이트하나</th><th>단계</th><th>근거</th></tr>
+<tr><td class="num">34px (2570HU)</td><td>옆 조각 세그를 <b>만들</b> 최소 폭 (한컴 실파일 실측 하한)</td><td>조판(composer)</td><td class="ref">line_breaking.rs:1141</td></tr>
+<tr><td class="num">40px</td><td>부분폭 옆-흐름 계약을 <b>발동</b>할 최소 옆 공간 (미만이면 전폭 밴드로 y 점프)</td><td>렌더(layout) ×3곳</td><td class="ref">layout.rs:6619 · 6683 · 6769</td></tr>
+<tr><td class="num">26.7px (2000HU)</td><td>저장 lineseg cs/sw를 좁힘으로 <b>재생</b>할 최소 좁힘량</td><td>재생(paragraph_layout)</td><td class="ref">paragraph_layout.rs:3251-3264</td></tr>
+<tr><td class="num">10.7px (800HU)</td><td>과거 좁힘 <b>흔적</b> 감지 — 밴드 이탈 시 전폭 원복 대상 선정</td><td>편집 훅(document_core)</td><td class="ref">table_ops.rs:270-276</td></tr>
+</table>
+<p class="kv">34↔40px 불일치(옆 공간 34~40px 구간: composer는 조각 인정, layout은 전폭으로 접음)는 미결 갭 — §9 P1.</p>
+
+<h3>훅 배선 현황 — "계산이 맞아도 훅이 없으면 틀린다"</h3>
+<table>
+<tr><th>편집 경로</th><th>어울림 재줄바꿈 훅</th></tr>
+<tr><td>표 이동·속성 변경 · 타이핑(insert) · 삭제(delete)</td><td>배선됨 <span class="ref">table_ops.rs:62 · text_editing.rs:538, 719 (9eade7bf2)</span></td></tr>
+<tr><td>Enter(문단 분할) · Backspace 병합 · 클립보드 붙여넣기</td><td><b>미배선</b> — 옛 전폭/좁힘 줄이 재생될 수 있음</td></tr>
+<tr><td>Square <b>그림·도형</b> host (훅이 Control::Table만 매치)</td><td><b>미배선</b> — 같은 계통의 미수리 데싱크</td></tr>
+<tr><td>텍스트 있는 host 문단 (훅 자격이 "공백뿐 문단"으로 제한)</td><td><b>미배선</b> — 밴드 재줄바꿈이 영원히 안 돎</td></tr>
+<tr><td>다단 문서 (Probe가 첫 컬럼 기하만 채택)</td><td><b>v2 보류</b></td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s6"><span class="no">6</span>모드 전환 물리 — rebase 부재</h2>
+<p class="lead">사용자 분석("기준점 텔레포트 + 리플로우 편입")의 코드 실증. 배치 속성 변경의 물리는 두 반쪽으로 구성돼야 하는데, rhwp는 <b>반쪽(무효화)만 있고 반쪽(좌표 rebase)이 없다</b>.</p>
+
+<h3>있는 것 — 무효화 시퀀스</h3>
+<ul>
+<li>배치 속성은 <b>3중 기록</b>(모델 common 필드 + attr 비트필드 + raw_ctrl_data 바이트)이어야 저장에 살아남는다 — 하나라도 빠지면 재로드 시 원복. <span class="ref">table_ops.rs:2532-2645</span></li>
+<li>변경 후 표준 시퀀스: <code>raw_stream=None → recompose_section → host reflow → square 밴드 훅 → paginate</code> 5단계. <span class="ref">table_ops.rs:2297-2302, 2875-2880</span></li>
+<li>스타일 사전이 바뀌는 편집은 rebuild_section(styles 재해석 + 전체 재조판). <span class="ref">rendering.rs:4727-4731</span></li>
+</ul>
+
+<h3>없는 것 — 좌표 rebase (P0 갭)</h3>
+<div class="law p0"><b class="t"><span class="pri p0">P0</span>rel_to/align/wrap 전환 시 오프셋 rebase 코드가 없다</b>
+<code>apply_common_obj_attr_from_json</code>은 열거값만 교체하고 오프셋을 그대로 둔다 — 다음 레이아웃에서 <b>새 기준계로 재해석</b>되어 개체가 시각적으로 점프한다. Right↔Left 전환은 오프셋 <b>부호 방향까지</b> 뒤집힌다(§2 공식). 표(table_ops.rs:2542-2580)·그림(picture.rs:912-955)·도형(common.rs:174-217) 전부 동일. 유일한 예외인 그림 TAC 토글(picture.rs:714-717)도 시각 보존 rebase가 아니라 <b>0 리셋</b>(rel_to=Para, offset=0 — 한컴 산출물 4시나리오 관찰 정합)이다.
+<div class="kv">올바른 물리: new_offset = 화면좌표(old) − new_ref_origin − new_align_adjust. 공식이 §2에 이미 있으므로 rebase 유틸 하나로 전 개체가 공유 가능.</div></div>
+
+<table>
+<tr><th>전환</th><th>현재 동작</th><th>필요한 물리</th></tr>
+<tr><td><span class="mode overlay">글앞/뒤</span> → <span class="mode wrap">어울림</span>/<span class="mode block">자리차지</span></td><td>wrap 값만 교체 → 다음 조판에서 갑자기 흐름 편입(push/좁힘 발생) + 오프셋은 옛 값</td><td>화면 위치 보존 rebase + 무효화 5단계 (후자만 존재)</td></tr>
+<tr><td>vert/horz_rel_to 전환 (Paper↔Page↔Para)</td><td>열거값만 교체 → 원점 텔레포트</td><td>rebase 유틸</td></tr>
+<tr><td>align Left↔Right / Top↔Bottom</td><td>열거값만 교체 → 오프셋 부호 방향 반전</td><td>rebase 유틸</td></tr>
+<tr><td>그림 float → <span class="mode tac">TAC</span></td><td>정확히 4필드 리셋 + host line_seg 마이그레이션 (한컴 정합 확인됨)</td><td>현행 유지 — 이 경로가 유일하게 완성된 전환</td></tr>
+<tr><td>도형·글상자 float → <span class="mode tac">TAC</span></td><td>마이그레이션 <b>전무</b> — host line_seg 높이 stale</td><td>그림 경로와 동일한 마이그레이션</td></tr>
+<tr><td><span class="mode tac">TAC</span> 표 드래그 이동</td><td>완전 무동작 (한컴에도 없는 기능 — 의도된 계약)</td><td>현행 유지</td></tr>
+</table>
+
+<p class="kv">부수 결함: Shape/Picture 속성 setter가 오프셋을 json_u32로 파싱해 <b>음수 오프셋이 조용히 소실</b>된다(표 경로는 json_i32로 정상 — 비대칭). <span class="ref">object_ops/common.rs:248-253</span></p>
+
+<!-- ============================================================ -->
+<h2 id="s7"><span class="no">7</span>버그에서 귀납한 12법칙</h2>
+<p class="lead">troubleshootings 16건 + 최근 커밋 이력에서 반복 추출된 패턴. 새 수리가 이 목록을 위반하면 그 수리는 잘못됐을 확률이 높다.</p>
+
+<div class="law"><b class="t">1. 이중 진실 데싱크 금지</b>line_segs(저장·쪽분할)와 composed.lines(렌더)는 파생 관계 — 한쪽만 바꾸면 렌더 불변 또는 조용한 부패. raw_ctrl_data ↔ common enum도 동일. <span class="ref">tac-inline-baseline-report · composer.rs:472</span></div>
+<div class="law"><b class="t">2. 같은 값을 두 경로로 계산하지 말 것</b>정렬 추정과 렌더, 네이티브와 WASM 측정기가 다른 데이터 소스를 보면 반드시 어긋난다 — 헬퍼 중앙화가 유일한 안전책. <span class="ref">tab_tac_overlap_142_159.md</span></div>
+<div class="law"><b class="t">3. fit 판정 ≠ advance 누적</b>fit은 trailing 간격 제외, 누적은 포함 — 혼용하면 드리프트가 쌓인다. <span class="ref">typeset_fit_accumulation_drift.md</span></div>
+<div class="law"><b class="t">4. TAC 표는 "큰 글자"다</b>자기 높이만큼 줄을 차지하고, 뒤 텍스트 baseline = 표 바닥. end-anchored solo 표는 자기 줄로 내려간다(단, \n이 이미 줄 구조를 명시한 문단은 예외 — 2026-08-05 실측). <span class="ref">height_measurer.rs:122</span></div>
+<div class="law"><b class="t">5. 수동 seg 범프 금지</b>편집 명령이 line_segs를 손으로 고치면 반쪽 진실이 남는다 — reflow가 유일한 생산자. <span class="ref">object_ops/table.rs (2026-08-05 수리)</span></div>
+<div class="law"><b class="t">6. 게이트만 바꿔선 y가 안 움직인다</b>인라인/블록 판정은 수집·분류에만 영향 — 배치를 바꾸려면 line_seg 생산(composer)까지 내려가야 한다. <span class="ref">tac-inline-baseline-report:89</span></div>
+<div class="law"><b class="t">7. 계산이 맞아도 훅이 없으면 틀린다</b>리플로우 훅이 일부 편집 경로에만 걸려 있으면 나머지 경로에서 옛 line_segs가 재생된다 — 모든 편집이 같은 훅을 타야 한다. <span class="ref">text_editing.rs:538, 719</span></div>
+<div class="law"><b class="t">8. reflow 진입 경로는 편집만이 아니다</b>로드 보정(reflow_zero_height_paragraphs)·밴드 훅·페이지정의 변경도 생산자다 — "편집 전용" 가정으로 생산 코드를 바꾸면 로드 회귀가 난다(issue_2243 실측). <span class="ref">document.rs:288-328</span></div>
+<div class="law"><b class="t">9. 논리 위치 ≠ 물리 배치</b>char_offsets는 스트림 내 논리 위치일 뿐 — float 개체의 물리 위치는 CommonObjAttr가 결정한다. <span class="ref">task_75_table_text_vertical_offset.md</span></div>
+<div class="law"><b class="t">10. 이중 emit은 등록부로 막는다</b>두 레이아웃 경로가 같은 개체를 그릴 수 있으면 선점 등록부(inline_shape_positions) 없이는 반드시 이중 그리기가 난다. <span class="ref">tac_picture_double_emit.md</span></div>
+<div class="law"><b class="t">11. vpos에는 line_spacing이 포함된다</b>간격 계산에 vpos를 직접 쓰면 간격이 2배. 합성 seg(tag 0x80000000)는 저장 증거가 아니다. <span class="ref">multi_tac_table_pagination.md · engine.rs:114-116</span></div>
+<div class="law"><b class="t">12. 정렬의 "마지막 줄"은 텍스트 기준</b>뒤에 텍스트 없는 줄(표의 자기 줄)만 남으면 그 줄이 사실상 마지막 텍스트 줄 — 양쪽정렬이 앞 텍스트를 줄 폭으로 벌리면 안 된다. <span class="ref">paragraph_layout.rs:3478 (2026-08-05 수리)</span></div>
+
+<!-- ============================================================ -->
+<h2 id="s8"><span class="no">8</span>사례 연구 — 2026-08-05 실증 2건</h2>
+
+<div class="case">
+<b>사례 1 — TAC 표 세로정렬 붕괴 수리: 법칙 4·5·6의 실전</b>
+<p>"왼쪽"+TAC 표에서 표가 텍스트보다 46px 위에 뜨던 버그. 이전 세션의 두 시도(게이트 단독 변경, line_seg 단독 append)는 모두 실패했는데, 이 보고서의 법칙으로 재해석하면 실패가 당연했다: 법칙 6(게이트만으론 y 불변) 위반과 법칙 1(line_seg만 바꾸면 데싱크… 로 보였으나 실제로는 composed가 파생이라 <b>생산을 정확히 하면 자동 정합</b>) 오진. 실제 수리는 ① 게이트에 end-anchor 분기, ② composer 생산에 자기 줄 seg, ③ createTableEx의 수동 범프 제거(법칙 5) — 3곳으로 끝났고 "4곳 일관 변경" 우려는 파생 관계 확인으로 해소됐다.</p>
+<p class="kv">파생 수리: 양쪽정렬이 "왼쪽" 두 글자를 줄 폭으로 벌리는 회귀 → 법칙 12 신설.</p>
+</div>
+
+<div class="case">
+<b>사례 2 — issue_2243 결재 sliver 회귀: 법칙 8의 탄생</b>
+<p>위 수리 직후 전체 스위트에서 로드-전용 핀(결재 HWPX, 한글 COM 쪽수 5)이 6쪽으로 회귀했다. "reflow는 편집에서만 돈다"는 가정이 틀렸다 — 기계생성 HWPX의 0높이 lineseg를 로드 때 보정하는 <code>reflow_zero_height_paragraphs</code>가 새 생산 코드를 실행했고, <code>\n</code>으로 이미 줄 구조를 명시한 문단("제목\n + 표")에 자기 줄이 하나 더 붙어 문서가 40px 부풀었다. 수리: end-anchor 계약(단일 소스 헬퍼)에 "\n 있는 문단은 대상 밖" 조건 — 강제 줄바꿈은 사용자가 명시한 줄 구조이므로 존중한다.</p>
+<p class="kv">교훈: 생산자(composer) 변경은 반드시 로드 경로 핀(기계생성 HWPX 포함)까지 검증 범위에 넣는다.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s9"><span class="no">9</span>갭 대장 (P0/P1/P2)</h2>
+<p class="lead">P0 = 표·개체 배치 정확성에 직결(어울림 지연의 원인들), P1 = 정확성·왕복 리스크, P2 = 구조 부채. 각 항목은 코드 실증 완료.</p>
+
+<h3>P0 — 어울림·배치 직결</h3>
+<div class="law p0"><b class="t"><span class="pri p0">P0</span>모드/기준계 전환 오프셋 rebase 부재 (전 개체)</b>§6 참조. rebase 유틸 하나(§2 공식의 역산)로 표·그림·도형이 공유 가능. <span class="ref">object_ops/common.rs:174-217</span></div>
+<div class="law p0"><b class="t"><span class="pri p0">P0</span>어울림 훅 미배선 4종</b>Enter/병합/붙여넣기 · Square 그림·도형 host · 텍스트 있는 host · 다단(v2). §5 표 참조. 훅을 "편집 커밋 지점" 한 곳으로 모으면 4종이 한 번에 해소된다. <span class="ref">table_ops.rs:100 · text_editing.rs:538,719</span></div>
+<div class="law p0"><b class="t"><span class="pri p0">P0</span>어울림 host "표 앞 텍스트 없음 + 표 뒤 텍스트 있음" 문단이 두 경로 어디에도 안 잡힌다</b>typeset 경로는 pre_height&gt;0(표 앞 가시 줄) 요구, layout 경로는 무텍스트 host 요구 — 이 중간 케이스는 흐름 회계 누락. <span class="ref">typeset.rs:13508 · layout.rs:6997-7009</span></div>
+<div class="law p0"><b class="t"><span class="pri p0">P0</span>음수 오프셋 소실 (Shape/Picture setter)</b>json_u32 파싱이 '-'에서 None — 음수 오프셋 설정이 조용히 무시. 표 경로(json_i32)와 비대칭. <span class="ref">object_ops/common.rs:248-253</span></div>
+<div class="law p0"><b class="t"><span class="pri p0">P0</span>도형·글상자 TAC 토글 마이그레이션 전무</b>그림(picture.rs:498-553)과 달리 host line_seg 범프·rel_to 리셋이 없어 줄 높이 stale. <span class="ref">shape.rs:638-643</span></div>
+
+<h3>P1 — 정확성·왕복</h3>
+<div class="law p1"><b class="t"><span class="pri p1">P1</span>Tight/Through 윤곽 어울림 미구현</b>레이아웃은 Square와 동일 취급(저장 왕복 보존만). <span class="ref">common_obj_attr_writer.rs:170-183</span></div>
+<div class="law p1"><b class="t"><span class="pri p1">P1</span>allow_overlap(bit14) 미소비</b>파싱·저장만 되고 renderer 어디서도 안 읽는다 — 겹침 회피/허용 물리 미반영.</div>
+<div class="law p1"><b class="t"><span class="pri p1">P1</span>옆 조각 임계 34 vs 40px 불일치</b>34~40px 구간에서 composer는 조각 인정, layout은 전폭으로 접음. 한컴 실측 기반 통일 필요. <span class="ref">line_breaking.rs:1137-1141 · layout.rs:6619</span></div>
+<div class="law p1"><b class="t"><span class="pri p1">P1</span>attr bit0 ↔ common.treat_as_char 미동기 상존</b>HWPX는 treat_as_char∧flow_with_text일 때만 bit0 미러 — is_effective_tac_table의 "저장 조판 증거" 팔과 table_ops.rs:2257 OR 방어가 완충물. 근본은 동기화 계약. <span class="ref">typeset.rs:13730-13737 · hwpx/section.rs:1841-1849</span></div>
+<div class="law p1"><b class="t"><span class="pri p1">P1</span>Inside/Outside 정렬이 Top/Left·Bottom/Right로 접힘</b>홀짝 페이지 구분 없음, setter의 align 파서에는 케이스 자체가 없음. <span class="ref">picture_footnote.rs:357-361</span></div>
+<div class="law p1"><b class="t"><span class="pri p1">P1</span>TAC 오라클 공백</b>start-anchor · 다중 TAC 표 · 셀 안 TAC의 한컴 배치 미채취 — end-anchor 규칙은 solo 표만 적용 중.</div>
+
+<h3>P2 — 구조 부채</h3>
+<div class="law p2"><b class="t"><span class="pri p2">P2</span>이중 페이지네이션 엔진</b>TypesetEngine(기본)과 paginate_with_measured(폴백) 병존 — TAC/vpos 휴리스틱 사본 유지 부담. <span class="ref">rendering.rs:3070-3074</span></div>
+<div class="law p2"><b class="t"><span class="pri p2">P2</span>측정↔렌더 드리프트를 마진 상수로 방어</b>4px 안전마진·0.5px 톨러런스·vpos 클램프 다수 — 근본(두 경로 산식 차) 미해결의 완충물. DEFENSE_MAX_PER_PAGE=100 방어 로직이 스스로 인정. <span class="ref">pagination/state.rs:7-10</span></div>
+<div class="law p2"><b class="t"><span class="pri p2">P2</span>FloatBand x-범위 이관 미완</b>자료구조만 넓혀둔 상태 — 빈-host lane은 여전히 별도 FloatLaneSet 경로. <span class="ref">float_placement.rs:218-235</span></div>
+<div class="law p2"><b class="t"><span class="pri p2">P2</span>EMPTY 세그 미생산 · RowBreak 톨러런스 상수 캘리브레이션 · 문서 특정 하드코딩(sample16 등)</b>저장 구조 차이(시각 동일)와 실측 튜닝값들 — 새 문서 형상에서 어긋날 수 있음을 인지하고 유지.</div>
+
+<!-- ============================================================ -->
+<h2 id="s10"><span class="no">10</span>수리 전략 — 법칙 단위로 고치기</h2>
+<p class="lead">"하나하나 수정"이 늦어지는 이유는 증상 하나가 법칙 위반 하나에서 방사되기 때문이다. 다음 순서를 권장한다 — 각 항목이 여러 증상을 한 번에 닫는다.</p>
+<ol>
+<li><b>rebase 유틸 신설</b> (P0-1): §2 공식의 역산 함수 하나 + 모든 배치 setter가 경유. "속성 바꾸면 튐" 계열 전부 종결. 검증: 전환 전후 화면 bbox 불변 핀.</li>
+<li><b>어울림 훅 단일화</b> (P0-2): 훅 호출을 편집 커밋 지점 한 곳으로 이동 + host 자격을 "공백 문단·표"에서 "어울림 개체 보유 문단"으로 확장. 미배선 4종 동시 해소. 검증: Enter/붙여넣기/그림 host 각 1핀.</li>
+<li><b>중간 host 케이스 회계</b> (P0-3): "표 앞 무텍스트·뒤 유텍스트"를 typeset·layout 중 한 경로에 명시 배정.</li>
+<li><b>소형 정합 3건</b> (P0-4·5): json_i32 통일, 도형·글상자 TAC 마이그레이션(그림 경로 복제).</li>
+<li><b>그 다음에</b> P1(Tight/Through, allow_overlap, 임계 통일, bit0 동기) — 각각 한컴 오라클 채취를 선행.</li>
+</ol>
+<p>모든 수리의 공통 규율: <b>§7의 12법칙 체크리스트를 리뷰 게이트로</b> — 특히 법칙 5(수동 seg 금지)·7(훅)·8(로드도 생산자)은 오늘 실증됐다.</p>
+
+<div class="foot">
+근거: 워크플로 2회(에이전트 13, 서브시스템 11곳: model/anchor · layout 배치 · composer 밴드 · typeset · 측정/페이지네이션 · 편집 무효화 · 이슈 카탈로그 · 글상자/회전/세로쓰기 · 다단/머리말/바탕쪽/z-plane · 셀내부/캡션/각주 · hit-test/HWP3) + 모순 5건 코드 판정 + 완전성 비평 1회. 모든 법칙은 file:line 실증 — 수치·조건이 코드와 다르면 코드가 정본이다. 관련: mydocs/eng/plans/tac-inline-baseline-report-20260805.md, mydocs/troubleshootings/*.
+</div>
+
+</div>
+</body>
+</html>
