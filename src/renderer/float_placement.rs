@@ -131,6 +131,86 @@ pub(crate) fn horizontal_range(
     (x, x + width_px.max(0.0))
 }
 
+// ── [개선 트랙1 2026-08-05] 기준계/정렬 전환 오프셋 rebase — forward 공식의 항등 역산 ──
+//
+// rel_to/align 전환 시 옛 기준계 오프셋이 그대로 남아 개체가 시각 점프하는 증상을 닫는다.
+// 역산은 이 파일 한 곳에만 둔다: forward 가 3곳(horizontal_range/table_layout/
+// picture_footnote)에 갈라져 있지만 branch 구조는 동일하다. table_layout 의 Paper
+// om_top_px·caption_top_offset 은 역산에 넣지 않는다 — 목표값이 실측 bbox 라 1차
+// 근사로 흡수되고, 잔차는 한컴 오라클로 캘리브레이션한다.
+
+/// mutation 전에 렌더트리에서 실측한 기준 프레임들 (px, 페이지 절대 좌표).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RebaseFrames {
+    pub paper_w: f64,
+    pub paper_h: f64,
+    pub body: LayoutRect,
+    pub col: LayoutRect,
+    /// host 문단 첫 줄 top. 공백뿐인 host 는 TextLine 이 없어 미채취일 수 있다 —
+    /// 그 경우 Para 축 rebase 는 스킵(현행 동작 유지)한다.
+    pub para_y: Option<f64>,
+}
+
+/// px 오프셋 → HWPUNIT signed (round). 저장은 `as u32` 비트캐스트로 signed_hwpunit 와 왕복.
+fn px_offset_to_hwpunit(px: f64, dpi: f64) -> i32 {
+    (px * super::HWPUNIT_PER_INCH / dpi).round() as i32
+}
+
+/// `horizontal_range` 의 branch 별 항등 역산: 현재 시각 위치(target_x_px)를 새 기준계
+/// (horz_rel_to/horz_align)에서 재현하는 오프셋을 돌려준다. Right/Outside 는 forward 의
+/// `- h_offset` 부호 반전이 여기서 흡수된다. Para 는 호스트 여백 0 인 본문 v1 가정으로
+/// Column 과 동일 원점을 쓴다(horizontal_range 의 host_margin 0 경로와 일치).
+pub(crate) fn offset_for_target_x(
+    horz_rel_to: HorzRelTo,
+    horz_align: HorzAlign,
+    target_x_px: f64,
+    width_px: f64,
+    frames: &RebaseFrames,
+    dpi: f64,
+) -> i32 {
+    let (ref_x, ref_w) = match horz_rel_to {
+        HorzRelTo::Paper => (0.0, frames.paper_w),
+        HorzRelTo::Page => (frames.body.x, frames.body.width),
+        HorzRelTo::Column | HorzRelTo::Para => (frames.col.x, frames.col.width),
+    };
+    let off_px = match horz_align {
+        HorzAlign::Left | HorzAlign::Inside => target_x_px - ref_x,
+        HorzAlign::Center => target_x_px - ref_x - (ref_w - width_px).max(0.0) / 2.0,
+        HorzAlign::Right | HorzAlign::Outside => {
+            ref_x + (ref_w - width_px).max(0.0) - target_x_px
+        }
+    };
+    px_offset_to_hwpunit(off_px, dpi)
+}
+
+/// `offset_for_target_x` 의 세로 동형. ref 매핑은 table_layout·picture_footnote 의
+/// 세로 forward 와 맞춘다: Paper→(0, paper_h), Page→body, Para→para_y.
+/// Para 인데 para_y 미채취면 None — 호출자는 해당 축 rebase 를 스킵한다.
+pub(crate) fn offset_for_target_y(
+    vert_rel_to: VertRelTo,
+    vert_align: VertAlign,
+    target_y_px: f64,
+    height_px: f64,
+    frames: &RebaseFrames,
+    dpi: f64,
+) -> Option<i32> {
+    let (ref_y, ref_h) = match vert_rel_to {
+        VertRelTo::Paper => (0.0, frames.paper_h),
+        VertRelTo::Page => (frames.body.y, frames.body.height),
+        VertRelTo::Para => {
+            let para_y = frames.para_y?;
+            // forward(table_layout:2421)와 동형: 앵커부터 컬럼 바닥까지가 기준 높이.
+            (para_y, (frames.col.y + frames.col.height - para_y).max(0.0))
+        }
+    };
+    let off_px = match vert_align {
+        VertAlign::Top | VertAlign::Inside => target_y_px - ref_y,
+        VertAlign::Center => target_y_px - ref_y - (ref_h - height_px) / 2.0,
+        VertAlign::Bottom | VertAlign::Outside => ref_y + ref_h - height_px - target_y_px,
+    };
+    Some(px_offset_to_hwpunit(off_px, dpi))
+}
+
 /// A placed float lane in page/column-relative coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct FloatLane {
@@ -412,6 +492,105 @@ mod tests {
 
         assert_eq!(x0, 140.0);
         assert_eq!(x1, 240.0);
+    }
+
+    /// [개선 트랙1 검증 핀] 4 HorzRelTo × 3 HorzAlign × {+3000,-3000} 오프셋에 대해
+    /// horizontal_range → offset_for_target_x 왕복 항등(±1HU).
+    #[test]
+    fn rebase_roundtrip_all_frames() {
+        let dpi = 96.0;
+        let col = LayoutRect { x: 60.0, y: 50.0, width: 500.0, height: 700.0 };
+        let body = LayoutRect { x: 40.0, y: 30.0, width: 540.0, height: 740.0 };
+        let paper_w = 620.0;
+        let frames = RebaseFrames {
+            paper_w,
+            paper_h: 820.0,
+            body,
+            col,
+            para_y: Some(120.0),
+        };
+        let width_hu = 12000u32;
+        let width_px = hwpunit_to_px(width_hu as i32, dpi);
+
+        for rel in [
+            HorzRelTo::Paper,
+            HorzRelTo::Page,
+            HorzRelTo::Column,
+            HorzRelTo::Para,
+        ] {
+            for align in [HorzAlign::Left, HorzAlign::Center, HorzAlign::Right] {
+                for offset in [3000i32, -3000i32] {
+                    let mut common = base_common();
+                    common.horz_rel_to = rel;
+                    common.horz_align = align;
+                    common.horizontal_offset = offset as u32;
+                    common.width = width_hu;
+
+                    let ctx = FloatPlacementContext::new(col)
+                        .with_body_area(body)
+                        .with_paper_width(paper_w);
+                    let (x, _) = horizontal_range(&common, width_px, ctx, dpi);
+                    let recovered = offset_for_target_x(rel, align, x, width_px, &frames, dpi);
+                    assert!(
+                        (recovered - offset).abs() <= 1,
+                        "왕복 실패 rel={rel:?} align={align:?} off={offset} → {recovered}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 세로 역산 — Page/Paper/Para × Top/Center/Bottom 왕복 항등(forward 는
+    /// picture_footnote:343-352 와 동형 수식으로 로컬 재현).
+    #[test]
+    fn rebase_roundtrip_vertical() {
+        let dpi = 96.0;
+        let col = LayoutRect { x: 60.0, y: 50.0, width: 500.0, height: 700.0 };
+        let body = LayoutRect { x: 40.0, y: 30.0, width: 540.0, height: 740.0 };
+        let frames = RebaseFrames {
+            paper_w: 620.0,
+            paper_h: 820.0,
+            body,
+            col,
+            para_y: Some(120.0),
+        };
+        let height_px = 90.0;
+        for rel in [VertRelTo::Paper, VertRelTo::Page, VertRelTo::Para] {
+            let (ref_y, ref_h) = match rel {
+                VertRelTo::Paper => (0.0, frames.paper_h),
+                VertRelTo::Page => (body.y, body.height),
+                VertRelTo::Para => (120.0, col.y + col.height - 120.0),
+            };
+            for align in [VertAlign::Top, VertAlign::Center, VertAlign::Bottom] {
+                for offset in [3000i32, -3000i32] {
+                    let off_px = hwpunit_to_px(offset, dpi);
+                    let y = match align {
+                        VertAlign::Top | VertAlign::Inside => ref_y + off_px,
+                        VertAlign::Center => ref_y + (ref_h - height_px) / 2.0 + off_px,
+                        VertAlign::Bottom | VertAlign::Outside => {
+                            ref_y + ref_h - height_px - off_px
+                        }
+                    };
+                    let recovered = offset_for_target_y(rel, align, y, height_px, &frames, dpi)
+                        .expect("para_y 채취됨");
+                    assert!(
+                        (recovered - offset).abs() <= 1,
+                        "세로 왕복 실패 rel={rel:?} align={align:?} off={offset} → {recovered}"
+                    );
+                }
+            }
+        }
+        // para_y 미채취 → Para 축은 None (게이트와 생산이 한 소스).
+        let no_para = RebaseFrames { para_y: None, ..frames };
+        assert!(offset_for_target_y(
+            VertRelTo::Para,
+            VertAlign::Top,
+            100.0,
+            height_px,
+            &no_para,
+            dpi
+        )
+        .is_none());
     }
 
     // ── skip_float_bands — 리팩터 전 두 엔진의 동작을 그대로 고정한다 ──────────────
