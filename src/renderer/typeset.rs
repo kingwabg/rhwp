@@ -12113,7 +12113,7 @@ impl TypesetEngine {
         };
         let mt = fitted_visible_mt.as_ref().or(mt);
 
-        let is_tac = table.attr & 0x01 != 0;
+        let is_tac = table.common.treat_as_char;
         // [#1880] 자리차지(TopAndBottom) 판정: 종전 원시 attr 비트((attr>>21)&7==1)는
         // HWPX 파스가 table.attr 를 미채움(bit0 만 미러, section.rs:1831)이라 항상
         // false, HWP5 재파스는 원시 attr 전체(control.rs:153)라 true — 같은 IR 의
@@ -12344,7 +12344,7 @@ impl TypesetEngine {
         use crate::model::shape::{TextWrap, VertRelTo};
 
         !para_has_visible_text(para)
-            && !self.is_effective_tac_table(para, table, fmt)
+            && !table.common.treat_as_char
             && !table.common.treat_as_char
             && matches!(table.common.text_wrap, TextWrap::TopAndBottom)
             && matches!(table.common.vert_rel_to, VertRelTo::Para)
@@ -12364,7 +12364,7 @@ impl TypesetEngine {
         use crate::model::shape::{TextWrap, VertRelTo};
 
         !para_has_visible_text(para)
-            && !self.is_effective_tac_table(para, table, fmt)
+            && !table.common.treat_as_char
             && !table.common.treat_as_char
             && matches!(table.common.text_wrap, TextWrap::TopAndBottom)
             && matches!(table.common.vert_rel_to, VertRelTo::Para)
@@ -12562,16 +12562,14 @@ impl TypesetEngine {
         let tac_count = para
             .controls
             .iter()
-            .filter(
-                |c| matches!(c, Control::Table(t) if self.is_effective_tac_table(para, t, &fmt)),
-            )
+            .filter(|c| matches!(c, Control::Table(t) if t.common.treat_as_char))
             .count();
 
         let has_tac = tac_count > 0;
         let first_line_tac_height = if tac_count == 1 && fmt.line_heights.len() > 1 {
             para.controls.iter().find_map(|ctrl| match ctrl {
                 Control::Table(t)
-                    if self.is_effective_tac_table(para, t, &fmt)
+                    if t.common.treat_as_char
                         && self.tac_table_line_index(para, t, &fmt) == Some(0) =>
                 {
                     Some(
@@ -12595,7 +12593,7 @@ impl TypesetEngine {
             para.controls
                 .iter()
                 .find_map(|ctrl| match ctrl {
-                    Control::Table(table) if self.is_effective_tac_table(para, table, &fmt) => {
+                    Control::Table(table) if table.common.treat_as_char => {
                         Some(self.tac_table_line_index(para, table, &fmt).unwrap_or(0))
                     }
                     _ => None,
@@ -12626,9 +12624,7 @@ impl TypesetEngine {
         {
             para.controls
                 .iter()
-                .position(|c| {
-                    matches!(c, Control::Table(t) if self.is_effective_tac_table(para, t, &fmt))
-                })
+                .position(|c| matches!(c, Control::Table(t) if t.common.treat_as_char))
                 .filter(|&ti| {
                     ti > 0
                         && ti <= fmt.line_heights.len()
@@ -12715,8 +12711,8 @@ impl TypesetEngine {
         };
         let table_flow_tiebreak = |ctrl: &Control| -> u8 {
             match ctrl {
-                Control::Table(t) if !self.is_effective_tac_table(para, t, &fmt) => 0,
-                Control::Table(t) if self.is_effective_tac_table(para, t, &fmt) => 1,
+                Control::Table(t) if !t.common.treat_as_char => 0,
+                Control::Table(t) if t.common.treat_as_char => 1,
                 _ => 1,
             }
         };
@@ -12868,7 +12864,7 @@ impl TypesetEngine {
                         .find(|mt| mt.para_index == para_idx && mt.control_index == ctrl_idx);
                     let is_first_placed = first_placed_table == Some(ctrl_idx);
                     let is_last_placed = last_placed_table == Some(ctrl_idx);
-                    if self.is_effective_tac_table(para, table, &fmt) {
+                    if table.common.treat_as_char {
                         self.typeset_tac_table(
                             st,
                             para_idx,
@@ -13096,7 +13092,7 @@ impl TypesetEngine {
             let mut tac_idx = 0;
             for (ci, c) in para.controls.iter().enumerate() {
                 if let Control::Table(t) = c {
-                    if self.is_effective_tac_table(para, t, &fmt) {
+                    if t.common.treat_as_char {
                         if let Some(seg) = para.line_segs.get(tac_idx) {
                             let seg_lh = hwpunit_to_px(seg.line_height, self.dpi);
                             let mt_h = measured_tables
@@ -13119,7 +13115,7 @@ impl TypesetEngine {
                     .controls
                     .iter()
                     .filter_map(|c| match c {
-                        Control::Table(t) if self.is_effective_tac_table(para, t, &fmt) => {
+                        Control::Table(t) if t.common.treat_as_char => {
                             Some(hwpunit_to_px(t.outer_margin_top as i32, self.dpi))
                         }
                         _ => None,
@@ -13248,7 +13244,7 @@ impl TypesetEngine {
             .controls
             .iter()
             .take(ctrl_idx)
-            .filter(|c| matches!(c, Control::Table(t) if self.is_effective_tac_table(para, t, fmt)))
+            .filter(|c| matches!(c, Control::Table(t) if t.common.treat_as_char))
             .count();
         let tac_seg_idx = if tac_count > 1 {
             // [#2322] 텍스트-host 다중 TAC: 선행 텍스트 줄 수만큼 lineseg 매핑을
@@ -13259,7 +13255,7 @@ impl TypesetEngine {
                 .controls
                 .iter()
                 .find_map(|c| match c {
-                    Control::Table(t) if self.is_effective_tac_table(para, t, fmt) => Some(t),
+                    Control::Table(t) if t.common.treat_as_char => Some(t),
                     _ => None,
                 })
                 .and_then(|t| self.tac_table_line_index(para, t, fmt))
@@ -13630,21 +13626,16 @@ impl TypesetEngine {
         let tac_table_count = para
             .controls
             .iter()
-            .filter(|c| matches!(c, Control::Table(t) if self.is_effective_tac_table(para, t, fmt)))
+            .filter(|c| matches!(c, Control::Table(t) if t.common.treat_as_char))
             .count();
         let post_table_start = if tac_wrap_split {
             (pre_table_end_line + 1).min(total_lines).max(1)
-        } else if table.attr & 0x01 != 0 && total_lines > pre_table_end_line.max(1) {
+        } else if table.common.treat_as_char && total_lines > pre_table_end_line.max(1) {
             // 표줄 다음에 실제 본문 줄이 있을 때만 표줄을 post-text 에서 제외한다.
             // 표와 후행 텍스트가 **같은(유일한) 줄**을 공유하는 문단에서 무조건
             // .max(1) 하면 그 줄이 통째로 post-text 범위 밖이 되어 후행 텍스트가
-            // 아예 렌더되지 않는다. 아래 HWPX 분기의 단일 줄 가드와 같은 계약.
+            // 아예 렌더되지 않는다.
             pre_table_end_line.max(1)
-        } else if table.common.treat_as_char && total_lines > pre_table_end_line + 1 {
-            // HWPX TAC 표(attr 비트0=0): 표줄(pre_table_end_line) 다음에 실제 본문 줄이
-            // 있으면 표줄을 post-text 에서 제외(HWP5 attr&0x01 의 pre_end.max(1) 와 정합).
-            // 단일 줄(표줄만)은 건드리지 않아 기존 동작 보존.
-            pre_table_end_line + 1
         } else if is_last_table && !is_first_table {
             0
         } else {
@@ -13695,7 +13686,7 @@ impl TypesetEngine {
 
         // TAC 표: trailing line_spacing 복원 (Paginator place_table_fits:777-783 동일)
         // has_post_text는 tac_table_count와 무관하게 텍스트 줄 존재 여부만 확인
-        let is_tac = self.is_effective_tac_table(para, table, fmt);
+        let is_tac = table.common.treat_as_char;
         if is_tac && fmt.total_height > fmt.height_for_fit && !has_post_text {
             st.current_height += fmt.total_height - fmt.height_for_fit;
         }
@@ -13747,15 +13738,6 @@ impl TypesetEngine {
                 None
             }
         })
-    }
-
-    fn is_effective_tac_table(
-        &self,
-        para: &Paragraph,
-        table: &crate::model::table::Table,
-        fmt: &FormattedParagraph,
-    ) -> bool {
-        table.attr & 0x01 != 0 || self.tac_table_line_index(para, table, fmt) == Some(0)
     }
 
     /// 비-TAC 블록 표의 조판: fits → place / split(Break Token 기반).
@@ -16810,13 +16792,18 @@ impl TypesetEngine {
     // 유틸리티
     // ========================================================
 
-    /// 문단에 블록 표 컨트롤이 있는지 감지
+    /// 문단에 블록 표 컨트롤이 있는지 감지.
+    ///
+    /// 글자처럼 취급 여부는 물리(`common.treat_as_char`)만 읽는다 — 미러
+    /// `Table.attr` bit0 은 HWPX 파스에서 불완전하다(section.rs
+    /// `materialize_hwpx_table_attrs`). 미러를 읽으면 같은 문서가 컨테이너
+    /// 포맷에 따라 인라인/블록으로 갈린다.
     fn paragraph_has_table(&self, para: &Paragraph) -> bool {
         use crate::renderer::height_measurer::is_tac_table_inline_in_para;
         let seg_width = para.line_segs.first().map(|s| s.segment_width).unwrap_or(0);
         para.controls.iter().any(|c| {
-            matches!(c, Control::Table(t) if t.attr & 0x01 == 0
-                || (t.attr & 0x01 != 0 && !is_tac_table_inline_in_para(t, seg_width, para)))
+            matches!(c, Control::Table(t) if !t.common.treat_as_char
+                || !is_tac_table_inline_in_para(t, seg_width, para))
         })
     }
 
