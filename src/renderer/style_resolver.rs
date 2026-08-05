@@ -196,6 +196,32 @@ pub struct ResolvedParaStyle {
     pub keep_lines: bool,
     /// 문단 앞에서 항상 쪽 나눔 — attr1 bit 19
     pub page_break_before: bool,
+    /// 줄 기준선 비율 r = `baseline_distance / line_height` — 문단 모양의 **세로 정렬**
+    /// (attr1 bit20-21 / HWPX `hh:align@vertical`)에서 온다.
+    /// 자세한 값 근거는 [`para_vertical_align_baseline_ratio`].
+    pub line_baseline_ratio: f64,
+}
+
+/// 문단 세로 정렬(`ParaShape.attr1` bit20-21) → 줄 기준선 비율 r = bd/lh.
+///
+/// [oracle-pdf-mining-20260806 §2-A] 저장 seg 573,835개(lh>0·bd>0) 전수 히스토그램과
+/// attr1 bit20-21 교차: 0.85 가 522,175건(91%)이고 그 중 508,624건이 세로정렬=글꼴기준,
+/// 0.50 이 30,613건(5.3%)이고 그 중 30,336건이 세로정렬=가운데, 아래쪽 204건은 bd=lh.
+/// HWPX 교차검증 — `samples/hwpx/exam_social.hwpx` 의 `<hh:align vertical="CENTER">`
+/// paraPr id {25,40,43,48,54,63} ⊇ bd/lh≈0.5 인 줄이 쓰는 id {25,40,43,48,54}.
+///
+/// 위쪽(=1)은 코퍼스에 유효 표본이 없어 **미측정** — 기본값 0.85 를 유지한다.
+///
+/// ⚠ 소비 범위 — 이 비율은 `LineSeg` **생산**(`line_breaking::reflow_line_segs*`)에서만
+/// 쓴다. 저장 seg 를 덮어쓰는 렌더측 글꼴 어센트 폴백(`paragraph_layout` 의
+/// `max_fs * 0.85`, `corrected_line_baseline_for_source` 등)은 아직 0.85 하드코딩이라
+/// 세로정렬=가운데 문단이 그 분기에 걸리면 화면 기준선은 여전히 0.85 다 — 별건.
+pub fn para_vertical_align_baseline_ratio(attr1: u32) -> f64 {
+    match (attr1 >> 20) & 0x03 {
+        2 => 0.50, // 가운데
+        3 => 1.00, // 아래쪽
+        _ => 0.85, // 0=글꼴기준(코퍼스 91%), 1=위쪽(미측정 — 기본값 유지)
+    }
 }
 
 impl Default for ResolvedParaStyle {
@@ -224,6 +250,7 @@ impl Default for ResolvedParaStyle {
             keep_with_next: false,
             keep_lines: false,
             page_break_before: false,
+            line_baseline_ratio: 0.85,
         }
     }
 }
@@ -881,6 +908,7 @@ fn resolve_single_para_style(
         keep_with_next: (ps.attr1 >> 17) & 1 != 0,
         keep_lines: (ps.attr1 >> 18) & 1 != 0,
         page_break_before: (ps.attr1 >> 19) & 1 != 0,
+        line_baseline_ratio: para_vertical_align_baseline_ratio(ps.attr1),
     }
 }
 
