@@ -245,11 +245,13 @@ impl DocumentCore {
             c.allow_overlap = false;
             c.attr &= !(1 << 14);
         }
-        if let Some(v) = json_u32(props_json, "vertOffset") {
-            c.vertical_offset = v;
+        // [개선 트랙1 2026-08-05] 오프셋은 부호 있는 HWPUNIT — json_u32 는 '-' 에서
+        // 파싱이 끊겨 음수를 조용히 버렸다(그림·표 경로의 json_i32 와 비대칭).
+        if let Some(v) = crate::document_core::helpers::json_i32(props_json, "vertOffset") {
+            c.vertical_offset = v as u32;
         }
-        if let Some(v) = json_u32(props_json, "horzOffset") {
-            c.horizontal_offset = v;
+        if let Some(v) = crate::document_core::helpers::json_i32(props_json, "horzOffset") {
+            c.horizontal_offset = v as u32;
         }
         if let Some(v) = json_str(props_json, "description") {
             c.description = v;

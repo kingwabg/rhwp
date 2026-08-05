@@ -142,7 +142,9 @@ pub fn end_anchored_solo_tac_table(para: &Paragraph) -> Option<usize> {
         matches!(ctrl, Control::Table(t) if t.common.treat_as_char)
             || matches!(ctrl, Control::Picture(p) if p.common.treat_as_char)
             || matches!(ctrl, Control::Shape(s) if s.common().treat_as_char)
-            || matches!(ctrl, Control::Equation(e) if e.common.treat_as_char)
+            // 수식은 렌더러가 treat_as_char 와 무관하게 항상 인라인 취급하므로
+            // 무조건 계상 — 비-TAC 수식+TAC 표 병존 문단의 solo 오판정 방지.
+            || matches!(ctrl, Control::Equation(_))
             || matches!(ctrl, Control::Form(_))
     });
     let (control_index, ctrl) = inline_tac.next()?;

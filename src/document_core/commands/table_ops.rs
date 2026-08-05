@@ -10,6 +10,18 @@ use crate::model::event::DocumentEvent;
 use crate::model::path::{path_from_flat, PathSegment};
 use crate::model::shape::common_obj_offsets;
 
+/// 과거 어울림 좁힘 흔적 판정 — 전폭(=단 폭) segment_width 는 흔적이 아니다.
+/// column_start 가 있거나, sw 가 전폭보다 800HU(≈10.7px) 넘게 좁을 때만 흔적.
+/// 조기 탈출(:123)과 재줄바꿈 대상 선정(had_narrow)이 같은 판정을 공유한다.
+pub(crate) fn paragraph_has_narrow_trace(
+    para: &crate::model::paragraph::Paragraph,
+    full_hu: i32,
+) -> bool {
+    para.line_segs.iter().any(|ls| {
+        ls.column_start > 0 || (ls.segment_width > 0 && ls.segment_width < full_hu - 800)
+    })
+}
+
 impl DocumentCore {
     pub(crate) fn get_table_mut(
         &mut self,
@@ -120,17 +132,35 @@ impl DocumentCore {
         // [편집 훅 2026-08-04] 값싼 조기 탈출 — 어울림 host 도 없고 과거 좁힘 흔적도
         // 없으면 렌더트리를 돌 이유가 없다. 이게 없으면 평범한 문서의 글자 입력마다
         // 전 페이지 조판이 한 번씩 더 붙는다(편집 훅 배선의 전제).
+        // [개선 트랙2 선행 2026-08-05] 흔적 판정은 아래 had_narrow(:271)와 같은 어법 —
+        // 전폭 segment_width 는 흔적이 아니다. 저장 lineseg 문서는 전 줄에 sw 가
+        // 채워져 있어 종전 `sw > 0` 판정은 조기 탈출을 사실상 죽였다.
         if square_hosts.is_empty() {
+            let full_hu = {
+                let Some(sec) = self.document.sections.get(section_idx) else {
+                    return false;
+                };
+                let column_def = Self::find_initial_column_def(&sec.paragraphs);
+                let layout = crate::renderer::page_layout::PageLayoutInfo::from_page_def(
+                    &sec.section_def.page_def,
+                    &column_def,
+                    self.dpi,
+                );
+                let col_w = layout
+                    .column_areas
+                    .first()
+                    .map(|a| a.width)
+                    .unwrap_or(layout.body_area.width);
+                crate::renderer::px_to_hwpunit(col_w, self.dpi)
+            };
             let has_narrow_trace = self
                 .document
                 .sections
                 .get(section_idx)
                 .map(|sec| {
-                    sec.paragraphs.iter().any(|p| {
-                        p.line_segs
-                            .iter()
-                            .any(|ls| ls.column_start > 0 || ls.segment_width > 0)
-                    })
+                    sec.paragraphs
+                        .iter()
+                        .any(|p| paragraph_has_narrow_trace(p, full_hu))
                 })
                 .unwrap_or(false);
             if !has_narrow_trace {
@@ -268,10 +298,7 @@ impl DocumentCore {
                 let band_h = b.bottom_px - b.top_px;
                 ptop + pheight > b.top_px - 25.0 && ptop < b.bottom_px + band_h + 50.0
             });
-            let had_narrow = para.line_segs.iter().any(|s| {
-                s.column_start > 0
-                    || (s.segment_width > 0 && s.segment_width < full_hu - 800)
-            });
+            let had_narrow = paragraph_has_narrow_trace(para, full_hu);
             if !overlaps && !had_narrow {
                 continue;
             }
@@ -3259,6 +3286,27 @@ mod tests {
     use crate::model::shape::common_obj_offsets;
     use crate::parser::control::parse_common_obj_attr;
     use crate::DocumentCore;
+
+    /// [개선 트랙2 선행] 저장 lineseg 의 전폭 segment_width 는 좁힘 흔적이 아니다 —
+    /// 이 판정이 무너지면 어울림 없는 문서의 타이핑마다 전 페이지 조판이 붙는다.
+    #[test]
+    fn full_width_stored_segs_do_not_trip_narrow_trace() {
+        use crate::model::paragraph::{LineSeg, Paragraph};
+        let full_hu = 42_520; // A4 본문 폭 상당
+        let mut para = Paragraph::default();
+        para.line_segs = vec![
+            LineSeg { segment_width: full_hu, ..Default::default() },
+            LineSeg { segment_width: full_hu - 300, ..Default::default() }, // 오차 수준
+        ];
+        assert!(!super::paragraph_has_narrow_trace(&para, full_hu), "전폭은 흔적 아님");
+
+        para.line_segs[1].segment_width = full_hu - 2_000; // 실제 좁힘
+        assert!(super::paragraph_has_narrow_trace(&para, full_hu), "좁힘은 흔적");
+
+        para.line_segs[1].segment_width = full_hu;
+        para.line_segs[1].column_start = 5_000; // 우측 조각
+        assert!(super::paragraph_has_narrow_trace(&para, full_hu), "column_start 는 흔적");
+    }
 
     /// [officex] 열 경계선 드래그가 **격자를 무너뜨리면 안 된다**.
     ///
