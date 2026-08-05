@@ -49,6 +49,60 @@ pub(crate) fn ensure_min_baseline(raw_baseline: f64, max_font_size: f64) -> f64 
     raw_baseline.max(min_baseline)
 }
 
+/// [oracle-pdf-mining-20260806 §2-C] 인라인 글자취급 개체의 **잉크 상단 y**.
+///
+/// 글리프 상자(잉크 + 바깥여백 상하, `composer::tac_box_hwp` 단일 소스)가 기준선을
+/// `r : (1−r)` 로 가른다 (`r = baseline / line_height` = 그 줄의 기준선 비율):
+///
+/// ```text
+/// 잉크상단 = 줄상단 + bd − r·글리프높이 + 바깥여백상
+/// ```
+///
+/// 한컴 인쇄 PDF 실측이 오라클이다 — `복학원서.pdf`(r=0.85) 잉크바닥 Δ0.03pt,
+/// `21_언어_기출_편집가능본.pdf`(r=0.4998) 의 바깥여백 566 짜리 성명 표와 여백 0 인
+/// 수험번호 표가 **잉크 y 완전 동일**(글리프 상자 가름만이 이를 설명한다).
+/// 글리프높이 == 줄높이(표가 줄높이를 정하는 흔한 경우)면 `줄상단 + 바깥여백상` 이 된다.
+///
+/// 종전 식 `줄상단 + bd + 바깥여백하 − 표높이`("잉크바닥 = 기준선 + 바깥여백하",
+/// 법칙 4)는 같은 PDF 로 반증됐다(표 바닥이 기준선보다 30.57pt **아래**).
+///
+/// 미채취: 바깥여백 상/하가 **비대칭**인 표(예 `exam_science` 표지 om t283/b0)에서는
+/// 이 식과 "잉크만 가르고 여백은 상자 밖" 모델이 `바깥여백상 − r·(상+하)` 만큼
+/// (r=0.85·283/0 → 42HU) 갈리는데, 그 표본에는 짝 PDF 가 없다. 대칭 표본(복학원서
+/// r=0.85, 여백 140/140)에서는 이 식이 Δ0.03pt, 잉크 가름 모델이 Δ0.95pt 였다.
+///
+/// `.max(line_top)` 클램프 유지: 오라클 식은 글리프높이 > 줄높이 일 때 음수가 되는데,
+/// 한컴에서 줄높이는 항상 그 줄 최대 글리프를 담으므로(횡단 법칙 1) 음수는 우리 쪽
+/// 줄 메트릭 데싱크(재측정으로 커진 표, lineseg 없는 문단 폴백)만을 뜻한다. 그때
+/// 한컴이 무엇을 하는지는 **미채취**(코퍼스에 글리프>줄 표본 없음)이므로, 위 줄을
+/// 침범하지 않는 쪽으로 남긴다.
+fn tac_ink_top(
+    line_top: f64,
+    baseline: f64,
+    line_height: f64,
+    ink_h: f64,
+    ctrl: Option<&Control>,
+    dpi: f64,
+) -> f64 {
+    let margin_v = ctrl
+        .and_then(crate::renderer::composer::tac_box_hwp)
+        .map(|b| hwpunit_to_px(b.margin_v, dpi))
+        .unwrap_or(0.0);
+    let om_top = match ctrl {
+        // 글리프 상자에 여백을 계상하는 개체(= 표)만 바깥여백상을 쓴다 —
+        // `tac_box_hwp` 의 여백 정책과 같은 경계.
+        Some(Control::Table(t)) if margin_v > 0.0 => {
+            hwpunit_to_px(t.outer_margin_top.max(0) as i32, dpi)
+        }
+        _ => 0.0,
+    };
+    if line_height <= 0.0 {
+        return line_top + om_top;
+    }
+    let r = baseline / line_height;
+    (line_top + baseline - r * (ink_h + margin_v) + om_top).max(line_top)
+}
+
 /// 인라인으로 이미 분류된 TAC 표의 줄바꿈 여부만 판단한다.
 ///
 /// 인라인 분류 자체는 상류 게이트 `height_measurer::is_tac_table_inline_in_para`
@@ -1786,8 +1840,7 @@ impl LayoutEngine {
                 }
             }
 
-            // 텍스트 세그먼트 뒤의 표 배치
-            // 표 하단 = 베이스라인 + outer_margin_bottom
+            // 텍스트 세그먼트 뒤의 표 배치 (세로 = 글리프 상자 기준선 가름, `tac_ink_top`)
             if table_idx < inline_tables.len() {
                 let (ctrl_idx, tbl) = &inline_tables[table_idx];
                 let mt = measured_tables
@@ -1817,8 +1870,14 @@ impl LayoutEngine {
                     current_y += line_step;
                     inline_x = line_start_x;
                 }
-                let om_bottom = hwpunit_to_px(tbl.outer_margin_bottom as i32, self.dpi);
-                let tbl_y = (current_y + baseline_dist + om_bottom - tbl_h).max(current_y);
+                let tbl_y = tac_ink_top(
+                    current_y,
+                    baseline_dist,
+                    line_height,
+                    tbl_h,
+                    para.controls.get(*ctrl_idx),
+                    self.dpi,
+                );
 
                 let table_bottom = self.layout_table(
                     tree,
@@ -1868,8 +1927,14 @@ impl LayoutEngine {
             let tbl_h = mt
                 .map(|m| m.total_height)
                 .unwrap_or_else(|| hwpunit_to_px(tbl.common.height as i32, self.dpi));
-            let om_bottom = hwpunit_to_px(tbl.outer_margin_bottom as i32, self.dpi);
-            let tbl_y = (current_y + baseline_dist + om_bottom - tbl_h).max(current_y);
+            let tbl_y = tac_ink_top(
+                current_y,
+                baseline_dist,
+                line_height,
+                tbl_h,
+                para.controls.get(*ctrl_idx),
+                self.dpi,
+            );
 
             let table_bottom = self.layout_table(
                 tree,
@@ -5153,7 +5218,7 @@ impl LayoutEngine {
                         }
                     }
                     // 인라인 TAC 표: 텍스트 흐름 위치에 직접 렌더링
-                    // 표 하단 = 베이스라인 + outer_margin_bottom
+                    // (세로 = 글리프 상자 기준선 가름, `tac_ink_top`)
                     if let (Some(p), Some(bdc)) = (para, bin_data_content) {
                         if let Some(Control::Table(t)) = p.controls.get(tac_ci) {
                             let raw_seg_width =
@@ -5177,9 +5242,14 @@ impl LayoutEngine {
                                 .is_some();
                             if t.common.treat_as_char && should_render_inline && !already_rendered {
                                 let table_h = hwpunit_to_px(t.common.height as i32, self.dpi);
-                                let om_bottom =
-                                    hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi);
-                                let table_y = (y + baseline + om_bottom - table_h).max(y);
+                                let table_y = tac_ink_top(
+                                    y,
+                                    baseline,
+                                    line_height,
+                                    table_h,
+                                    p.controls.get(tac_ci),
+                                    self.dpi,
+                                );
                                 // [Task #2212] 셀 안 인라인 TAC 표는 외곽 셀 경로를
                                 // 확장한 2단 cell_context 로 렌더해야 경로 기반 조회
                                 // (get_table_cell_bboxes_by_path 등)가 내부 셀을 찾는다.
@@ -6653,6 +6723,110 @@ mod issue_1151_v3_helper_tests {
         let controls = vec![Control::Table(Box::new(t1)), Control::Table(Box::new(t2))];
         // (10000 + 283 + 283) + (5000 + 283 + 283) = 10566 + 5566 = 16132
         assert_eq!(calc_sibling_topandbottom_reserved_hu(&controls), 16132);
+    }
+}
+
+#[cfg(test)]
+mod tac_ink_top_oracle_tests {
+    //! [oracle-pdf-mining-20260806 §2-C] 글리프 상자가 기준선을 r:(1−r) 로 가른다 —
+    //! 한컴 인쇄 PDF 실측 두 표본을 HWPUNIT 그대로 재현한다(1px = 75HU).
+
+    use super::tac_ink_top;
+    use crate::model::control::Control;
+    use crate::model::shape::CommonObjAttr;
+    use crate::model::table::Table;
+
+    const HU: f64 = 1.0 / 75.0; // HWPUNIT → px (96dpi)
+
+    fn tac_table(height: u32, om: i16) -> Control {
+        Control::Table(Box::new(Table {
+            common: CommonObjAttr {
+                width: 10000,
+                height,
+                treat_as_char: true,
+                ..Default::default()
+            },
+            outer_margin_left: om,
+            outer_margin_right: om,
+            outer_margin_top: om,
+            outer_margin_bottom: om,
+            ..Default::default()
+        }))
+    }
+
+    /// `21_언어_기출_편집가능본.pdf` cell6#0 — r=0.4998 인 줄에 바깥여백 566 짜리
+    /// 성명 표(h=2449)와 여백 0 인 수험번호 표(h=2448). PDF 실측은 **잉크 y 동일**.
+    #[test]
+    fn eoneo_pair_shares_ink_top() {
+        let (lh, bd) = (3015.0 * HU, 1507.0 * HU);
+        let name = tac_ink_top(0.0, bd, lh, 2449.0 * HU, Some(&tac_table(2449, 283)), 96.0);
+        let no = tac_ink_top(0.0, bd, lh, 2448.0 * HU, Some(&tac_table(2448, 0)), 96.0);
+        assert!(
+            (name - no).abs() < 0.05,
+            "성명/수험번호 잉크 상단이 같아야 한다: {name} vs {no}"
+        );
+        // 글리프높이(2449+566) == 줄높이 → 잉크상단 = 줄상단 + 바깥여백상(283HU).
+        assert!(
+            (name - 283.0 * HU).abs() < 0.02,
+            "잉크상단 = 줄상단 + 바깥여백상: {name}"
+        );
+    }
+
+    /// `복학원서.pdf` s0#16 — r=0.85, 표 h=21016 + 바깥여백 280(각 변 140) = 줄높이 21296.
+    /// PDF 실측 잉크바닥 Δ0.03pt.
+    #[test]
+    fn bokhak_single_table_line() {
+        let y = tac_ink_top(
+            0.0,
+            18102.0 * HU,
+            21296.0 * HU,
+            21016.0 * HU,
+            Some(&tac_table(21016, 140)),
+            96.0,
+        );
+        assert!(
+            (y - 140.0 * HU).abs() < 0.02,
+            "잉크상단 = 줄상단 + 바깥여백상(140HU): {y}"
+        );
+    }
+
+    /// 소형 표가 더 높은 줄에 얹히면 글리프 상자만큼만 기준선을 가른다 —
+    /// 종전 식(잉크바닥 = 기준선 + 바깥여백하)은 여기서 부호가 반대로 벌어졌다.
+    #[test]
+    fn small_table_on_tall_line_sits_below_line_top() {
+        let (lh, bd) = (10000.0 * HU, 8500.0 * HU);
+        let y = tac_ink_top(100.0, bd, lh, 1000.0 * HU, Some(&tac_table(1000, 0)), 96.0);
+        // 0.85×(10000 − 1000) = 7650HU 아래.
+        assert!((y - (100.0 + 7650.0 * HU)).abs() < 0.02, "y={y}");
+        assert!(y > 100.0, "줄 상단으로 접히면 안 된다");
+    }
+
+    /// 클램프: 글리프높이 > 줄높이(줄 메트릭 데싱크)면 위 줄을 침범하지 않는다.
+    #[test]
+    fn oversized_glyph_clamps_to_line_top() {
+        let y = tac_ink_top(
+            50.0,
+            850.0 * HU,
+            1000.0 * HU,
+            5000.0 * HU,
+            Some(&tac_table(5000, 0)),
+            96.0,
+        );
+        assert_eq!(y, 50.0, "음수 결과는 줄 상단으로 클램프");
+    }
+
+    /// 줄높이 0(lineseg 없는 폴백) → 비율 불명이므로 줄상단 + 바깥여백상.
+    #[test]
+    fn zero_line_height_falls_back_to_outer_margin_top() {
+        let y = tac_ink_top(
+            10.0,
+            0.0,
+            0.0,
+            2449.0 * HU,
+            Some(&tac_table(2449, 283)),
+            96.0,
+        );
+        assert!((y - (10.0 + 283.0 * HU)).abs() < 0.02, "y={y}");
     }
 }
 

@@ -132,8 +132,8 @@ fn text_line_before_table_is_not_justified() {
 
 /// [96d24f4b3 비회귀] 원래 증상 — 표가 텍스트보다 46px 위로 튀는 세로 데싱크와
 /// 줄 전체를 덮는 블록 캐럿. 둘 다 `Table.attr` 오설정이 원인이었고 수리됐다.
-/// 실측(2026-08-06): 텍스트 줄 top=132.3 / 표 top=137.3(Δ5.0px = 바깥여백급),
-/// 캐럿 h=13.3 vs 표 h=34.2.
+/// 실측(2026-08-06): 텍스트 줄 top=132.3 / 표 top = 그 + 바깥여백상 3.77px
+/// (오라클 §2-C `tac_ink_top`; 정정 전에는 +5.05px), 캐럿 h=13.3 vs 표 h=34.2.
 #[test]
 fn no_vertical_desync_nor_block_caret_beside_table() {
     let mut doc = make_doc_with_end_anchor_table();

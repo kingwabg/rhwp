@@ -108,19 +108,23 @@ fn start_anchor_small_table_shares_line_with_following_text() {
         ty + th,
         xy + xh
     );
-    // 코퍼스 횡단법칙 1·법칙 4: 줄 상자 = 표 + 바깥여백 상하이고, 표 바닥은
-    // **기준선 + 바깥여백 하**에 앉는다(paragraph_layout `tbl_y = y+baseline+om_b-h`).
-    // TextRun bbox 높이가 baseline 거리이므로 baseline = xy + xh.
-    // 줄높이가 바깥여백을 빼먹으면 이 식이 음수가 되어 표가 줄 상단으로 clamp 되고
-    // (`.max(y)`) 기준선이 표 바닥에서 0.15·줄높이만큼 떨어진다 — 그 회귀를 잡는 핀.
-    // 잔차 = 바깥여백 하(생성 기본 283HU): create_table_ex 기본값(object_ops/table.rs).
-    const OM_BOTTOM_PX: f64 = 283.0 * 96.0 / 7200.0;
-    let baseline = xy + xh;
+    // 코퍼스 횡단법칙 1 + [oracle-pdf-mining-20260806 §2-C]: 줄 상자 = 표 + 바깥여백
+    // 상하이고(글리프높이 == 줄높이), 글리프 상자가 기준선을 r:(1−r) 로 가르므로
+    // **표 잉크 상단 = 줄 상단 + 바깥여백 상** 이다(`paragraph_layout::tac_ink_top`).
+    //
+    // 종전 이 핀은 법칙 4("표 바닥 = 기준선 + 바깥여백 하")를 잠그고 있었으나
+    // §2-B 가 한컴 인쇄 PDF 로 반증했다 — `복학원서.pdf` 에서 표 바닥은 같은 줄
+    // 기준선보다 30.57pt **아래**(= (1−r)·줄높이 − 바깥여백하)다. 줄높이가 바깥여백을
+    // 빼먹으면(글리프 > 줄) 식이 음수가 되어 표가 줄 상단으로 clamp 되는 회귀는
+    // 이 핀이 그대로 잡는다(잔차 = 바깥여백 상 283HU, create_table_ex 기본값).
+    const OM_TOP_PX: f64 = 283.0 * 96.0 / 7200.0;
     assert!(
-        ((baseline + OM_BOTTOM_PX) - (ty + th)).abs() <= 0.5,
-        "표 바닥({}) = 텍스트 baseline({baseline}) + 바깥여백 하({OM_BOTTOM_PX}) 여야 한다 \
-         — 어긋나면 줄높이에 바깥여백이 빠져 표가 줄 상단으로 clamp 된 것",
-        ty + th
+        ((xy + OM_TOP_PX) - ty).abs() <= 0.5,
+        "표 잉크 상단({ty}) = 줄 상단({xy}) + 바깥여백 상({OM_TOP_PX}) 여야 한다 — \
+         어긋나면 줄높이에 바깥여백이 빠져 표가 줄 상단으로 clamp 된 것 \
+         (표 바닥={} 텍스트 baseline={})",
+        ty + th,
+        xy + xh
     );
 }
 
