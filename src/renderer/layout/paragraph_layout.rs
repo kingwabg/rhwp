@@ -1307,12 +1307,22 @@ impl LayoutEngine {
         // 텍스트 세그먼트 분리: 갭이 8 이상이면 컨트롤 위치
         let mut segments: Vec<(usize, usize)> = Vec::new(); // (start_char_idx, end_char_idx)
 
-        // 선행 컨트롤 감지: 첫 텍스트 문자 앞에 컨트롤이 있으면 빈 세그먼트 추가
-        // 확장 컨트롤은 8 UTF-16 유닛을 차지하므로, offsets[0] / 8 = 선행 컨트롤 수
-        if !offsets.is_empty() && offsets[0] >= 8 {
-            let num_leading = (offsets[0] / 8) as usize;
-            let tables_to_prepend = num_leading.min(inline_tables.len());
-            for _ in 0..tables_to_prepend {
+        // 선행 컨트롤 감지: 첫 텍스트 문자 앞에 **표가** 있으면 빈 세그먼트를 넣어
+        // 배치 순서(segment[0], table[0], segment[1], …)에서 표를 앞으로 보낸다.
+        //
+        // 종전엔 선행 표 수를 `offsets[0] / 8` (= 선행 확장 컨트롤 수)로 셌다. 그런데
+        // 문단 선두의 SECTION_DEF/COLUMN_DEF 도 8 UTF-16 유닛을 차지하므로(편집으로
+        // 만든 문서의 첫 문단은 항상 2개), 표가 텍스트 **뒤**(end-anchor)나 **사이**
+        // (mid-anchor)에 있어도 빈 세그먼트가 앞에 붙어 표가 텍스트 왼쪽으로 튀었다
+        // (실측: "왼쪽"+표 → 표 x=113.4, 텍스트 x=302.4 로 좌우 반전).
+        // 표의 실제 char 위치(`control_text_positions`)로 세면 앵커 모양과 무관하게 맞다.
+        let control_positions = para.control_text_positions();
+        if !offsets.is_empty() {
+            let leading_tables = inline_tables
+                .iter()
+                .filter(|(ci, _)| control_positions.get(*ci).is_some_and(|&pos| pos == 0))
+                .count();
+            for _ in 0..leading_tables {
                 segments.push((0, 0)); // 빈 세그먼트 → 표가 텍스트 앞에 배치됨
             }
         }
@@ -3478,10 +3488,14 @@ impl LayoutEngine {
                 total_text_width += missing_tac_width;
             }
             let is_last_line_of_para = line_idx == end - 1 && end == composed.lines.len();
-            // [tac-inline-baseline-report-20260805] 정렬용 "마지막 줄": 문단 전체에서
-            // 이 줄 뒤에 텍스트 있는 줄이 없으면 사실상 마지막 텍스트 줄 — end-anchor
-            // TAC 표의 자기 줄(빈 줄)이 뒤따를 때 양쪽정렬이 앞 텍스트를 줄 폭으로
-            // 벌리면 안 된다. PartialParagraph(end < len) 범위와 무관하게 전체를 본다.
+            // 정렬용 "마지막 줄": 문단 전체에서 이 줄 뒤에 텍스트 있는 줄이 없으면
+            // 사실상 마지막 텍스트 줄 — 표 자기 줄(텍스트 없는 줄)이 뒤따를 때 양쪽정렬이
+            // 앞 텍스트를 줄 폭으로 벌리지 않는다. PartialParagraph(end < len) 범위와
+            // 무관하게 전체를 본다.
+            // ⚠ 이 완화의 오라클은 없다(도입 근거였던 end-anchor 자기 줄 **생산**은
+            // oracle-pdf-mining-20260806 §1-B 로 반증돼 삭제됨). 지금 영향 범위는 저장
+            // 파일이 textless own-line seg 를 담은 문단뿐 — 그 줄에서 한컴이 양쪽정렬을
+            // 벌리는지는 미측정이다.
             let is_last_text_line_of_para = composed.lines[line_idx + 1..]
                 .iter()
                 .all(|l| l.runs.iter().all(|r| r.text.trim().is_empty()));
