@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>그림으로 보는 rhwp 문서 배치 이야기 — 무엇이 문제고 어떻게 고칠까</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface: #fcfcfb; --page: #f9f9f7;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,.10);
+  --blue: #2a78d6; --orange: #eb6834; --green: #1baf7a; --yellow: #eda100;
+  --red: #d03b3b; --textbar: #d7d5cd;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface: #1a1a19; --page: #0d0d0d;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,.10);
+    --blue: #3987e5; --orange: #d95926; --green: #199e70; --yellow: #c98500;
+    --red: #e66767; --textbar: #4a4a47;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.75 system-ui, -apple-system, "Segoe UI", "Apple SD Gothic Neo", sans-serif; }
+.wrap { max-width: 920px; margin: 0 auto; padding: 40px 24px 120px; }
+h1 { font-size: 26px; margin: 20px 0 8px; letter-spacing: -.3px; }
+.sub { color: var(--ink-2); margin: 0 0 8px; }
+h2 { font-size: 21px; margin: 60px 0 8px; padding-top: 20px; border-top: 1px solid var(--grid); }
+h2 .no { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--ink); color: var(--page); font-size: 15px; margin-right: 10px; vertical-align: -4px; }
+h3 { font-size: 17px; margin: 28px 0 6px; }
+p { margin: 10px 0; }
+.lead { font-size: 17px; color: var(--ink-2); }
+figure { margin: 22px 0; background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; padding: 20px; }
+figcaption { color: var(--ink-2); font-size: 14px; margin-top: 12px; line-height: 1.6; }
+svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+svg text { font-family: system-ui, "Apple SD Gothic Neo", sans-serif; }
+.talk { background: var(--surface); border: 1px solid var(--ring); border-left: 4px solid var(--blue); border-radius: 10px; padding: 14px 18px; margin: 16px 0; }
+.talk.warn { border-left-color: var(--red); }
+.talk.good { border-left-color: var(--green); }
+.talk b.q { display: block; margin-bottom: 4px; }
+table { border-collapse: collapse; width: 100%; margin: 14px 0; background: var(--surface); font-size: 14.5px; }
+th, td { border: 1px solid var(--grid); padding: 8px 12px; text-align: left; }
+th { background: color-mix(in oklab, var(--surface) 92%, var(--ink)); }
+.dic dt { font-weight: 700; margin-top: 14px; }
+.dic dd { margin: 2px 0 0 0; color: var(--ink-2); }
+.foot { margin-top: 60px; padding-top: 16px; border-top: 1px solid var(--grid); color: var(--muted); font-size: 13px; }
+a { color: var(--blue); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>그림으로 보는 rhwp 문서 배치 이야기</h1>
+<p class="sub">2026-08-05 · 초보자용 — 표·그림 같은 "개체"가 문서에 어떻게 놓이는지, 지금 무엇이 말썽인지, 어떻게 고칠지를 그림으로 설명합니다.</p>
+<p class="lead">한 줄 요약: <b>개체를 놓는 규칙 자체는 이미 잘 만들어져 있습니다. 문제는 ① 규칙을 갈아탈 때 위치를 다시 재지 않는 것, ② "다시 계산해!"라는 알림이 일부 상황에만 연결된 것</b> — 이 두 가지를 고치면 지금까지 하나하나 고치던 버그들이 뭉텅이로 사라집니다.</p>
+
+<!-- ============================================================ -->
+<h2><span class="no">1</span>개체를 놓는 방법은 딱 5가지</h2>
+<p>한글 문서에서 표·그림·도형은 아래 5가지 방법 중 하나로 놓입니다. rhwp 엔진도 이 5가지를 "상태"로 구분해서 처리합니다.</p>
+
+<figure>
+<svg viewBox="0 0 880 420" role="img" aria-label="다섯 가지 배치 방식 그림">
+<defs>
+  <g id="pg"><rect x="0" y="0" width="160" height="120" rx="6" fill="var(--surface)" stroke="var(--axis)"/></g>
+</defs>
+<g font-size="13" fill="var(--ink)">
+  <!-- 1 글자처럼 -->
+  <g transform="translate(10,20)">
+    <use href="#pg"/>
+    <rect x="14" y="18" width="132" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="14" y="44" width="34" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="54" y="30" width="36" height="26" rx="3" fill="var(--blue)"/>
+    <rect x="96" y="44" width="50" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="14" y="72" width="132" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="14" y="92" width="90" height="7" rx="3.5" fill="var(--textbar)"/>
+    <text x="80" y="145" text-anchor="middle" font-weight="700" fill="var(--blue)">① 글자처럼 취급</text>
+    <text x="80" y="163" text-anchor="middle" fill="var(--ink-2)" font-size="11.5">개체가 "큰 글자 한 개"가 되어</text>
+    <text x="80" y="178" text-anchor="middle" fill="var(--ink-2)" font-size="11.5">글자들 사이에 낀다</text>
+  </g>
+  <!-- 2 어울림 -->
+  <g transform="translate(185,20)">
+    <use href="#pg"/>
+    <rect x="14" y="16" width="132" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="92" y="34" width="54" height="52" rx="3" fill="var(--orange)"/>
+    <rect x="14" y="36" width="70" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="14" y="52" width="70" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="14" y="68" width="70" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="14" y="96" width="132" height="7" rx="3.5" fill="var(--textbar)"/>
+    <text x="80" y="145" text-anchor="middle" font-weight="700" fill="var(--orange)">② 어울림</text>
+    <text x="80" y="163" text-anchor="middle" fill="var(--ink-2)" font-size="11.5">글이 개체의 옆을</text>
+    <text x="80" y="178" text-anchor="middle" fill="var(--ink-2)" font-size="11.5">피해서 흐른다</text>
+  </g>
+  <!-- 3 자리차지 -->
+  <g transform="translate(360,20)">
+    <use href="#pg"/>
+    <rect x="14" y="16" width="132" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="14" y="32" width="100" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="24" y="48" width="112" height="34" rx="3" fill="var(--green)"/>
+    <rect x="14" y="92" width="132" height="7" rx="3.5" fill="var(--textbar)"/>
+    <text x="80" y="145" text-anchor="middle" font-weight="700" fill="var(--green)">③ 자리차지</text>
+    <text x="80" y="163" text-anchor="middle" fill="var(--ink-2)" font-size="11.5">그 높이 전체를 독차지 —</text>
+    <text x="80" y="178" text-anchor="middle" fill="var(--ink-2)" font-size="11.5">옆에 글이 못 온다</text>
+  </g>
+  <!-- 4 글 뒤로 -->
+  <g transform="translate(535,20)">
+    <use href="#pg"/>
+    <rect x="40" y="30" width="80" height="56" rx="3" fill="var(--yellow)" opacity="0.45"/>
+    <rect x="14" y="18" width="132" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="14" y="40" width="132" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="14" y="62" width="132" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="14" y="84" width="100" height="7" rx="3.5" fill="var(--textbar)"/>
+    <text x="80" y="145" text-anchor="middle" font-weight="700" fill="var(--yellow)">④ 글 뒤로</text>
+    <text x="80" y="163" text-anchor="middle" fill="var(--ink-2)" font-size="11.5">글 밑에 깔린다</text>
+    <text x="80" y="178" text-anchor="middle" fill="var(--ink-2)" font-size="11.5">(배경·워터마크)</text>
+  </g>
+  <!-- 5 글 앞으로 -->
+  <g transform="translate(710,20)">
+    <use href="#pg"/>
+    <rect x="14" y="18" width="132" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="14" y="40" width="132" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="14" y="62" width="132" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="14" y="84" width="100" height="7" rx="3.5" fill="var(--textbar)"/>
+    <rect x="46" y="34" width="72" height="48" rx="3" fill="var(--yellow)"/>
+    <text x="80" y="145" text-anchor="middle" font-weight="700" fill="var(--yellow)">⑤ 글 앞으로</text>
+    <text x="80" y="163" text-anchor="middle" fill="var(--ink-2)" font-size="11.5">글 위를 덮는다</text>
+    <text x="80" y="178" text-anchor="middle" fill="var(--ink-2)" font-size="11.5">(도장·스티커)</text>
+  </g>
+  <!-- 공통 설명 -->
+  <g transform="translate(10,225)">
+    <rect x="0" y="0" width="860" height="170" rx="10" fill="none" stroke="var(--grid)"/>
+    <text x="20" y="30" font-weight="700">글의 흐름에 주는 영향이 전부 다릅니다</text>
+    <text x="20" y="58" fill="var(--ink-2)">① 글자처럼 취급 — 글자니까 줄이 그만큼 키가 커진다. 뒤에 오는 글자는 개체의 <tspan font-weight="700">바닥</tspan>에 발을 맞춘다.</text>
+    <text x="20" y="84" fill="var(--ink-2)">② 어울림 — 개체가 차지한 폭만큼 그 옆의 줄들이 <tspan font-weight="700">짧아진다</tspan>.</text>
+    <text x="20" y="110" fill="var(--ink-2)">③ 자리차지 — 개체가 차지한 높이만큼 뒤의 글이 <tspan font-weight="700">아래로 밀린다</tspan>.</text>
+    <text x="20" y="136" fill="var(--ink-2)">④⑤ 글 앞/뒤 — 글의 흐름에 <tspan font-weight="700">아무 영향 없음</tspan>. 그냥 겹쳐 보일 뿐이다. (예외 하나: 결재 도장은 진짜 한글이 한 줄을 비워 두므로 우리도 똑같이 예약)</text>
+  </g>
+</g>
+</svg>
+<figcaption>다섯 가지 배치 방식. 내부적으로는 "글자처럼 취급인가?"와 "글을 어떻게 피하게 할 것인가?" 두 가지 설정의 조합일 뿐입니다.</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2><span class="no">2</span>개체의 위치는 "어디서부터 잰 거리"인가</h2>
+<p>떠 있는 개체(②~⑤)의 위치는 숫자 하나(예: 위에서 300)로 저장됩니다. 그런데 <b>그 300을 어디서부터 재는지</b>가 별도 설정입니다. 잴 수 있는 출발점(기준)은 세 가지입니다.</p>
+<p>여기에 변수 하나가 더 있습니다 — <b>정렬</b>. 개체의 왼쪽·가운데·오른쪽 중 어디를 기준점에 맞출지 정하는 설정인데, <b>"오른쪽"에 맞추면 거리를 반대 방향(왼쪽으로)으로 잽니다.</b> 즉 같은 숫자라도 정렬에 따라 이동 방향까지 달라집니다.</p>
+
+<figure>
+<svg viewBox="0 0 880 320" role="img" aria-label="세 가지 좌표 기준">
+<g font-size="13">
+  <!-- 페이지 -->
+  <rect x="40" y="20" width="360" height="280" rx="8" fill="var(--surface)" stroke="var(--axis)" stroke-width="1.5"/>
+  <rect x="80" y="55" width="280" height="215" rx="4" fill="none" stroke="var(--grid)" stroke-dasharray="5 4"/>
+  <rect x="95" y="70" width="250" height="8" rx="4" fill="var(--textbar)"/>
+  <rect x="95" y="90" width="250" height="8" rx="4" fill="var(--textbar)"/>
+  <rect x="95" y="110" width="180" height="8" rx="4" fill="var(--textbar)"/>
+  <rect x="230" y="170" width="90" height="60" rx="4" fill="var(--orange)"/>
+  <text x="330" y="205" text-anchor="middle" fill="#fff" font-weight="700" font-size="12" transform="translate(-55,0)">개체</text>
+  <!-- 기준 화살표들 -->
+  <line x1="46" y1="26" x2="228" y2="168" stroke="var(--blue)" stroke-width="2"/>
+  <circle cx="46" cy="26" r="4" fill="var(--blue)"/>
+  <line x1="84" y1="59" x2="228" y2="172" stroke="var(--green)" stroke-width="2"/>
+  <circle cx="84" cy="59" r="4" fill="var(--green)"/>
+  <line x1="95" y1="114" x2="230" y2="176" stroke="var(--red)" stroke-width="2"/>
+  <circle cx="95" cy="114" r="4" fill="var(--red)"/>
+  <!-- 라벨 -->
+  <g transform="translate(450,40)" fill="var(--ink)">
+    <circle cx="10" cy="6" r="5" fill="var(--blue)"/>
+    <text x="26" y="11" font-weight="700">종이(용지) 기준</text>
+    <text x="26" y="30" fill="var(--ink-2)">종이의 맨 왼쪽 위 모서리부터 잰다.</text>
+    <circle cx="10" cy="66" r="5" fill="var(--green)"/>
+    <text x="26" y="71" font-weight="700">본문 기준</text>
+    <text x="26" y="90" fill="var(--ink-2)">여백을 뺀 본문 영역(점선)부터 잰다.</text>
+    <circle cx="10" cy="126" r="5" fill="var(--red)"/>
+    <text x="26" y="131" font-weight="700">문단 기준</text>
+    <text x="26" y="150" fill="var(--ink-2)">개체가 매달린 문단의 현재 위치부터 잰다.</text>
+    <text x="26" y="169" fill="var(--ink-2)">문단은 글을 쓰면 움직이므로, 셋 중 유일하게</text>
+    <text x="26" y="188" fill="var(--ink-2)">"움직이는 출발점"이다.</text>
+    <rect x="0" y="212" width="400" height="62" rx="8" fill="none" stroke="var(--grid)"/>
+    <text x="16" y="238" font-weight="700">위치 = 출발점 + 정렬(왼쪽/가운데/오른쪽) ± 거리</text>
+    <text x="16" y="260" fill="var(--ink-2)">주의: 오른쪽 정렬이면 거리를 반대 방향으로 잰다!</text>
+  </g>
+</g>
+</svg>
+<figcaption>같은 "거리 300"이라도 출발점이 다르면 전혀 다른 위치가 됩니다. 그리고 정렬이 "오른쪽"이면 거리의 방향까지 뒤집힙니다.</figcaption>
+</figure>
+
+<div class="talk warn">
+<b class="q">🐛 그래서 생기는 대표 버그 — "설정 바꿨더니 개체가 순간이동해요"</b>
+사용자가 배치 설정(예: 종이 기준 → 문단 기준)을 바꾸면, 엔진은 <b>출발점 이름만 바꾸고 거리 숫자는 그대로 둡니다.</b> 거리를 새 출발점에서 다시 재서 적어주는 코드("다시 재기")가 아예 없습니다. 그래서 아래 그림처럼 됩니다.
+</div>
+
+<figure>
+<svg viewBox="0 0 880 300" role="img" aria-label="기준 변경 시 점프 그림">
+<g font-size="13">
+  <!-- before -->
+  <g transform="translate(20,20)">
+    <rect x="0" y="0" width="380" height="230" rx="8" fill="var(--surface)" stroke="var(--axis)"/>
+    <circle cx="8" cy="8" r="5" fill="var(--blue)"/>
+    <line x1="8" y1="8" x2="150" y2="120" stroke="var(--blue)" stroke-width="2.5"/>
+    <text x="60" y="55" fill="var(--blue)" font-weight="700">거리 300</text>
+    <rect x="150" y="120" width="90" height="56" rx="4" fill="var(--orange)"/>
+    <text x="195" y="152" text-anchor="middle" fill="#fff" font-weight="700" font-size="12">개체</text>
+    <text x="190" y="260" text-anchor="middle" font-weight="700">변경 전 — 종이 기준 + 거리 300</text>
+  </g>
+  <!-- after -->
+  <g transform="translate(470,20)">
+    <rect x="0" y="0" width="380" height="230" rx="8" fill="var(--surface)" stroke="var(--axis)"/>
+    <rect x="150" y="120" width="90" height="56" rx="4" fill="none" stroke="var(--orange)" stroke-dasharray="6 4" stroke-width="2"/>
+    <text x="195" y="152" text-anchor="middle" fill="var(--orange)" font-size="11.5">원래 자리</text>
+    <rect x="30" y="30" width="200" height="8" rx="4" fill="var(--textbar)"/>
+    <circle cx="30" cy="44" r="5" fill="var(--red)"/>
+    <text x="44" y="49" fill="var(--red)" font-size="12">새 출발점(문단)</text>
+    <line x1="30" y1="44" x2="172" y2="156" stroke="var(--red)" stroke-width="2.5"/>
+    <text x="60" y="105" fill="var(--red)" font-weight="700" transform="rotate(0)">같은 300인데…</text>
+    <rect x="172" y="156" width="90" height="56" rx="4" fill="var(--orange)"/>
+    <text x="217" y="188" text-anchor="middle" fill="#fff" font-weight="700" font-size="12">개체</text>
+    <text x="190" y="260" text-anchor="middle" font-weight="700">변경 후 — 출발점만 바뀌고 300은 그대로 → 점프!</text>
+  </g>
+</g>
+</svg>
+<figcaption>고치는 법은 간단한 원리입니다: <b>출발점을 갈아탈 때는, 지금 눈에 보이는 위치를 기준으로 거리를 다시 재서 적는다.</b> 이 "다시 재기" 계산기를 하나 만들어 모든 설정 변경이 그걸 쓰게 하면, 이 계열 버그 전체가 사라집니다.</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2><span class="no">3</span>엔진은 문서를 이런 순서로 만든다</h2>
+<p>rhwp 안에서 문서 한 장이 화면에 뜨기까지는 공장 라인처럼 단계가 있습니다. 여기서 중요한 건 딱 하나 — <b>"줄 설계도"는 단 한 벌</b>이라는 사실입니다.</p>
+
+<figure>
+<svg viewBox="0 0 880 250" role="img" aria-label="엔진 파이프라인">
+<defs><marker id="ar2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--muted)"/></marker></defs>
+<g font-size="13.5" fill="var(--ink)">
+  <g transform="translate(20,30)">
+    <rect width="180" height="80" rx="10" fill="var(--surface)" stroke="var(--axis)"/>
+    <text x="90" y="34" text-anchor="middle" font-weight="700">① 내용</text>
+    <text x="90" y="56" text-anchor="middle" fill="var(--ink-2)" font-size="12">글자 + 개체 + 설정</text>
+  </g>
+  <g transform="translate(240,30)">
+    <rect width="180" height="80" rx="10" fill="var(--surface)" stroke="var(--blue)" stroke-width="2.5"/>
+    <text x="90" y="34" text-anchor="middle" font-weight="700" fill="var(--blue)">② 줄 설계도 만들기</text>
+    <text x="90" y="56" text-anchor="middle" fill="var(--ink-2)" font-size="12">어디서 줄을 바꿀지 결정</text>
+  </g>
+  <g transform="translate(460,30)">
+    <rect width="180" height="80" rx="10" fill="var(--surface)" stroke="var(--axis)"/>
+    <text x="90" y="34" text-anchor="middle" font-weight="700">③ 쪽 나누기</text>
+    <text x="90" y="56" text-anchor="middle" fill="var(--ink-2)" font-size="12">어디서 페이지를 넘길지</text>
+  </g>
+  <g transform="translate(680,30)">
+    <rect width="180" height="80" rx="10" fill="var(--surface)" stroke="var(--axis)"/>
+    <text x="90" y="34" text-anchor="middle" font-weight="700">④ 화면에 그리기</text>
+    <text x="90" y="56" text-anchor="middle" fill="var(--ink-2)" font-size="12">좌표 확정 + 클릭 처리</text>
+  </g>
+  <line x1="200" y1="70" x2="238" y2="70" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#ar2)"/>
+  <line x1="420" y1="70" x2="458" y2="70" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#ar2)"/>
+  <line x1="640" y1="70" x2="678" y2="70" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#ar2)"/>
+  <g transform="translate(20,150)">
+    <rect width="840" height="80" rx="10" fill="none" stroke="var(--grid)"/>
+    <text x="20" y="32" font-weight="700">🔑 규칙: "줄 설계도"는 한 벌뿐이다</text>
+    <text x="20" y="58" fill="var(--ink-2)">파일로 저장할 때도, 화면에 그릴 때도, 마우스 클릭 위치를 계산할 때도 전부 같은 설계도를 본다.</text>
+    <text x="450" y="58" fill="var(--red)">→ 누가 설계도를 몰래 손으로 고치면(정식 절차를 안 거치면) 세 곳이 서로 어긋난다 = 버그.</text>
+  </g>
+</g>
+</svg>
+<figcaption>과거 버그의 상당수가 "설계도를 손으로 고쳐서" 또는 "설계도를 다시 만들어야 하는 순간에 안 만들어서" 생겼습니다. 오늘(8/5) 고친 "표가 글자 위로 붕 뜨는 버그"도 정확히 이 계열이었습니다.</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2><span class="no">4</span>두 번째 큰 문제 — "다시 계산해!" 알림이 일부에만 연결됨</h2>
+<p>어울림(②) 배치는 글이 개체를 피해서 흐르므로, <b>문서를 고칠 때마다</b> "줄을 다시 짜야 하는지" 확인이 필요합니다. 이 확인 신호를 "훅(알림)"이라고 부르는데, 지금은 이 알림이 <b>일부 편집에만 배선</b>되어 있습니다.</p>
+
+<figure>
+<svg viewBox="0 0 880 330" role="img" aria-label="훅 미배선 문제">
+<g font-size="13">
+  <!-- 왼쪽: 알림 오는 경우 -->
+  <g transform="translate(20,20)">
+    <rect x="0" y="0" width="400" height="250" rx="8" fill="var(--surface)" stroke="var(--axis)"/>
+    <text x="200" y="30" text-anchor="middle" font-weight="700" fill="var(--green)">알림이 연결된 편집 (정상)</text>
+    <rect x="240" y="60" width="120" height="90" rx="4" fill="var(--orange)"/>
+    <text x="300" y="110" text-anchor="middle" fill="#fff" font-weight="700" font-size="12">표</text>
+    <rect x="30" y="62" width="190" height="8" rx="4" fill="var(--textbar)"/>
+    <rect x="30" y="84" width="190" height="8" rx="4" fill="var(--textbar)"/>
+    <rect x="30" y="106" width="190" height="8" rx="4" fill="var(--textbar)"/>
+    <rect x="30" y="128" width="150" height="8" rx="4" fill="var(--textbar)"/>
+    <rect x="30" y="170" width="340" height="8" rx="4" fill="var(--textbar)"/>
+    <rect x="30" y="192" width="280" height="8" rx="4" fill="var(--textbar)"/>
+    <text x="200" y="235" text-anchor="middle" fill="var(--ink-2)" font-size="12">글자 입력·삭제 → 줄이 표를 피해서 다시 짜짐 ✓</text>
+  </g>
+  <!-- 오른쪽: 알림 안 오는 경우 -->
+  <g transform="translate(460,20)">
+    <rect x="0" y="0" width="400" height="250" rx="8" fill="var(--surface)" stroke="var(--axis)"/>
+    <text x="200" y="30" text-anchor="middle" font-weight="700" fill="var(--red)">알림이 안 연결된 편집 (버그)</text>
+    <rect x="240" y="60" width="120" height="90" rx="4" fill="var(--orange)"/>
+    <text x="300" y="110" text-anchor="middle" fill="#fff" font-weight="700" font-size="12">표</text>
+    <rect x="30" y="62" width="190" height="8" rx="4" fill="var(--textbar)"/>
+    <rect x="30" y="84" width="340" height="8" rx="4" fill="var(--red)" opacity="0.75"/>
+    <rect x="30" y="106" width="340" height="8" rx="4" fill="var(--red)" opacity="0.75"/>
+    <rect x="30" y="128" width="150" height="8" rx="4" fill="var(--textbar)"/>
+    <rect x="30" y="170" width="340" height="8" rx="4" fill="var(--textbar)"/>
+    <text x="200" y="215" text-anchor="middle" fill="var(--red)" font-size="12" font-weight="700">Enter·붙여넣기 등 → 알림이 안 가서</text>
+    <text x="200" y="235" text-anchor="middle" fill="var(--red)" font-size="12" font-weight="700">줄이 옛날 폭 그대로 → 글이 표를 뚫는다!</text>
+  </g>
+  <text x="440" y="305" text-anchor="middle" fill="var(--ink-2)">알림이 빠진 곳: Enter(문단 나누기) · 문단 합치기 · 붙여넣기 · 그림/도형 옆 · 글이 있는 문단 옆 · 다단 문서</text>
+</g>
+</svg>
+<figcaption>"표 옆에서는 되는데 그림 옆에서는 안 돼요", "타이핑은 되는데 붙여넣기 하면 겹쳐요" — 전부 같은 원인 하나(알림 미배선)의 다른 얼굴입니다.</figcaption>
+</figure>
+
+<div class="talk good">
+<b class="q">💡 고치는 법 — 문마다 검사원을 세우지 말고, 나가는 문을 하나로</b>
+지금은 편집 종류마다 알림선을 하나씩 이어 붙였습니다(그래서 빠진 곳이 생김). 고치는 방법은 반대로: <b>모든 편집이 반드시 지나가는 공용 출구(화면 갱신 직전)에 검사대를 하나만</b> 둡니다. 그러면 Enter든 붙여넣기든 그림 이동이든, 어떤 새로운 편집 기능이 생겨도 자동으로 검사를 받습니다. — 실제로 모든 편집 명령이 지나는 공용 함수 2개를 이미 찾아 놨고, 거기에 두 줄만 넣으면 됩니다.
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="no">5</span>세 번째 문제 — "조합"은 아직 빈칸이 있다</h2>
+<p>표 하나, 그림 하나는 잘 놓습니다. 그런데 <b>"표 옆에 그림"</b>처럼 두 가지가 만나는 조합이 되면 규칙이 정해지지 않은 빈칸이 나옵니다. 그래서 "어떤 개체를(세로축) × 어떤 환경에 놓았을 때(가로축)" 조합마다 되는지 안 되는지를 빈칸 채우기 표로 만들었습니다. (아래는 일부 발췌 — 전체 표는 엔지니어용 문서에 있습니다.)</p>
+
+<figure>
+<svg viewBox="0 0 880 300" role="img" aria-label="조합 매트릭스 개념">
+<g font-size="13">
+  <g transform="translate(30,30)">
+    <text x="0" y="0" font-weight="700">개체 × 놓이는 곳 조합표 (일부)</text>
+    <!-- header -->
+    <g transform="translate(0,20)" font-size="12">
+      <rect width="120" height="34" fill="none" stroke="var(--grid)"/>
+      <rect x="120" width="130" height="34" fill="none" stroke="var(--grid)"/><text x="185" y="22" text-anchor="middle" fill="var(--ink-2)">본문에 인라인</text>
+      <rect x="250" width="130" height="34" fill="none" stroke="var(--grid)"/><text x="315" y="22" text-anchor="middle" fill="var(--ink-2)">어울림</text>
+      <rect x="380" width="130" height="34" fill="none" stroke="var(--grid)"/><text x="445" y="22" text-anchor="middle" fill="var(--ink-2)">표 옆에</text>
+      <rect x="510" width="130" height="34" fill="none" stroke="var(--grid)"/><text x="575" y="22" text-anchor="middle" fill="var(--ink-2)">표(셀) 안에</text>
+    </g>
+    <g transform="translate(0,54)" font-size="12">
+      <rect width="120" height="40" fill="none" stroke="var(--grid)"/><text x="12" y="25" font-weight="700">표</text>
+      <rect x="120" width="130" height="40" fill="none" stroke="var(--grid)"/><circle cx="185" cy="20" r="8" fill="var(--green)"/>
+      <rect x="250" width="130" height="40" fill="none" stroke="var(--grid)"/><circle cx="315" cy="20" r="8" fill="var(--green)"/>
+      <rect x="380" width="130" height="40" fill="none" stroke="var(--grid)"/><circle cx="445" cy="20" r="8" fill="var(--yellow)"/>
+      <rect x="510" width="130" height="40" fill="none" stroke="var(--grid)"/><circle cx="575" cy="20" r="8" fill="var(--green)"/>
+    </g>
+    <g transform="translate(0,94)" font-size="12">
+      <rect width="120" height="40" fill="none" stroke="var(--grid)"/><text x="12" y="25" font-weight="700">그림</text>
+      <rect x="120" width="130" height="40" fill="none" stroke="var(--grid)"/><circle cx="185" cy="20" r="8" fill="var(--green)"/>
+      <rect x="250" width="130" height="40" fill="none" stroke="var(--grid)"/><circle cx="315" cy="20" r="8" fill="var(--yellow)"/>
+      <rect x="380" width="130" height="40" fill="none" stroke="var(--grid)"/><circle cx="445" cy="20" r="8" fill="none" stroke="var(--red)" stroke-width="2.5"/>
+      <rect x="510" width="130" height="40" fill="none" stroke="var(--grid)"/><circle cx="575" cy="20" r="8" fill="var(--green)"/>
+    </g>
+    <!-- 범례 -->
+    <g transform="translate(0,160)" font-size="12.5">
+      <circle cx="8" cy="0" r="7" fill="var(--green)"/><text x="24" y="5">잘 됨 + 자동 시험(테스트)으로 잠가둠</text>
+      <circle cx="8" cy="28" r="7" fill="var(--yellow)"/><text x="24" y="33">규칙은 있는데 일부 상황만 동작 (예: 그림 어울림 — 저장된 문서는 되는데 편집하면 깨짐)</text>
+      <circle cx="8" cy="56" r="7" fill="none" stroke="var(--red)" stroke-width="2.5"/><text x="24" y="61" fill="var(--red)" font-weight="700">빈칸 — 규칙 자체가 없음. "표 옆에 그림"이 바로 여기!</text>
+    </g>
+  </g>
+</g>
+</svg>
+<figcaption>빈칸(○)을 채우는 방법: ① 진짜 한글(한컴)에서 그 조합을 만들어 <b>실제로 어떻게 보이는지 사진과 수치로 채집</b>하고(이걸 "오라클"이라 부릅니다) → ② 그대로 동작하도록 구현 → ③ 다시는 안 깨지게 자동 시험(핀 테스트)으로 잠급니다. 이미 6개 조합의 채집 시나리오까지 다 짜 놨습니다.</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2><span class="no">6</span>그래서, 고치는 순서는 이렇게</h2>
+
+<table>
+<tr><th>순서</th><th>무엇을</th><th>쉽게 말하면</th><th>기대 효과</th></tr>
+<tr><td><b>0단계</b><br>(바로 가능)</td><td>잔 결함 3개</td><td>안전벨트 채우기 — 다음 단계에서 속도가 느려지지 않게 하는 사전 수리 + 음수 입력이 무시되던 버그 + 수식 관련 오판 방지 (전부 몇 줄짜리)</td><td>다음 단계의 기반</td></tr>
+<tr><td><b>1단계</b></td><td>알림(훅) 하나로 합치기</td><td>문마다 검사원 → 공용 출구에 검사대 하나. 표만 받던 검사를 그림·도형도 받게</td><td>"글이 개체를 뚫는" 계열 + "표 옆 그림" 빈칸의 절반이 한 번에 해결</td></tr>
+<tr><td><b>2단계</b></td><td>"다시 재기" 계산기</td><td>배치 기준을 갈아탈 때 눈에 보이는 위치 그대로 거리를 다시 재서 저장</td><td>"설정 바꾸면 순간이동" 계열 전부 해결</td></tr>
+<tr><td><b>3단계</b></td><td>어중간한 경우들 정리</td><td>"표 앞엔 글이 없고 뒤에만 있는" 같은 애매한 상황에 담당 규칙 지정 + 도형에도 그림과 같은 전환 처리 + "개체 옆 폭이 몇 px 남아야 글을 옆으로 흘릴까"의 기준이 부서마다 34px/40px로 달라 하나로 통일</td><td>남은 개별 증상 정리</td></tr>
+<tr><td><b>4단계</b></td><td>조합표 빈칸 채우기</td><td>한글에서 채집(오라클) → 구현 → 자동 시험으로 잠금. "한글도 우리랑 똑같네"로 나오면 코드 수정 없이 시험만 추가하고 끝</td><td>조합 문제의 체계적 종결</td></tr>
+</table>
+
+<div class="talk">
+<b class="q">📌 오늘(8/5) 실제로 이 방식으로 고친 사례</b>
+"글자처럼 취급한 표가 글자보다 46픽셀 위에 붕 뜨는" 버그 — 이전에 두 번 고치려다 실패했던 문제인데, 위 원리(줄 설계도는 한 벌, 정식 절차로만 고친다)대로 접근하니 3곳 수정으로 끝났고, 진짜 한글과 같은 모양(글자는 윗줄, 표는 아랫줄)이 됐습니다. 고치는 과정에서 "결재 문서 쪽수가 5→6쪽으로 변하는" 부작용도 자동 시험이 즉시 잡아줘서 당일 수정했습니다. — 자동 시험(핀)을 깔아두는 이유가 이것입니다.
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="no">7</span>용어 사전</h2>
+<dl class="dic">
+<dt>개체</dt><dd>표, 그림, 도형, 수식, 글상자처럼 글자가 아닌 것들.</dd>
+<dt>글자처럼 취급 (TAC)</dt><dd>개체를 "큰 글자 한 개"로 취급하는 설정. 줄 속에 끼어서 글과 함께 흘러다닌다.</dd>
+<dt>어울림</dt><dd>글이 개체의 옆을 피해서 흐르는 설정. 개체 옆의 줄들이 짧아진다.</dd>
+<dt>자리차지</dt><dd>개체가 그 높이 전체를 독차지 — 옆에 글이 못 오고, 뒤의 글은 아래로 밀린다.</dd>
+<dt>줄 설계도 (line_seg)</dt><dd>"이 문단은 몇 줄이고 각 줄이 어디서 시작하고 얼마나 높은가"를 적은 데이터. 저장·그리기·클릭 계산이 전부 이 한 벌을 본다.</dd>
+<dt>훅 (알림)</dt><dd>"방금 문서가 바뀌었으니 줄을 다시 짜야 하는지 확인해!"라는 신호. 지금은 일부 편집에만 연결돼 있는 게 문제.</dd>
+<dt>다시 재기 (rebase)</dt><dd>배치 기준을 갈아탈 때, 지금 보이는 위치 그대로 거리를 새 기준으로 다시 재서 적는 것. 현재 이 기능이 없어서 개체가 점프한다.</dd>
+<dt>오라클</dt><dd>"진짜 한글(한컴)에서는 어떻게 보이는가"의 채집 기록. 정답지 역할.</dd>
+<dt>핀 테스트</dt><dd>고친 것이 다시 깨지면 즉시 울리는 자동 시험. 못을 박아 고정한다는 뜻으로 "핀".</dd>
+</dl>
+
+<div class="foot">
+이 문서는 초보자용 요약입니다. 근거와 세부(코드 위치, 수치, 리스크)는 엔지니어용 문서 2편에 있습니다:
+<a href="layout_physics_20260805.html">물리 법칙 보고서(진단)</a> · <a href="layout_physics_improvement_20260805.html">개선 실행 계획서</a>
+</div>
+
+</div>
+</body>
+</html>
