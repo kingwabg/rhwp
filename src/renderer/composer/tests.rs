@@ -1327,3 +1327,161 @@ fn tac_case_width_threshold_series_matches_hancom_stored_layout() {
         }
     }
 }
+
+/// [oracle-pdf-mining-20260806 §2-A / §(C) 1층] 문단 모양 "세로 정렬"(`ParaShape.attr1`
+/// bit20-21 ↔ HWPX `hh:align@vertical`) 이 저장 왕복에서 살아남는지 잠근다.
+///
+/// HWP5 는 attr1 을 원시 보존하고(`serializer::doc_info::serialize_para_shape` 가
+/// bit20-21 을 마스킹하지 않는다), HWPX 는 `<hh:align vertical>` 로 파싱·직렬화한다.
+/// 표본: `samples/hwpx/exam_social.hwpx` 는 세로정렬 3종을 다 갖는다 —
+/// 글꼴기준 66개 / 가운데 6개(paraPr {25,40,43,48,54,63}) / 아래쪽 1개(paraPr 10).
+/// 오라클의 CENTER paraPr id 집합과 정확히 일치한다.
+#[test]
+fn para_vertical_align_survives_roundtrip_in_both_formats() {
+    // (파일, 그 파일이 가진 세로정렬 값 → 그 값을 쓰는 paraPr 수)
+    let cases: [(&str, &[(u32, usize)]); 2] = [
+        // 가운데 24개 (그 중 ps102 = exam_science s0#61 의 문단 모양)
+        ("samples/exam_science.hwp", &[(0, 88), (2, 24)]),
+        // 오라클 §2-A 의 HWPX 교차검증 표본 — 3종 전부
+        ("samples/hwpx/exam_social.hwpx", &[(0, 66), (2, 6), (3, 1)]),
+    ];
+    for (path, want_hist) in cases {
+        if !std::path::Path::new(path).exists() {
+            eprintln!("테스트 파일 없음: {path} — 건너뜀");
+            continue;
+        }
+        let data = std::fs::read(path).unwrap();
+        let core = crate::document_core::DocumentCore::from_bytes(&data).unwrap();
+        let valigns = |doc: &crate::model::document::Document| -> Vec<u32> {
+            doc.doc_info
+                .para_shapes
+                .iter()
+                .map(|ps| (ps.attr1 >> 20) & 0x03)
+                .collect()
+        };
+        let before = valigns(core.document());
+
+        // 표본 전제 — 이 파일이 정말 그 세로정렬 값들을 갖고 있나.
+        for &(value, count) in want_hist {
+            assert_eq!(
+                before.iter().filter(|v| **v == value).count(),
+                count,
+                "{path}: 세로정렬={value} paraPr 표본 전제 (분포 {:?})",
+                (0..4)
+                    .map(|v| before.iter().filter(|x| **x == v).count())
+                    .collect::<Vec<_>>()
+            );
+        }
+        // 오라클이 지목한 CENTER paraPr id 집합 (HWPX 표본만).
+        if path.ends_with("exam_social.hwpx") {
+            for id in [25usize, 40, 43, 48, 54, 63] {
+                assert_eq!(before[id], 2, "{path}: paraPr {id} 은 CENTER 여야 한다");
+            }
+            assert_eq!(before[10], 3, "{path}: paraPr 10 은 BOTTOM 여야 한다");
+        }
+
+        // 저장 → 재파스: HWP5·HWPX 두 방향 모두 값을 잃지 않아야 한다.
+        for (kind, bytes) in [
+            (
+                "hwp5",
+                crate::serializer::serialize_document(core.document()).unwrap(),
+            ),
+            (
+                "hwpx",
+                crate::serializer::hwpx::serialize_hwpx(core.document()).unwrap(),
+            ),
+        ] {
+            let re = crate::document_core::DocumentCore::from_bytes(&bytes).unwrap();
+            let after = valigns(re.document());
+            assert_eq!(
+                after, before,
+                "{path} → {kind} 왕복에서 문단 세로정렬이 바뀌었다"
+            );
+        }
+    }
+}
+
+/// [oracle-pdf-mining-20260806 §2-A / §(C) 2·3층] 줄 기준선 비율 r = bd/lh 은 문단 모양의
+/// 세로 정렬이다 — 하드코딩 0.85 가 아니라 그 문단의 r 을 써야 한다.
+///
+/// 표본은 오라클이 지목한 `samples/exam_science.hwp` s0#61 (para_shape 102,
+/// attr1=0x00200000 = 가운데). 그 문단은 표 줄(lh=2864 bd=1432)과 순수 텍스트 줄
+/// (lh=1150 bd=575)이 **똑같이 0.50** 이다. 같은 문서의 세로정렬=글꼴기준 문단은
+/// 표를 품고도 0.85 다(s0#68: lh=11180 bd=9503).
+///
+/// 강제 reflow(저장 seg 를 버리고 생산자에게 다시 묻는다) 결과가 저장값과 맞아야 한다.
+#[test]
+fn vertical_align_center_paragraph_reflow_baseline_matches_stored_ratio() {
+    use crate::renderer::style_resolver::para_vertical_align_baseline_ratio;
+
+    // 3층의 값 매핑 자체 — 오라클 확정 3종 + 미측정(위쪽)은 기본값.
+    assert_eq!(para_vertical_align_baseline_ratio(0), 0.85, "글꼴기준");
+    assert_eq!(para_vertical_align_baseline_ratio(1 << 20), 0.85, "위쪽=미측정");
+    assert_eq!(para_vertical_align_baseline_ratio(2 << 20), 0.50, "가운데");
+    assert_eq!(para_vertical_align_baseline_ratio(3 << 20), 1.00, "아래쪽");
+
+    let path = "samples/exam_science.hwp";
+    if !std::path::Path::new(path).exists() {
+        eprintln!("테스트 파일 없음: {path} — 건너뜀");
+        return;
+    }
+    let data = std::fs::read(path).unwrap();
+
+    // (문단, 기대 세로정렬, 기대 r, 저장 (lh, bd) 목록)
+    // 가운데 문단은 저장값과 **완전히 같아야** 하고, 글꼴기준 문단은 종전 0.85 그대로다.
+    let cases: [(usize, u32, f64, &[(i32, i32)]); 4] = [
+        // 오라클 지목 표본 — 첫 줄이 글자취급 표 줄(2864)이라
+        // `apply_inline_control_line_height` 경로도 함께 잠근다.
+        (61, 2, 0.50, &[(2864, 1432), (1150, 575), (1150, 575)]),
+        (22, 2, 0.50, &[(1150, 575), (1150, 575)]),
+        (16, 2, 0.50, &[(1350, 675), (1150, 575)]),
+        // 세로정렬=글꼴기준 + 표 — 0.85 가 한 비트도 안 변해야 한다.
+        (68, 0, 0.85, &[(11180, 9503)]),
+    ];
+
+    for (pi, want_valign, want_ratio, stored) in cases {
+        let mut core = crate::document_core::DocumentCore::from_bytes(&data).unwrap();
+        let para = &core.document().sections[0].paragraphs[pi];
+        let attr1 = core.document().doc_info.para_shapes[para.para_shape_id as usize].attr1;
+        assert_eq!(
+            (attr1 >> 20) & 0x03,
+            want_valign,
+            "s0#{pi}: 세로정렬 표본 전제 (attr1=0x{attr1:08x})"
+        );
+        assert_eq!(
+            para.line_segs
+                .iter()
+                .map(|s| (s.line_height, s.baseline_distance))
+                .collect::<Vec<_>>(),
+            stored,
+            "s0#{pi}: 저장 seg 표본 전제"
+        );
+
+        core.reflow_paragraph(0, pi);
+        let segs = &core.document().sections[0].paragraphs[pi].line_segs;
+        assert!(!segs.is_empty(), "s0#{pi}: reflow 후 seg 가 없다");
+        for (i, seg) in segs.iter().enumerate() {
+            // 생산자 산술 그대로: make_line_seg 는 절단, 개체 줄은 반올림 — 둘 다 허용.
+            let trunc = (seg.line_height as f64 * want_ratio) as i32;
+            let round = (seg.line_height as f64 * want_ratio).round() as i32;
+            assert!(
+                seg.baseline_distance == trunc || seg.baseline_distance == round,
+                "s0#{pi} 줄{i}: 기준선은 {want_ratio}·{} = {trunc}|{round} 여야 하는데 {} \
+                 (r={:.4} — 하드코딩 0.85 가 남아 있으면 여기서 터진다)",
+                seg.line_height,
+                seg.baseline_distance,
+                seg.baseline_distance as f64 / seg.line_height.max(1) as f64
+            );
+        }
+        // 가운데 문단은 저장 조판과 완전히 일치한다(오라클 = 저장값).
+        if want_valign == 2 && segs.len() == stored.len() {
+            assert_eq!(
+                segs.iter()
+                    .map(|s| (s.line_height, s.baseline_distance))
+                    .collect::<Vec<_>>(),
+                stored,
+                "s0#{pi}: 세로정렬=가운데 문단의 reflow 는 저장 조판과 같아야 한다"
+            );
+        }
+    }
+}

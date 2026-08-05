@@ -1197,11 +1197,12 @@ fn insert_object_tokens(tokens: &mut Vec<BreakToken>, para: &Paragraph) {
     }
 }
 
-fn apply_inline_control_line_height(seg: &mut LineSeg, height_hwp: i32) {
+/// `baseline_ratio` = 그 문단의 r (세로 정렬 — `para_vertical_align_baseline_ratio`).
+fn apply_inline_control_line_height(seg: &mut LineSeg, height_hwp: i32, baseline_ratio: f64) {
     if height_hwp > seg.line_height {
         seg.line_height = height_hwp;
         seg.text_height = height_hwp;
-        seg.baseline_distance = (height_hwp as f64 * 0.85).round() as i32;
+        seg.baseline_distance = (height_hwp as f64 * baseline_ratio).round() as i32;
     }
 }
 
@@ -1300,6 +1301,9 @@ pub(crate) fn reflow_line_segs_with_bands(
         .map(|s| s.line_spacing_type)
         .unwrap_or(LineSpacingType::Percent);
     let ls_value = para_style.map(|s| s.line_spacing).unwrap_or(160.0);
+    // 줄 기준선 비율 r = bd/lh — 문단 모양의 세로 정렬에서 온다(글꼴기준 0.85 /
+    // 가운데 0.50 / 아래쪽 1.00, oracle-pdf-mining-20260806 §2-A).
+    let baseline_ratio = para_style.map(|s| s.line_baseline_ratio).unwrap_or(0.85);
 
     // 줄별 max_font_size에 따라 line_height/text_height/baseline_distance를 계산
     // 한컴은 줄마다 최대 폰트 크기에 맞게 다른 치수를 사용
@@ -1311,7 +1315,7 @@ pub(crate) fn reflow_line_segs_with_bands(
         };
         let line_height_hwp = font_size_to_line_height(fs, dpi);
         let text_height_hwp = line_height_hwp;
-        let baseline_distance_hwp = (line_height_hwp as f64 * 0.85) as i32;
+        let baseline_distance_hwp = (line_height_hwp as f64 * baseline_ratio) as i32;
         let line_spacing_hwp = compute_line_spacing_hwp(ls_type, ls_value, line_height_hwp, dpi);
         // [Task #1811] 원본 linesegarray 부재(orig=None) 시 합성 seg 에 구현속성
         // 태그를 부여 — vpos 보정 등에서 실제 저장 증거와 구분한다 (컨버터의
@@ -1386,7 +1390,7 @@ pub(crate) fn reflow_line_segs_with_bands(
                         seg.tag
                     };
                 }
-                apply_inline_control_line_height(&mut seg, height_hwp);
+                apply_inline_control_line_height(&mut seg, height_hwp, baseline_ratio);
                 new_line_segs.push(seg);
             }
 
@@ -1410,7 +1414,7 @@ pub(crate) fn reflow_line_segs_with_bands(
                 seg.vertical_pos = template.vertical_pos;
             }
             if let Some(height_hwp) = inline_control_line_height_hwp(para) {
-                apply_inline_control_line_height(&mut seg, height_hwp);
+                apply_inline_control_line_height(&mut seg, height_hwp, baseline_ratio);
             }
             para.line_segs = vec![seg];
         }
@@ -1635,7 +1639,7 @@ pub(crate) fn reflow_line_segs_with_bands(
         for (i, lb) in line_breaks.iter().enumerate() {
             if lb.object_height_hwp > 0 {
                 if let Some(seg) = new_line_segs.get_mut(i) {
-                    apply_inline_control_line_height(seg, lb.object_height_hwp);
+                    apply_inline_control_line_height(seg, lb.object_height_hwp, baseline_ratio);
                     applied = true;
                 }
             }
@@ -1643,7 +1647,7 @@ pub(crate) fn reflow_line_segs_with_bands(
         if !applied {
             if let Some(height_hwp) = inline_control_line_height_hwp(para) {
                 if let Some(seg) = new_line_segs.first_mut() {
-                    apply_inline_control_line_height(seg, height_hwp);
+                    apply_inline_control_line_height(seg, height_hwp, baseline_ratio);
                 }
             }
         }
