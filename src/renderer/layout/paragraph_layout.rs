@@ -44,6 +44,14 @@ pub(crate) fn layout_debug_enabled() -> bool {
 ///
 /// ⚠ 이 바닥은 [`style_resolver::para_vertical_align_baseline_ratio`] 가 해석한
 /// 세로정렬 비율(가운데 0.50)을 **의도적으로 덮는다** — 그 함수의 "남은 덮어쓰기" 항목 참조.
+///
+/// [oracle-pdf-mining-20260806 §2-E] 한컴 인쇄 PDF 실측으로 **핀 승격** — 한컴도
+/// 세로정렬=가운데 순수 텍스트 줄(lh=fs, 저장 bd=0.5·lh)의 글리프 기준선을 저장 bd 가
+/// 아니라 **글꼴 어센트(실측 0.8512·fs)** 에 앉힌다(`2022년 국립국어원 업무계획` 표 4행,
+/// 저장 bd 가설은 4.4pt 이탈). 즉 이 바닥은 한컴 실동작의 미러이고, 0.80 은 실측 0.85
+/// 대비 0.05·fs 보수적이다(구조: 한컴은 글자 상자(fs)를 r 로 가른 뒤 상자 안 어센트
+/// 0.85 에 기준선을 둔다 — `bd − r·fs + 0.85·fs`, lh=fs 이고 r=0.5 면 = 0.85·fs).
+/// 핀: `integration_tests::center_pure_text_min_baseline_guard_matches_hancom_print`.
 pub(crate) fn ensure_min_baseline(raw_baseline: f64, max_font_size: f64) -> f64 {
     if max_font_size <= 0.0 {
         return raw_baseline;
