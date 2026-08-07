@@ -2417,4 +2417,91 @@ mod tests {
         }
         assert!(found > 0, "s0#145 cell#5 두 번째 문단의 TextRun 을 못 찾았다");
     }
+
+    /// [oracle-pdf-mining-20260806 §2-E] `ensure_min_baseline` 어센트 가드
+    /// (= `max(_, 0.8·max_fs)`)의 오라클 핀 — 한컴 인쇄 PDF 실측으로 승격.
+    ///
+    /// 질문: 세로정렬=가운데(r=0.50) **순수 텍스트** 줄에서 줄높이 == 글꼴크기라
+    /// 저장 bd = 0.5·lh = 0.5·fs 가 어센트(0.8·fs)보다 낮을 때, 한컴은 글리프
+    /// 기준선을 저장 bd 에 두는가(0.5), 어센트에 두는가(≈0.8)?
+    ///
+    /// 실측(§2-E): `samples/2022년 국립국어원 업무계획.hwp` s0#26 표(4×6, 셀 24개
+    /// 전부 세로정렬=가운데, lh=th=fs=1250, bd=625, 셀 높이 1532 = 141+1250+141
+    /// content-fit) + 같은 이름 한컴 PDF 3쪽. 같은 쪽 글꼴기준(r=0.85) 본문 6줄로
+    /// 쪽 앵커를 보정(C = 70.93±0.05pt)한 뒤 표 4행의 글리프 기준선을 재면
+    /// 줄상단에서 **0.8512·fs** (행별 12.01~12.09pt, 저장 bd 가설 6.25pt 는 4.4pt
+    /// 이탈 = 잡음의 100배). 즉 한컴도 저장 0.5·lh 가 아니라 글꼴 어센트에 앉힌다 —
+    /// 이 가드는 한컴 실동작의 미러다(0.80 은 실측 0.85 보다 0.05·fs 보수적,
+    /// 이 셀에서 화면 오차 0.7pt vs 가드 제거 시 4.6pt).
+    ///
+    /// 가드를 걷어내면(저장 bd 통과) 기준선이 0.5·lh 로 떨어져 이 핀이 터진다.
+    #[test]
+    fn center_pure_text_min_baseline_guard_matches_hancom_print() {
+        let Some(mut core) = load_document("samples/2022년 국립국어원 업무계획.hwp") else {
+            return;
+        };
+
+        // 전제 — 표본 셀 문단의 세로정렬·저장 seg·글꼴 크기.
+        {
+            let doc = core.document();
+            let host = &doc.sections[0].paragraphs[26];
+            let crate::model::control::Control::Table(table) = &host.controls[0] else {
+                panic!("s0#26 ci=0 은 표여야 한다");
+            };
+            let cp = &table.cells[0].paragraphs[0];
+            let attr1 = doc.doc_info.para_shapes[cp.para_shape_id as usize].attr1;
+            assert_eq!(
+                (attr1 >> 20) & 0x03,
+                2,
+                "표본 전제: 세로정렬=가운데 (attr1=0x{attr1:08x})"
+            );
+            let seg = &cp.line_segs[0];
+            assert_eq!(
+                (seg.line_height, seg.baseline_distance),
+                (1250, 625),
+                "표본 전제: 저장 seg r=0.50, lh=fs"
+            );
+            let fs = doc.doc_info.char_shapes[cp.char_shapes[0].char_shape_id as usize].base_size;
+            assert_eq!(fs, 1250, "표본 전제: 글꼴크기 == 줄높이");
+        }
+
+        let tree = core
+            .build_page_render_tree(2)
+            .expect("국립국어원 3쪽 렌더 실패");
+        let mut nodes = Vec::new();
+        collect_render_nodes(&tree.root, &mut nodes);
+
+        let mut found = 0usize;
+        for node in nodes {
+            let RenderNodeType::TextRun(run) = &node.node_type else {
+                continue;
+            };
+            let Some(cell) = &run.cell_context else {
+                continue;
+            };
+            let Some(entry) = cell.path.last() else {
+                continue;
+            };
+            if cell.parent_para_index != 26
+                || entry.control_index != 0
+                || entry.cell_index != 0
+                || entry.cell_para_index != 0
+            {
+                continue;
+            }
+            found += 1;
+            // lh == fs == 1250HU 이므로 run 박스 높이가 곧 max_fs(px)다.
+            let max_fs = node.bbox.height;
+            let want = max_fs * 0.8; // 어센트 가드 착지 (한컴 실측 0.8512·fs 의 미러)
+            let stored = max_fs * 0.5; // 가드 제거 시 저장 bd — 한컴 실측과 4.4pt 이탈
+            assert!(
+                (run.baseline - want).abs() < 0.05,
+                "세로정렬=가운데 순수 텍스트 줄(lh=fs)의 기준선은 {want:.2}px 여야 \
+                 한다 (한컴 PDF 실측 0.8512·fs, §2-E). 실측 {:.2}px — {stored:.2}px \
+                 이면 어센트 가드가 사라져 저장 0.5·lh 로 떨어진 것",
+                run.baseline
+            );
+        }
+        assert!(found > 0, "s0#26 표 cell#0 '연도' 의 TextRun 을 못 찾았다");
+    }
 }
