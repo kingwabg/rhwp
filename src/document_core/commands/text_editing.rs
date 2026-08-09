@@ -2166,13 +2166,13 @@ impl DocumentCore {
         if section_idx < self.dirty_sections.len() {
             self.dirty_sections[section_idx] = true;
         }
-        if section_idx + 1 <= self.dirty_sections.len() {
+        if section_idx < self.dirty_sections.len() {
             self.dirty_sections.insert(section_idx + 1, true);
         }
         if section_idx < self.dirty_paragraphs.len() {
             self.dirty_paragraphs[section_idx] = None;
         }
-        if section_idx + 1 <= self.dirty_paragraphs.len() {
+        if section_idx < self.dirty_paragraphs.len() {
             self.dirty_paragraphs.insert(section_idx + 1, None);
         }
 

@@ -110,7 +110,7 @@ impl DocumentCore {
                             if let Some(pct) = w.strip_suffix('%').and_then(|n| n.trim().parse::<f64>().ok())
                             {
                                 width_pct = pct;
-                            } else if let Some(px) = w.strip_suffix("px").unwrap_or(w).trim().parse::<f64>().ok()
+                            } else if let Ok(px) = w.strip_suffix("px").unwrap_or(w).trim().parse::<f64>()
                             {
                                 width_pt = px * 0.75; // HTML width 속성은 px
                             }

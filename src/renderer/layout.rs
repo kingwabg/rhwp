@@ -6070,7 +6070,7 @@ impl LayoutEngine {
                 _ => None,
             };
             (pc == Some((para_index, control_index)))
-                .then(|| (n.bbox.x - col_area.x, n.bbox.x + n.bbox.width - col_area.x, n.bbox.y, n.bbox.y + n.bbox.height))
+                .then_some((n.bbox.x - col_area.x, n.bbox.x + n.bbox.width - col_area.x, n.bbox.y, n.bbox.y + n.bbox.height))
         });
         let (x0, x1, top, bottom) = measured.unwrap_or_else(|| {
             let w_px = hwpunit_to_px(common.width as i32, self.dpi);
