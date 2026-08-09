@@ -47,6 +47,34 @@ impl DocumentCore {
         c.attr = (c.attr & !Self::COMMON_OBJ_ATTR_KNOWN_MASK)
             | (packed & Self::COMMON_OBJ_ATTR_KNOWN_MASK);
     }
+    /// 물리(`CommonObjAttr`) → `raw_ctrl_data` 사본 갱신.
+    ///
+    /// HWP5 파스본은 직렬화기가 raw_ctrl_data 를 그대로 기록하므로(표 CTRL_HEADER ·
+    /// 수식 eqed) setter 가 물리를 바꾼 뒤 이 함수를 불러 사본을 따라오게 한다.
+    /// **비어 있거나 짧으면 손대지 않는다** — 토막을 만들면 HWPX→HWP 어댑터의
+    /// `is_empty` 합성 조건이 무력화된다(표 저장 손상 사고와 같은 기전).
+    pub(crate) fn sync_raw_ctrl_data_from_common(
+        c: &crate::model::shape::CommonObjAttr,
+        raw: &mut [u8],
+    ) {
+        use crate::model::shape::common_obj_offsets as o;
+        if raw.len() < o::MIN_LEN {
+            return;
+        }
+        raw[o::FLAGS].copy_from_slice(&c.attr.to_le_bytes());
+        raw[o::V_OFFSET].copy_from_slice(&c.vertical_offset.to_le_bytes());
+        raw[o::H_OFFSET].copy_from_slice(&c.horizontal_offset.to_le_bytes());
+        raw[o::WIDTH].copy_from_slice(&c.width.to_le_bytes());
+        raw[o::HEIGHT].copy_from_slice(&c.height.to_le_bytes());
+        raw[o::Z_ORDER].copy_from_slice(&c.z_order.to_le_bytes());
+        raw[o::MARGIN_LEFT].copy_from_slice(&c.margin.left.to_le_bytes());
+        raw[o::MARGIN_RIGHT].copy_from_slice(&c.margin.right.to_le_bytes());
+        raw[o::MARGIN_TOP].copy_from_slice(&c.margin.top.to_le_bytes());
+        raw[o::MARGIN_BOTTOM].copy_from_slice(&c.margin.bottom.to_le_bytes());
+        if raw.len() >= o::PREVENT_PAGE_BREAK.end {
+            raw[o::PREVENT_PAGE_BREAK].copy_from_slice(&c.prevent_page_break.to_le_bytes());
+        }
+    }
     pub(crate) fn is_structure_only_empty_paragraph(para: &Paragraph) -> bool {
         para.text.is_empty()
             && !para.controls.is_empty()

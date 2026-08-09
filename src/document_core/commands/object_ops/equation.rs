@@ -236,6 +236,10 @@ impl DocumentCore {
                 eq.common.vertical_offset = v as u32;
             }
         }
+        // HWP5 파스 수식은 직렬화기가 raw_ctrl_data 를 그대로 기록하므로
+        // (serializer/control.rs serialize_equation_control) 물리 변경을 사본에 반영한다 —
+        // 안 하면 배치 편집(TAC 전환·오프셋·크기)이 .hwp 저장에서 파스 시점 값으로 원복된다.
+        Self::sync_raw_ctrl_data_from_common(&eq.common, &mut eq.raw_ctrl_data);
 
         // 표 셀 내 수식인 경우 표 dirty 플래그 설정
         if cell_idx.is_some() {

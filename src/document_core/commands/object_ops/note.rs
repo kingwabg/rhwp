@@ -123,6 +123,8 @@ impl DocumentCore {
             inner_control_idx,
         )?;
         Self::apply_equation_properties(eq, dpi, props_json);
+        // 본문 수식 setter 와 동일 — raw_ctrl_data 사본을 물리에 맞춘다 (equation.rs 참조).
+        Self::sync_raw_ctrl_data_from_common(&eq.common, &mut eq.raw_ctrl_data);
 
         let section = &mut self.document.sections[section_idx];
         section.raw_stream = None;
