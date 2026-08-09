@@ -27,7 +27,10 @@ fn main() {
     }
     if let Ok(ch) = doc.get_cell_char_properties_at(0, 0, 0, 0, 0, 2) {
         let v: serde_json::Value = serde_json::from_str(&ch).unwrap();
-        println!("live cell0@2 bold={} shapeId={}", v["bold"], v["charShapeId"]);
+        println!(
+            "live cell0@2 bold={} shapeId={}",
+            v["bold"], v["charShapeId"]
+        );
     }
     // 모델 관찰: 저장 → 재파스로 셀 문단 char_shapes 실물 확인
     let bytes = doc.export_hwp().expect("export");

@@ -15,11 +15,7 @@ fn collect(doc: &mut HwpDocument) -> (Option<(f64, f64, f64, f64)>, Vec<Line>) {
     let tree = doc.build_page_render_tree(0).unwrap();
     let mut table = None;
     let mut lines = Vec::new();
-    fn walk(
-        n: &RenderNode,
-        table: &mut Option<(f64, f64, f64, f64)>,
-        lines: &mut Vec<Line>,
-    ) {
+    fn walk(n: &RenderNode, table: &mut Option<(f64, f64, f64, f64)>, lines: &mut Vec<Line>) {
         if matches!(n.node_type, RenderNodeType::Table(_)) {
             if table.is_none() {
                 *table = Some((n.bbox.x, n.bbox.y, n.bbox.width, n.bbox.height));
@@ -32,7 +28,11 @@ fn collect(doc: &mut HwpDocument) -> (Option<(f64, f64, f64, f64)>, Vec<Line>) {
                 .iter()
                 .any(|c| matches!(&c.node_type, RenderNodeType::TextRun(tr) if !tr.text.trim().is_empty()));
             if has_text {
-                lines.push(Line { y: n.bbox.y, x: n.bbox.x, w: n.bbox.width });
+                lines.push(Line {
+                    y: n.bbox.y,
+                    x: n.bbox.x,
+                    w: n.bbox.width,
+                });
             }
         }
         for c in &n.children {
@@ -48,7 +48,9 @@ fn overlaps(table: (f64, f64, f64, f64), lines: &[Line]) -> usize {
     let (tx, ty, tw, th) = table;
     lines
         .iter()
-        .filter(|l| l.y + 4.0 > ty && l.y < ty + th - 4.0 && l.x < tx + tw - 1.0 && l.x + l.w > tx + 1.0)
+        .filter(|l| {
+            l.y + 4.0 > ty && l.y < ty + th - 4.0 && l.x < tx + tw - 1.0 && l.x + l.w > tx + 1.0
+        })
         .count()
 }
 
@@ -72,7 +74,8 @@ fn typing_beside_square_table_reflows_immediately() {
         c["paraIdx"].as_u64().unwrap() as u32,
         c["controlIdx"].as_u64().unwrap() as u32,
     );
-    doc.set_table_column_widths(0, pi, ci, "[8500,8500]").unwrap();
+    doc.set_table_column_widths(0, pi, ci, "[8500,8500]")
+        .unwrap();
     doc.set_table_properties(0, pi, ci,
         r#"{"treatAsChar":false,"textWrap":"Square","textFlow":"BothSides","vertRelTo":"Para","horzRelTo":"Paper","horzAlign":"Left","vertOffset":0,"horzOffset":10630}"#
     ).unwrap();
@@ -96,7 +99,10 @@ fn typing_beside_square_table_reflows_immediately() {
         .iter()
         .filter(|l| l.x > tx + tw - 1.0 && l.y + 4.0 > ty && l.y < ty + th)
         .count();
-    assert!(side > 0, "표 옆에 선 줄이 없다 — 옆 흐름 미작동 (표={table:?})");
+    assert!(
+        side > 0,
+        "표 옆에 선 줄이 없다 — 옆 흐름 미작동 (표={table:?})"
+    );
 }
 
 /// 지우기 경로도 같은 훅을 탄다 — 줄이 짧아져도 겹침 0.
@@ -118,13 +124,20 @@ fn deleting_beside_square_table_reflows_immediately() {
         c["paraIdx"].as_u64().unwrap() as u32,
         c["controlIdx"].as_u64().unwrap() as u32,
     );
-    doc.set_table_column_widths(0, pi, ci, "[8500,8500]").unwrap();
+    doc.set_table_column_widths(0, pi, ci, "[8500,8500]")
+        .unwrap();
     doc.set_table_properties(0, pi, ci,
         r#"{"treatAsChar":false,"textWrap":"Square","textFlow":"BothSides","vertRelTo":"Para","horzRelTo":"Paper","horzAlign":"Left","vertOffset":0,"horzOffset":10630}"#
     ).unwrap();
 
     let last = doc.get_paragraph_count(0).unwrap() - 1;
-    doc.insert_text(0, last, 0, "지울 본문이다. 어울림 옆에서 지우기를 한다. 길게 이어서 여러 줄이 되게 한다.").unwrap();
+    doc.insert_text(
+        0,
+        last,
+        0,
+        "지울 본문이다. 어울림 옆에서 지우기를 한다. 길게 이어서 여러 줄이 되게 한다.",
+    )
+    .unwrap();
     doc.delete_text(0, last, 0, 12).unwrap();
 
     let (table, lines) = collect(&mut doc);

@@ -475,13 +475,7 @@ impl DocumentCore {
             .ok()
             .map(|p| p.common.clone())
             .and_then(|old| {
-                self.plan_object_rebase(
-                    section_idx,
-                    parent_para_idx,
-                    control_idx,
-                    props_json,
-                    &old,
-                )
+                self.plan_object_rebase(section_idx, parent_para_idx, control_idx, props_json, &old)
             });
         // JSON 파싱 (serde_json 사용 대신 수동 파싱 — 기존 패턴)
         // [Task #825] 픽쳐 속성 mutation 은 helper 로 분리 (머리말/꼬리말 path 와 공유).

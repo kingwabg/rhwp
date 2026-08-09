@@ -14,13 +14,10 @@ use crate::model::shape::common_obj_offsets;
 /// column_start 가 있거나, sw 가 전폭보다 800HU(≈10.7px) 넘게 좁을 때만 흔적.
 /// 조기 탈출(:123)과 재줄바꿈 대상 선정(had_narrow)이 같은 판정을 공유한다.
 /// pub: 편집 훅 비용 핀(tests/officex_square_edit_hook.rs)이 직접 단위검증한다.
-pub fn paragraph_has_narrow_trace(
-    para: &crate::model::paragraph::Paragraph,
-    full_hu: i32,
-) -> bool {
-    para.line_segs.iter().any(|ls| {
-        ls.column_start > 0 || (ls.segment_width > 0 && ls.segment_width < full_hu - 800)
-    })
+pub fn paragraph_has_narrow_trace(para: &crate::model::paragraph::Paragraph, full_hu: i32) -> bool {
+    para.line_segs
+        .iter()
+        .any(|ls| ls.column_start > 0 || (ls.segment_width > 0 && ls.segment_width < full_hu - 800))
 }
 
 /// [훅 일반화 2026-08-05] 어울림 밴드 host 자격이 있는 float 개체의 공통 속성.
@@ -156,7 +153,10 @@ impl DocumentCore {
                         )
                         && matches!(
                             common.horz_rel_to,
-                            HorzRelTo::Column | HorzRelTo::Para | HorzRelTo::Paper | HorzRelTo::Page
+                            HorzRelTo::Column
+                                | HorzRelTo::Para
+                                | HorzRelTo::Paper
+                                | HorzRelTo::Page
                         )
                     {
                         hosts.push((pi, ci));
@@ -286,46 +286,39 @@ impl DocumentCore {
                     return;
                 }
                 RenderNodeType::Image(v) => {
-                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe)
-                    {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe) {
                         return;
                     }
                 }
                 RenderNodeType::Line(v) => {
-                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe)
-                    {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe) {
                         return;
                     }
                 }
                 RenderNodeType::Rectangle(v) => {
-                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe)
-                    {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe) {
                         return;
                     }
                 }
                 RenderNodeType::Ellipse(v) => {
-                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe)
-                    {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe) {
                         return;
                     }
                 }
                 RenderNodeType::Path(v) => {
-                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe)
-                    {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe) {
                         return;
                     }
                 }
                 RenderNodeType::Group(v) => {
-                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe)
-                    {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe) {
                         return;
                     }
                 }
                 // [트랙4 ④] 비-TAC Square 수식 — 셀/글상자 안 수식은 Table/TextBox
                 // 조기 return 이 걸러 여기 오는 것은 본문 수식뿐이다.
                 RenderNodeType::Equation(v) => {
-                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe)
-                    {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe) {
                         return;
                     }
                 }
@@ -434,7 +427,12 @@ impl DocumentCore {
                     para.text.chars().take(6).collect::<String>(),
                     bands
                         .iter()
-                        .map(|b| (b.top_px as i32, b.bottom_px as i32, b.x0_px as i32, b.x1_px as i32))
+                        .map(|b| (
+                            b.top_px as i32,
+                            b.bottom_px as i32,
+                            b.x0_px as i32,
+                            b.x1_px as i32
+                        ))
                         .collect::<Vec<_>>()
                 );
             }
@@ -1008,11 +1006,9 @@ impl DocumentCore {
     /// 쓰는 것들이라, 문서 전체를 훑는 쪽(서식 규정 검사 등)은 문단×컨트롤을 무작정 찔러
     /// 예외로 판별해야 했다 — 느리고, "표 아님"과 "범위 초과"를 구분하지 못한다.
     pub fn get_tables_native(&self, section_idx: usize) -> Result<String, HwpError> {
-        let section = self
-            .document
-            .sections
-            .get(section_idx)
-            .ok_or_else(|| HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx)))?;
+        let section = self.document.sections.get(section_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
+        })?;
         let mut out: Vec<String> = Vec::new();
         for (pi, para) in section.paragraphs.iter().enumerate() {
             for (ci, ctrl) in para.controls.iter().enumerate() {
@@ -2261,8 +2257,7 @@ impl DocumentCore {
         let body = crate::model::page::PageAreas::from_page_def(page_def).body_area;
         let body_w = (body.right - body.left).max(0) as u32;
         let column_def = Self::find_initial_column_def(&section.paragraphs);
-        if column_def.column_count > 1
-            && matches!(horz_rel_to, HorzRelTo::Column | HorzRelTo::Para)
+        if column_def.column_count > 1 && matches!(horz_rel_to, HorzRelTo::Column | HorzRelTo::Para)
         {
             let layout = crate::renderer::page_layout::PageLayoutInfo::from_page_def(
                 page_def,
@@ -2300,7 +2295,8 @@ impl DocumentCore {
                 ))
             })?;
 
-        let outer = (table.outer_margin_left as i64 + table.outer_margin_right as i64).max(0) as u32;
+        let outer =
+            (table.outer_margin_left as i64 + table.outer_margin_right as i64).max(0) as u32;
         let total: u32 = table.get_column_widths().iter().sum();
         let horz_rel_to = table.common.horz_rel_to;
 
@@ -3416,17 +3412,32 @@ mod tests {
         let full_hu = 42_520; // A4 본문 폭 상당
         let mut para = Paragraph::default();
         para.line_segs = vec![
-            LineSeg { segment_width: full_hu, ..Default::default() },
-            LineSeg { segment_width: full_hu - 300, ..Default::default() }, // 오차 수준
+            LineSeg {
+                segment_width: full_hu,
+                ..Default::default()
+            },
+            LineSeg {
+                segment_width: full_hu - 300,
+                ..Default::default()
+            }, // 오차 수준
         ];
-        assert!(!super::paragraph_has_narrow_trace(&para, full_hu), "전폭은 흔적 아님");
+        assert!(
+            !super::paragraph_has_narrow_trace(&para, full_hu),
+            "전폭은 흔적 아님"
+        );
 
         para.line_segs[1].segment_width = full_hu - 2_000; // 실제 좁힘
-        assert!(super::paragraph_has_narrow_trace(&para, full_hu), "좁힘은 흔적");
+        assert!(
+            super::paragraph_has_narrow_trace(&para, full_hu),
+            "좁힘은 흔적"
+        );
 
         para.line_segs[1].segment_width = full_hu;
         para.line_segs[1].column_start = 5_000; // 우측 조각
-        assert!(super::paragraph_has_narrow_trace(&para, full_hu), "column_start 는 흔적");
+        assert!(
+            super::paragraph_has_narrow_trace(&para, full_hu),
+            "column_start 는 흔적"
+        );
     }
 
     /// [officex] 열 경계선 드래그가 **격자를 무너뜨리면 안 된다**.
@@ -3473,7 +3484,8 @@ mod tests {
             d = d,
             md = -d,
         );
-        core.resize_table_cells_native(0, pi, ci, &updates).expect("resize");
+        core.resize_table_cells_native(0, pi, ci, &updates)
+            .expect("resize");
 
         let t = core.get_table_mut(0, pi, ci).expect("table");
         assert!(
@@ -3484,7 +3496,11 @@ mod tests {
         let after = t.get_column_widths();
         assert_eq!(
             (after[0] as i64, after[1] as i64, after[2] as i64),
-            (before[0] as i64 + d as i64, before[1] as i64 - d as i64, before[2] as i64),
+            (
+                before[0] as i64 + d as i64,
+                before[1] as i64 - d as i64,
+                before[2] as i64
+            ),
             "열 폭이 끈 만큼만 옮겨져야 한다 (전 {before:?} → 후 {after:?})"
         );
     }

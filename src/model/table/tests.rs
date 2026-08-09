@@ -1227,7 +1227,11 @@ fn test_offset_cell_boundary_bottom_up() {
     assert_eq!((a1c.row_span, a1c.height), (1, 700));
     let a2c = t.cell_at(1, 0).unwrap();
     assert_eq!((a2c.row, a2c.row_span, a2c.height), (1, 2, 1300));
-    assert_eq!(cell_text(&t, 1, 0), "A2", "흡수한 조각은 비어 있고 이웃 내용이 정본");
+    assert_eq!(
+        cell_text(&t, 1, 0),
+        "A2",
+        "흡수한 조각은 비어 있고 이웃 내용이 정본"
+    );
     // B1 은 줄 0-1 스팬으로 겉모습 불변
     let b1 = t.cell_at(0, 1).unwrap();
     assert_eq!((b1.row_span, b1.height), (2, 1000));
@@ -1303,7 +1307,11 @@ fn test_restore_cell_boundary_bottom() {
 
     assert_eq!(t.row_count, 2, "접힌 줄까지 정리돼 원 격자로");
     let a1c = t.cell_at(0, 0).unwrap();
-    assert_eq!((a1c.row_span, a1c.height), (1, 1000), "목격자(B1) 높이로 복원");
+    assert_eq!(
+        (a1c.row_span, a1c.height),
+        (1, 1000),
+        "목격자(B1) 높이로 복원"
+    );
     let a2c = t.cell_at(1, 0).unwrap();
     assert_eq!((a2c.row, a2c.row_span, a2c.height), (1, 1, 1000));
     assert_eq!(cell_text(&t, 1, 0), "A2", "이웃 내용 보존");
@@ -1356,9 +1364,17 @@ fn test_restore_cell_boundary_extend_direction() {
 
     assert_eq!(t.row_count, 2, "어긋난 선 위치로 정렬되며 격자 단순화");
     let a1c = t.cell_at(0, 0).unwrap();
-    assert_eq!((a1c.row_span, a1c.height), (1, 1400), "A1 은 어긋난 크기 유지");
+    assert_eq!(
+        (a1c.row_span, a1c.height),
+        (1, 1400),
+        "A1 은 어긋난 크기 유지"
+    );
     let b1c = t.cell_at(0, 1).unwrap();
-    assert_eq!((b1c.row_span, b1c.height), (1, 1400), "B1 이 어긋난 선까지 확장(목격자 A1)");
+    assert_eq!(
+        (b1c.row_span, b1c.height),
+        (1, 1400),
+        "B1 이 어긋난 선까지 확장(목격자 A1)"
+    );
     let b2c = t.cell_at(1, 1).unwrap();
     assert_eq!((b2c.row_span, b2c.height), (1, 600));
     assert_eq!(cell_text(&t, 1, 1), "B2", "B2 내용 보존");
@@ -1371,7 +1387,11 @@ fn test_offset_table_derived_sizes_stable() {
     let mut t = make_table(2, 2);
     let a1 = t.cell_index_at(0, 0).unwrap();
     t.offset_cell_boundary(a1, true, 900).unwrap();
-    assert_eq!(t.get_column_widths(), vec![3600, 900, 2700], "조각 열 폭이 제약으로 풀린다");
+    assert_eq!(
+        t.get_column_widths(),
+        vec![3600, 900, 2700],
+        "조각 열 폭이 제약으로 풀린다"
+    );
     let w_before = t.common.width;
     t.update_ctrl_dimensions();
     assert_eq!(t.common.width, w_before, "재계산해도 표 폭 불변");
@@ -1379,7 +1399,11 @@ fn test_offset_table_derived_sizes_stable() {
     let mut t2 = make_table(2, 2);
     let a1b = t2.cell_index_at(0, 0).unwrap();
     t2.offset_cell_boundary(a1b, false, 400).unwrap();
-    assert_eq!(t2.get_row_heights(), vec![1000, 400, 600], "조각 행 높이가 제약으로 풀린다");
+    assert_eq!(
+        t2.get_row_heights(),
+        vec![1000, 400, 600],
+        "조각 행 높이가 제약으로 풀린다"
+    );
     let h_before = t2.common.height;
     t2.update_ctrl_dimensions();
     assert_eq!(t2.common.height, h_before, "재계산해도 표 높이 불변");

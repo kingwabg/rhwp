@@ -18,9 +18,12 @@ fn blank_with_text(text: &str) -> DocumentCore {
 #[test]
 fn empty_name_clickhere_rejected() {
     let mut core = blank_with_text("");
-    let res: Value =
-        serde_json::from_str(&core.insert_click_here_field_at(0, 0, 0, "", "", "", true).unwrap())
-            .unwrap();
+    let res: Value = serde_json::from_str(
+        &core
+            .insert_click_here_field_at(0, 0, 0, "", "", "", true)
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(res["ok"], Value::Bool(false), "빈 이름은 거부되어야 한다");
     let list: Value = serde_json::from_str(&core.get_field_list_json()).unwrap();
     assert_eq!(list.as_array().unwrap().len(), 0, "유령 필드가 없어야 한다");
@@ -52,8 +55,8 @@ fn bookmark_char_offset_reflected_and_bounds_checked() {
     let mut core = blank_with_text("0123456789"); // 길이 10
     core.add_bookmark_native(0, 0, 0, "at0").unwrap();
     core.add_bookmark_native(0, 0, 5, "at5").unwrap();
-    let over: Value = serde_json::from_str(&core.add_bookmark_native(0, 0, 999, "over").unwrap())
-        .unwrap();
+    let over: Value =
+        serde_json::from_str(&core.add_bookmark_native(0, 0, 999, "over").unwrap()).unwrap();
     assert_eq!(over["ok"], Value::Bool(false), "범위 초과 거부");
     // u32 래핑(-1) — usize로는 huge
     let neg: Value =
@@ -84,7 +87,8 @@ fn bookmark_handle_stable_after_insert() {
     let bms: Value = serde_json::from_str(&core.get_bookmarks_native().unwrap()).unwrap();
     let handle_a = bms[0]["ctrlIdx"].as_u64().unwrap() as usize;
     core.add_bookmark_native(0, 0, 2, "B").unwrap();
-    core.rename_bookmark_native(0, 0, handle_a, "RENAMED").unwrap();
+    core.rename_bookmark_native(0, 0, handle_a, "RENAMED")
+        .unwrap();
     let bms: Value = serde_json::from_str(&core.get_bookmarks_native().unwrap()).unwrap();
     // 위치순 정렬: 1번(원래 A→RENAMED), 2번(B)
     let mut named: Vec<(u64, String)> = bms
@@ -127,15 +131,15 @@ fn footnote_info_excludes_marker_placeholder() {
     let made: Value = serde_json::from_str(&core.insert_footnote_native(0, 0, 2).unwrap()).unwrap();
     let cidx = made["controlIdx"].as_u64().unwrap() as usize;
 
-    let empty: Value = serde_json::from_str(&core.get_footnote_info_native(0, 0, cidx).unwrap())
-        .unwrap();
+    let empty: Value =
+        serde_json::from_str(&core.get_footnote_info_native(0, 0, cidx).unwrap()).unwrap();
     assert_eq!(empty["totalTextLen"].as_u64().unwrap(), 0, "빈 각주는 0자");
     assert_eq!(empty["texts"][0].as_str().unwrap(), "");
 
     core.insert_text_in_footnote_native(0, 0, cidx, 0, 0, "각주내용")
         .unwrap();
-    let filled: Value = serde_json::from_str(&core.get_footnote_info_native(0, 0, cidx).unwrap())
-        .unwrap();
+    let filled: Value =
+        serde_json::from_str(&core.get_footnote_info_native(0, 0, cidx).unwrap()).unwrap();
     assert_eq!(filled["totalTextLen"].as_u64().unwrap(), 4);
     assert_eq!(filled["texts"][0].as_str().unwrap(), "각주내용");
 }

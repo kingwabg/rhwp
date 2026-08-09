@@ -396,13 +396,7 @@ impl DocumentCore {
             .ok()
             .map(|s| s.common().clone())
             .and_then(|old| {
-                self.plan_object_rebase(
-                    section_idx,
-                    parent_para_idx,
-                    control_idx,
-                    props_json,
-                    &old,
-                )
+                self.plan_object_rebase(section_idx, parent_para_idx, control_idx, props_json, &old)
             });
 
         let shape = self.resolve_shape_control_mut(section_idx, parent_para_idx, control_idx)?;

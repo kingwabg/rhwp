@@ -9,7 +9,9 @@ use crate::model::event::DocumentEvent;
 use crate::model::page::ColumnDef;
 use crate::model::paragraph::Paragraph;
 use crate::model::shape::{ShapeObject, TextWrap, VertRelTo};
-use crate::renderer::composer::{compose_paragraph, compose_section, reflow_line_segs, ComposedParagraph};
+use crate::renderer::composer::{
+    compose_paragraph, compose_section, reflow_line_segs, ComposedParagraph,
+};
 use crate::renderer::page_layout::PageLayoutInfo;
 use crate::renderer::style_resolver::{resolve_styles, ResolvedStyleSet};
 
@@ -970,8 +972,13 @@ impl DocumentCore {
         // [변경 추적] ON 이면 방금 삽입분을 Insert 마크로 (track.rs)
         if self.track_enabled {
             self.track_note_insert_in_cell(
-                section_idx, parent_para_idx, control_idx, cell_idx, cell_para_idx,
-                char_offset, text,
+                section_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+                cell_para_idx,
+                char_offset,
+                text,
             );
         }
 
@@ -1007,8 +1014,13 @@ impl DocumentCore {
         // [변경 추적] ON 이면 실삭제 대신 Delete 마크 (track.rs)
         if self.track_enabled {
             if let Some(done) = self.track_delete_in_cell(
-                section_idx, parent_para_idx, control_idx, cell_idx, cell_para_idx,
-                char_offset, count,
+                section_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+                cell_para_idx,
+                char_offset,
+                count,
             ) {
                 self.mark_cell_control_dirty(section_idx, parent_para_idx, control_idx);
                 self.mark_section_dirty(section_idx);
@@ -1400,7 +1412,9 @@ impl DocumentCore {
         }
         let para_count = self.document.sections[section_idx].paragraphs.len();
         if start_para >= para_count || end_para >= para_count || start_para > end_para {
-            return Err(HwpError::RenderError("문단 범위가 올바르지 않습니다".to_string()));
+            return Err(HwpError::RenderError(
+                "문단 범위가 올바르지 않습니다".to_string(),
+            ));
         }
 
         // 논리→텍스트 변환은 컨트롤 제거 **전에** — 제거해도 텍스트 좌표는 불변이지만
@@ -1429,7 +1443,9 @@ impl DocumentCore {
                     if !crate::document_core::helpers::is_logical_inline_control(ctrl) {
                         continue;
                     }
-                    let Some(&pos) = positions.get(ci) else { continue };
+                    let Some(&pos) = positions.get(ci) else {
+                        continue;
+                    };
                     if lo.map_or(true, |l| pos >= l) && hi.map_or(true, |h| pos < h) {
                         targets.push((pi, ci));
                     }
@@ -1470,7 +1486,12 @@ impl DocumentCore {
         // 문단 구조는 바꾸지 않는다(한컴처럼 삭제 표시 상태에서도 그대로 보인다).
         if self.track_enabled {
             if let Some(done) = self.track_delete_range(
-                section_idx, start_para, start_offset, end_para, end_offset, cell_ctx,
+                section_idx,
+                start_para,
+                start_offset,
+                end_para,
+                end_offset,
+                cell_ctx,
             ) {
                 if let Some((ppi, ci, _)) = cell_ctx {
                     self.mark_cell_control_dirty(section_idx, ppi, ci);

@@ -9,8 +9,14 @@ fn main() {
         let mut body = String::new();
         for pi in 0..n.min(6) {
             let len = doc.get_paragraph_length(0, pi).unwrap_or(0);
-            if let Ok(t) = doc.get_text_range(0, pi, 0, len) { body.push_str(t.trim()); }
+            if let Ok(t) = doc.get_text_range(0, pi, 0, len) {
+                body.push_str(t.trim());
+            }
         }
-        println!("{:44} paras={n} body={:?}", f.rsplit('/').next().unwrap(), body.chars().take(28).collect::<String>());
+        println!(
+            "{:44} paras={n} body={:?}",
+            f.rsplit('/').next().unwrap(),
+            body.chars().take(28).collect::<String>()
+        );
     }
 }

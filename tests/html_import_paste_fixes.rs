@@ -60,12 +60,16 @@ fn padding_sets_apply_inner_margin() {
     let doc = paste_table(r#"<table><tr><td style="padding:30px">P</td></tr></table>"#);
     let p = props(&doc, 0);
     assert_eq!(p["applyInnerMargin"], Value::Bool(true));
-    assert!(p["paddingLeft"].as_i64().unwrap() > 2000, "padding 30px ≒ 2250");
+    assert!(
+        p["paddingLeft"].as_i64().unwrap() > 2000,
+        "padding 30px ≒ 2250"
+    );
 }
 
 #[test]
 fn ragged_rows_filled_to_rectangle() {
-    let doc = paste_table(r#"<table><tr><td>1</td><td>2</td><td>3</td></tr><tr><td>4</td></tr></table>"#);
+    let doc =
+        paste_table(r#"<table><tr><td>1</td><td>2</td><td>3</td></tr><tr><td>4</td></tr></table>"#);
     let d = dims(&doc);
     assert_eq!(d["rowCount"], serde_json::json!(2));
     assert_eq!(d["colCount"], serde_json::json!(3));
@@ -74,7 +78,9 @@ fn ragged_rows_filled_to_rectangle() {
 
 #[test]
 fn colspan_overflow_no_holes() {
-    let doc = paste_table(r#"<table><tr><td colspan="9">C</td></tr><tr><td>a</td><td>b</td></tr></table>"#);
+    let doc = paste_table(
+        r#"<table><tr><td colspan="9">C</td></tr><tr><td>a</td><td>b</td></tr></table>"#,
+    );
     let d = dims(&doc);
     // colCount는 브라우저처럼 9로 확장되되 둘째 행 구멍(7칸)이 빈 셀로 메워져야 한다.
     let cols = d["colCount"].as_u64().unwrap();
@@ -97,11 +103,12 @@ fn html4_presentational_attrs() {
 
 #[test]
 fn caption_text_preserved() {
-    let doc = paste_table(
-        r#"<table><caption>표제목</caption><tr><td>a</td><td>b</td></tr></table>"#,
-    );
+    let doc =
+        paste_table(r#"<table><caption>표제목</caption><tr><td>a</td><td>b</td></tr></table>"#);
     // 표는 para 0, 캡션은 뒤 문단으로 보존
-    let pc = doc.get_paragraph_count(0).unwrap_or_else(|e| panic!("{e:?}"));
+    let pc = doc
+        .get_paragraph_count(0)
+        .unwrap_or_else(|e| panic!("{e:?}"));
     let mut found = false;
     for p in 0..pc {
         if let Ok(t) = doc.get_text_range(0, p, 0, 40) {

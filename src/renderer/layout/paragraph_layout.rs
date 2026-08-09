@@ -598,8 +598,7 @@ fn repeated_empty_tac_line_offset(
         .collect();
     // 폭은 px, 줄 폭은 HWPUNIT — 배정 판단만 하면 되므로 같은 단위(HWPUNIT 근사)로 맞춘다.
     // (tac_offsets_px 의 px = hwpunit × dpi/7200 · 배정 경계가 반 픽셀 어긋나도 무해)
-    let mut groups: Vec<Vec<(usize, f64, usize)>> =
-        vec![Vec::new(); repeated_empty_line_count];
+    let mut groups: Vec<Vec<(usize, f64, usize)>> = vec![Vec::new(); repeated_empty_line_count];
     let mut gi = 0usize;
     let mut acc_px = 0.0f64;
     for t in all_tacs_at_start {
@@ -933,7 +932,11 @@ pub(crate) fn right_tab_block_width(
 /// 한/글 정의: 양쪽 = 낱말 사이·마지막 줄 제외 / 나눔 = 낱말 사이·마지막 줄 포함 /
 /// 배분 = 글자 사이까지·마지막 줄 포함.
 /// 떼어 둔 이유: 나눔이 배분과 같아진 사고(2026-08-01)를 단위 테스트가 잡게 하려고.
-fn align_spacing_flags(alignment: Alignment, is_last_line: bool, forced_break: bool) -> (bool, bool) {
+fn align_spacing_flags(
+    alignment: Alignment,
+    is_last_line: bool,
+    forced_break: bool,
+) -> (bool, bool) {
     let needs_justify = (alignment == Alignment::Justify && !is_last_line && !forced_break)
         || (alignment == Alignment::Split && !forced_break);
     let needs_distribute = alignment == Alignment::Distribute;
@@ -949,13 +952,31 @@ mod align_flag_tests {
     #[test]
     fn split_differs_from_justify_and_distribute() {
         // 마지막 줄이 아닐 때: 양쪽·나눔은 낱말 분배, 배분은 글자 분배
-        assert_eq!(align_spacing_flags(Alignment::Justify, false, false), (true, false));
-        assert_eq!(align_spacing_flags(Alignment::Split, false, false), (true, false));
-        assert_eq!(align_spacing_flags(Alignment::Distribute, false, false), (false, true));
+        assert_eq!(
+            align_spacing_flags(Alignment::Justify, false, false),
+            (true, false)
+        );
+        assert_eq!(
+            align_spacing_flags(Alignment::Split, false, false),
+            (true, false)
+        );
+        assert_eq!(
+            align_spacing_flags(Alignment::Distribute, false, false),
+            (false, true)
+        );
         // 마지막 줄: 양쪽만 손을 뗀다 — 나눔·배분은 계속 맞춘다
-        assert_eq!(align_spacing_flags(Alignment::Justify, true, false), (false, false));
-        assert_eq!(align_spacing_flags(Alignment::Split, true, false), (true, false));
-        assert_eq!(align_spacing_flags(Alignment::Distribute, true, false), (false, true));
+        assert_eq!(
+            align_spacing_flags(Alignment::Justify, true, false),
+            (false, false)
+        );
+        assert_eq!(
+            align_spacing_flags(Alignment::Split, true, false),
+            (true, false)
+        );
+        assert_eq!(
+            align_spacing_flags(Alignment::Distribute, true, false),
+            (false, true)
+        );
     }
 }
 
@@ -3345,15 +3366,15 @@ impl LayoutEngine {
             // 1쪽뿐)가 없어 **미확정**이라, 기존 동작을 이긴다고 가정하지 않는다.
             let file_narrow_override = if wrap_anchor.is_none() && cell_ctx.is_none() {
                 let full_col_w = effective_col_w - effective_margin_left - margin_right;
-                para.and_then(|p| p.line_segs.get(line_idx)).and_then(|seg| {
-                    let sw = crate::renderer::hwpunit_to_px(seg.segment_width as i32, self.dpi);
-                    let cs = crate::renderer::hwpunit_to_px(seg.column_start as i32, self.dpi);
-                    // 26.7px(2000HU) 넘게 좁게 적혀 있고, 아직 아무도 안 좁혔을 때만.
-                    // "아직 아무도 안 좁혔다" = 이 문단의 단 폭이 원래 단 폭 그대로다.
-                    let untouched = (col_area.width - effective_col_w).abs() < 0.5;
-                    (sw > 0.0 && full_col_w - sw > 26.7 && untouched)
-                        .then_some((cs, sw))
-                })
+                para.and_then(|p| p.line_segs.get(line_idx))
+                    .and_then(|seg| {
+                        let sw = crate::renderer::hwpunit_to_px(seg.segment_width as i32, self.dpi);
+                        let cs = crate::renderer::hwpunit_to_px(seg.column_start as i32, self.dpi);
+                        // 26.7px(2000HU) 넘게 좁게 적혀 있고, 아직 아무도 안 좁혔을 때만.
+                        // "아직 아무도 안 좁혔다" = 이 문단의 단 폭이 원래 단 폭 그대로다.
+                        let untouched = (col_area.width - effective_col_w).abs() < 0.5;
+                        (sw > 0.0 && full_col_w - sw > 26.7 && untouched).then_some((cs, sw))
+                    })
             } else {
                 None
             };
@@ -3366,25 +3387,26 @@ impl LayoutEngine {
             let live_band_narrow: Option<(f64, f64)> = None;
             // 소비 우선순위: 저장 줄별 cs/sw(재생 — 줄바꿈까지 반영된 정본) →
             // 라이브 즉석 좁힘(기록 전 1차 조판의 겹침 완화 안전망) → 앵커 재생.
-            let (line_cs_offset, line_avail_w_override) = if let Some((cs, sw)) = file_narrow_override {
-                (cs, Some(sw))
-            } else if let Some((cs, sw)) = live_band_narrow {
-                (cs, Some(sw))
-            } else if let Some(anchor) = wrap_anchor {
-                let seg = para.and_then(|p| p.line_segs.get(line_idx));
-                let cs = seg.map(|s| s.column_start as i32).unwrap_or(0);
-                let sw = seg.map(|s| s.segment_width as i32).unwrap_or(0);
-                let mr = anchor.anchor_image_margin_right;
-                let cs_px = crate::renderer::hwpunit_to_px(cs + mr, self.dpi);
-                let sw_px = if sw > 0 {
-                    Some(crate::renderer::hwpunit_to_px((sw - mr).max(0), self.dpi))
+            let (line_cs_offset, line_avail_w_override) =
+                if let Some((cs, sw)) = file_narrow_override {
+                    (cs, Some(sw))
+                } else if let Some((cs, sw)) = live_band_narrow {
+                    (cs, Some(sw))
+                } else if let Some(anchor) = wrap_anchor {
+                    let seg = para.and_then(|p| p.line_segs.get(line_idx));
+                    let cs = seg.map(|s| s.column_start as i32).unwrap_or(0);
+                    let sw = seg.map(|s| s.segment_width as i32).unwrap_or(0);
+                    let mr = anchor.anchor_image_margin_right;
+                    let cs_px = crate::renderer::hwpunit_to_px(cs + mr, self.dpi);
+                    let sw_px = if sw > 0 {
+                        Some(crate::renderer::hwpunit_to_px((sw - mr).max(0), self.dpi))
+                    } else {
+                        None
+                    };
+                    (cs_px, sw_px)
                 } else {
-                    None
+                    (0.0, None)
                 };
-                (cs_px, sw_px)
-            } else {
-                (0.0, None)
-            };
 
             let line_id = tree.next_id();
             let mut line_node = RenderNode::new(

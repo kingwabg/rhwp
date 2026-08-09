@@ -89,14 +89,28 @@ fn table_entry_column_follows_caret_x() {
     let (doc, _) = build();
     let mut seen = Vec::new();
     for px in [120.0_f64, 300.0, 480.0] {
-        let mut down = Nav { doc: {
-            let (d, _) = build();
-            d
-        }, sec: 0, para: 1, off: 0, cell: None, px };
+        let mut down = Nav {
+            doc: {
+                let (d, _) = build();
+                d
+            },
+            sec: 0,
+            para: 1,
+            off: 0,
+            cell: None,
+            px,
+        };
         let entered_down = down.step(1); // 문단2 → 표
-        // 같은 x 로 아래에서 위로 들어가기
+                                         // 같은 x 로 아래에서 위로 들어가기
         let (d2, n) = build();
-        let mut up = Nav { doc: d2, sec: 0, para: n - 2, off: 0, cell: None, px };
+        let mut up = Nav {
+            doc: d2,
+            sec: 0,
+            para: n - 2,
+            off: 0,
+            cell: None,
+            px,
+        };
         let entered_up = up.step(-1); // 문단4 → 표
         seen.push((px, entered_down.clone(), entered_up.clone()));
     }
@@ -122,7 +136,14 @@ fn down_and_up_paths_are_mirror_images() {
     eprintln!("문단 수 = {paras}");
 
     // ↓ 로 문단1 → 문단4
-    let mut down = Nav { doc, sec: 0, para: 0, off: 0, cell: None, px: 120.0 };
+    let mut down = Nav {
+        doc,
+        sec: 0,
+        para: 0,
+        off: 0,
+        cell: None,
+        px: 120.0,
+    };
     let mut down_path = vec!["p0".to_string()];
     for _ in 0..12 {
         let w = down.step(1);
@@ -139,7 +160,14 @@ fn down_and_up_paths_are_mirror_images() {
     // ↑ 로 마지막 자리 → 위로
     let (doc2, _) = build();
     let last_para = paras - 1;
-    let mut up = Nav { doc: doc2, sec: 0, para: last_para, off: 0, cell: None, px: 120.0 };
+    let mut up = Nav {
+        doc: doc2,
+        sec: 0,
+        para: last_para,
+        off: 0,
+        cell: None,
+        px: 120.0,
+    };
     let mut up_path = vec![format!("p{last_para}")];
     for _ in 0..12 {
         let w = up.step(-1);

@@ -12,10 +12,14 @@ fn bbox_y(doc: &HwpDocument, pi: u32, ci: u32) -> (f64, f64) {
 fn scenario(wrap: &str) -> (f64, f64) {
     let mut doc = HwpDocument::create_empty();
     doc.create_blank_document().expect("blank");
-    doc.insert_text(0, 0, 0, &"가나다라마바사아자차카타파하 ".repeat(30)).expect("text");
+    doc.insert_text(0, 0, 0, &"가나다라마바사아자차카타파하 ".repeat(30))
+        .expect("text");
     let created = doc.create_table(0, 0, 200, 3, 3).expect("table");
     let v: serde_json::Value = serde_json::from_str(&created).unwrap();
-    let (pi, ci) = (v["paraIdx"].as_u64().unwrap() as u32, v["controlIdx"].as_u64().unwrap() as u32);
+    let (pi, ci) = (
+        v["paraIdx"].as_u64().unwrap() as u32,
+        v["controlIdx"].as_u64().unwrap() as u32,
+    );
     doc.set_table_properties(0, pi, ci, &format!(
         r#"{{"treatAsChar":false,"textWrap":"{wrap}","vertRelTo":"Page","vertAlign":"Center","vertOffset":0}}"#
     )).expect("props");
@@ -23,7 +27,14 @@ fn scenario(wrap: &str) -> (f64, f64) {
 }
 
 fn main() {
-    for wrap in ["TopAndBottom", "Square", "Tight", "Through", "BehindText", "InFrontOfText"] {
+    for wrap in [
+        "TopAndBottom",
+        "Square",
+        "Tight",
+        "Through",
+        "BehindText",
+        "InFrontOfText",
+    ] {
         let (y, h) = scenario(wrap);
         println!("{wrap:14} y={y:7.1} h={h:5.1}");
     }

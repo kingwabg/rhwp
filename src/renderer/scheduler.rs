@@ -238,7 +238,12 @@ impl RenderScheduler {
             } else {
                 // [officex] 마지막 쪽도 실제 높이로 — viewport.height 추정은 뷰포트가
                 // 쪽보다 크거나 작을 때 가시성 판정을 틀리게 했다.
-                offset + self.page_heights.get(i).copied().unwrap_or(self.viewport.height)
+                offset
+                    + self
+                        .page_heights
+                        .get(i)
+                        .copied()
+                        .unwrap_or(self.viewport.height)
             };
 
             if offset < vp_bottom && page_bottom > vp_top {

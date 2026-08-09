@@ -4,7 +4,8 @@ use rhwp::wasm_api::HwpDocument;
 fn build(voff_at_create: i32, move_after: i32) -> Vec<(usize, i32)> {
     let mut doc = HwpDocument::create_empty();
     doc.create_blank_document().unwrap();
-    let filler = |n: usize| format!("채움 {n:02} 가나다라마바사 아자차카타파하 강물이 흐르고 산이 높다");
+    let filler =
+        |n: usize| format!("채움 {n:02} 가나다라마바사 아자차카타파하 강물이 흐르고 산이 높다");
     doc.insert_text(0, 0, 0, &filler(14)).unwrap();
     for n in (1..14).rev() {
         doc.insert_paragraph(0, 0).unwrap();
@@ -13,7 +14,10 @@ fn build(voff_at_create: i32, move_after: i32) -> Vec<(usize, i32)> {
     let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(
         r#"{"sectionIdx":0,"paraIdx":7,"charOffset":0,"rowCount":3,"colCount":2,"treatAsChar":false}"#
     ).unwrap()).unwrap();
-    let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+    let (pi, ci) = (
+        c["paraIdx"].as_u64().unwrap() as u32,
+        c["controlIdx"].as_u64().unwrap() as u32,
+    );
     doc.set_table_properties(0, pi, ci, &format!(
         r#"{{"treatAsChar":false,"textWrap":"TopAndBottom","vertRelTo":"Para","horzRelTo":"Column","vertOffset":{voff_at_create}}}"#
     )).unwrap();
@@ -45,13 +49,20 @@ fn build(voff_at_create: i32, move_after: i32) -> Vec<(usize, i32)> {
     fn walk(n: &rhwp::renderer::render_tree::RenderNode, out: &mut Vec<(usize, i32)>) {
         if let rhwp::renderer::render_tree::RenderNodeType::TextLine(tl) = &n.node_type {
             if tl.line_index == Some(0) {
-                if let Some(p) = tl.para_index { out.push((p, n.bbox.y as i32)); }
+                if let Some(p) = tl.para_index {
+                    out.push((p, n.bbox.y as i32));
+                }
             }
         }
-        if matches!(n.node_type, rhwp::renderer::render_tree::RenderNodeType::Table(_)) {
+        if matches!(
+            n.node_type,
+            rhwp::renderer::render_tree::RenderNodeType::Table(_)
+        ) {
             out.push((usize::MAX, n.bbox.y as i32));
         }
-        for c in &n.children { walk(c, out); }
+        for c in &n.children {
+            walk(c, out);
+        }
     }
     walk(&tree.root, &mut out);
     out.sort();
@@ -59,7 +70,10 @@ fn build(voff_at_create: i32, move_after: i32) -> Vec<(usize, i32)> {
 }
 
 fn main() {
-    let v: i32 = std::env::var("VOFF").ok().and_then(|x| x.parse().ok()).unwrap_or(4800);
+    let v: i32 = std::env::var("VOFF")
+        .ok()
+        .and_then(|x| x.parse().ok())
+        .unwrap_or(4800);
     let stat = build(v, 0);
     let dynm = build(0, v);
     println!("{:>6} {:>8} {:>8}", "para", "정적voff", "move후");
@@ -67,7 +81,16 @@ fn main() {
     for k in keys {
         let s = stat.iter().find(|x| x.0 == k).map(|x| x.1);
         let d = dynm.iter().find(|x| x.0 == k).map(|x| x.1);
-        let name = if k == usize::MAX { "표".to_string() } else { format!("p{k}") };
-        println!("{name:>6} {:>8} {:>8} {}", s.map_or("-".into(), |v| v.to_string()), d.map_or("-".into(), |v| v.to_string()), if s != d { "←다름" } else { "" });
+        let name = if k == usize::MAX {
+            "표".to_string()
+        } else {
+            format!("p{k}")
+        };
+        println!(
+            "{name:>6} {:>8} {:>8} {}",
+            s.map_or("-".into(), |v| v.to_string()),
+            d.map_or("-".into(), |v| v.to_string()),
+            if s != d { "←다름" } else { "" }
+        );
     }
 }

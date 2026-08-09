@@ -19,16 +19,28 @@ fn probe_fit_after_margin() {
             .unwrap(),
     );
     // 넘침 신호(읽기전용)가 처음엔 fits=true
-    let f0: Value = serde_json::from_str(&core.get_table_fit_native(0, para, ctrl).unwrap()).unwrap();
-    eprintln!("fit query initial: {}", core.get_table_fit_native(0, para, ctrl).unwrap());
+    let f0: Value =
+        serde_json::from_str(&core.get_table_fit_native(0, para, ctrl).unwrap()).unwrap();
+    eprintln!(
+        "fit query initial: {}",
+        core.get_table_fit_native(0, para, ctrl).unwrap()
+    );
     assert_eq!(f0["fits"], Value::Bool(true));
 
     core.set_page_def_native(0, r#"{"marginLeft":20000,"marginRight":20000}"#)
         .unwrap();
     // 여백 확대 후 넘침 신호가 켜져야 한다
-    let f1: Value = serde_json::from_str(&core.get_table_fit_native(0, para, ctrl).unwrap()).unwrap();
-    eprintln!("fit query after margin: {}", core.get_table_fit_native(0, para, ctrl).unwrap());
-    assert_eq!(f1["fits"], Value::Bool(false), "margin change should overflow");
+    let f1: Value =
+        serde_json::from_str(&core.get_table_fit_native(0, para, ctrl).unwrap()).unwrap();
+    eprintln!(
+        "fit query after margin: {}",
+        core.get_table_fit_native(0, para, ctrl).unwrap()
+    );
+    assert_eq!(
+        f1["fits"],
+        Value::Bool(false),
+        "margin change should overflow"
+    );
     assert!(f1["overflow"].as_u64().unwrap() > 0);
 
     let fit = core.fit_table_to_page_native(0, para, ctrl).unwrap();
@@ -38,8 +50,13 @@ fn probe_fit_after_margin() {
     assert!(v["tableWidth"].as_u64().unwrap() <= v["pageContentWidth"].as_u64().unwrap());
 
     // 보정 후 넘침 신호는 다시 꺼져야 한다
-    let f2: Value = serde_json::from_str(&core.get_table_fit_native(0, para, ctrl).unwrap()).unwrap();
-    assert_eq!(f2["fits"], Value::Bool(true), "after fit should not overflow");
+    let f2: Value =
+        serde_json::from_str(&core.get_table_fit_native(0, para, ctrl).unwrap()).unwrap();
+    assert_eq!(
+        f2["fits"],
+        Value::Bool(true),
+        "after fit should not overflow"
+    );
 }
 
 #[test]
@@ -53,11 +70,16 @@ fn probe_fit_after_paper_shrink() {
     );
     core.set_page_def_native(0, r#"{"width":36000,"height":51000}"#)
         .unwrap();
-    let f1: Value = serde_json::from_str(&core.get_table_fit_native(0, para, ctrl).unwrap()).unwrap();
+    let f1: Value =
+        serde_json::from_str(&core.get_table_fit_native(0, para, ctrl).unwrap()).unwrap();
     assert_eq!(f1["fits"], Value::Bool(false));
     core.fit_table_to_page_native(0, para, ctrl).unwrap();
-    let f2: Value = serde_json::from_str(&core.get_table_fit_native(0, para, ctrl).unwrap()).unwrap();
-    eprintln!("A6 after fit query: {}", core.get_table_fit_native(0, para, ctrl).unwrap());
+    let f2: Value =
+        serde_json::from_str(&core.get_table_fit_native(0, para, ctrl).unwrap()).unwrap();
+    eprintln!(
+        "A6 after fit query: {}",
+        core.get_table_fit_native(0, para, ctrl).unwrap()
+    );
     assert_eq!(f2["fits"], Value::Bool(true));
 }
 

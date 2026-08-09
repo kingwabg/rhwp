@@ -125,7 +125,9 @@ impl DocumentCore {
     ) {
         let ids = self.own_ids(TrackKind::Insert);
         let (need_new, start) = {
-            let Ok(para) = self.get_cell_paragraph_mut(section_idx, ppi, ci, cei, cpi) else { return };
+            let Ok(para) = self.get_cell_paragraph_mut(section_idx, ppi, ci, cei, cpi) else {
+                return;
+            };
             let start = utf16_at_text_pos(para, char_offset);
             (!note_insert_on(para, &ids, start, inserted_text), start)
         };
@@ -165,7 +167,11 @@ impl DocumentCore {
             DeleteVerdict::NeedNew => {
                 let id = self.alloc_track_id(TrackKind::Delete);
                 let para = &mut self.document.sections[section_idx].paragraphs[para_idx];
-                para.track_marks.push(TrackMark { start_pos: start, end_pos: end, tc_id: id });
+                para.track_marks.push(TrackMark {
+                    start_pos: start,
+                    end_pos: end,
+                    tc_id: id,
+                });
                 Some(super::super::helpers::json_ok_with("\"tracked\":true"))
             }
         }
@@ -201,7 +207,11 @@ impl DocumentCore {
                 if let Ok(para) = self.get_cell_paragraph_mut(section_idx, ppi, ci, cei, cpi) {
                     let start = utf16_at_text_pos(para, char_offset);
                     let end = utf16_at_text_pos(para, char_offset + count);
-                    para.track_marks.push(TrackMark { start_pos: start, end_pos: end, tc_id: id });
+                    para.track_marks.push(TrackMark {
+                        start_pos: start,
+                        end_pos: end,
+                        tc_id: id,
+                    });
                 }
                 Some(super::super::helpers::json_ok_with("\"tracked\":true"))
             }
@@ -225,7 +235,11 @@ impl DocumentCore {
         for p in start_para..=end_para {
             let (s_off, e_off) = (
                 if p == start_para { start_offset } else { 0 },
-                if p == end_para { Some(end_offset) } else { None },
+                if p == end_para {
+                    Some(end_offset)
+                } else {
+                    None
+                },
             );
             let para = match cell_ctx {
                 Some((ppi, ci, cei)) => {
@@ -245,7 +259,11 @@ impl DocumentCore {
                 None => utf16_at_text_pos(para, para.text.chars().count()),
             };
             if end > start {
-                para.track_marks.push(TrackMark { start_pos: start, end_pos: end, tc_id: id });
+                para.track_marks.push(TrackMark {
+                    start_pos: start,
+                    end_pos: end,
+                    tc_id: id,
+                });
             }
         }
         Some(super::super::helpers::json_ok_with("\"tracked\":true"))
@@ -259,12 +277,17 @@ impl DocumentCore {
             for (para_idx, host) in sec.paragraphs.iter().enumerate() {
                 // 셀 문단들 — 표 컨트롤 안
                 for (ctrl_idx, ctrl) in host.controls.iter().enumerate() {
-                    let crate::model::control::Control::Table(t) = ctrl else { continue };
+                    let crate::model::control::Control::Table(t) = ctrl else {
+                        continue;
+                    };
                     for (cell_idx, cell) in t.cells.iter().enumerate() {
                         for (cpi, para) in cell.paragraphs.iter().enumerate() {
                             for tm in &para.track_marks {
-                                let Some(rec) =
-                                    self.document.track_changes.iter().find(|r| r.id == tm.tc_id)
+                                let Some(rec) = self
+                                    .document
+                                    .track_changes
+                                    .iter()
+                                    .find(|r| r.id == tm.tc_id)
                                 else {
                                     continue;
                                 };
@@ -290,7 +313,11 @@ impl DocumentCore {
                 }
                 let para = host;
                 for tm in &para.track_marks {
-                    let Some(rec) = self.document.track_changes.iter().find(|r| r.id == tm.tc_id)
+                    let Some(rec) = self
+                        .document
+                        .track_changes
+                        .iter()
+                        .find(|r| r.id == tm.tc_id)
                     else {
                         continue;
                     };
@@ -324,7 +351,9 @@ impl DocumentCore {
         for (sec_idx, sec) in self.document.sections.iter().enumerate() {
             for (host_idx, host) in sec.paragraphs.iter().enumerate() {
                 for (ctrl_idx, ctrl) in host.controls.iter().enumerate() {
-                    let crate::model::control::Control::Table(t) = ctrl else { continue };
+                    let crate::model::control::Control::Table(t) = ctrl else {
+                        continue;
+                    };
                     for (cell_idx, cell) in t.cells.iter().enumerate() {
                         for (cpi, para) in cell.paragraphs.iter().enumerate() {
                             for tm in &para.track_marks {
@@ -334,7 +363,15 @@ impl DocumentCore {
                                 let start = utf16_to_logical(para, tm.start_pos);
                                 let end = utf16_to_logical(para, tm.end_pos);
                                 if end > start {
-                                    cells.push((sec_idx, host_idx, ctrl_idx, cell_idx, cpi, start, end - start));
+                                    cells.push((
+                                        sec_idx,
+                                        host_idx,
+                                        ctrl_idx,
+                                        cell_idx,
+                                        cpi,
+                                        start,
+                                        end - start,
+                                    ));
                                 }
                             }
                         }
@@ -380,8 +417,8 @@ impl DocumentCore {
             }
             if result.is_ok() {
                 for (sec_idx, ppi, ci, cei, cpi, start, count) in cells.into_iter().rev() {
-                    if let Err(e) = self
-                        .delete_text_in_cell_native(sec_idx, ppi, ci, cei, cpi, start, count)
+                    if let Err(e) =
+                        self.delete_text_in_cell_native(sec_idx, ppi, ci, cei, cpi, start, count)
                     {
                         result = Err(e);
                         break;
@@ -474,7 +511,11 @@ fn note_insert_new(para: &mut Paragraph, id: u32, start: u32, text: &str) {
     if utf16_len == 0 {
         return;
     }
-    para.track_marks.push(TrackMark { start_pos: start, end_pos: start + utf16_len, tc_id: id });
+    para.track_marks.push(TrackMark {
+        start_pos: start,
+        end_pos: start + utf16_len,
+        tc_id: id,
+    });
 }
 
 enum DeleteVerdict {
@@ -486,7 +527,13 @@ enum DeleteVerdict {
     NeedNew,
 }
 
-fn mark_delete_on(para: &mut Paragraph, ins_ids: &[u32], del_ids: &[u32], start: u32, end: u32) -> DeleteVerdict {
+fn mark_delete_on(
+    para: &mut Paragraph,
+    ins_ids: &[u32],
+    del_ids: &[u32],
+    start: u32,
+    end: u32,
+) -> DeleteVerdict {
     if end <= start {
         return DeleteVerdict::Done;
     }

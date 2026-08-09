@@ -12,8 +12,14 @@ fn cell_width(doc: &HwpDocument, pi: u32, ci: u32, cell: u32) -> i64 {
 fn main() {
     for (label, payload) in [
         ("{cellIdx,width:5000}   ", r#"[{"cellIdx":0,"width":5000}]"#),
-        ("{cellIdx,widthDelta:-2000}", r#"[{"cellIdx":0,"widthDelta":-2000}]"#),
-        ("{cellIdx,renderWidth:5000}", r#"[{"cellIdx":0,"renderWidth":5000}]"#),
+        (
+            "{cellIdx,widthDelta:-2000}",
+            r#"[{"cellIdx":0,"widthDelta":-2000}]"#,
+        ),
+        (
+            "{cellIdx,renderWidth:5000}",
+            r#"[{"cellIdx":0,"renderWidth":5000}]"#,
+        ),
     ] {
         let mut doc = HwpDocument::create_empty();
         doc.create_blank_document().expect("blank");
@@ -31,7 +37,11 @@ fn main() {
         println!(
             "{label} → 응답={:<40} 폭 {before} → {after} {}",
             resp.chars().take(40).collect::<String>(),
-            if before == after { "(불변)" } else { "(변경됨)" }
+            if before == after {
+                "(불변)"
+            } else {
+                "(변경됨)"
+            }
         );
     }
 }

@@ -710,7 +710,11 @@ impl DocumentCore {
         // 모델(PageHide/section_def)을 읽지 않으므로, setPageHide 로 감춘 상태에서 처음
         // 토글하면 hidden=true 로 '재확인', 다시 토글하면 hidden=false 로 강제 표시가 되어
         // 응답과 실제 렌더가 항상 일치한다. 값은 getPageHide 로도 되읽힌다.
-        let prev = self.hidden_header_footer.get(&key).copied().unwrap_or(false);
+        let prev = self
+            .hidden_header_footer
+            .get(&key)
+            .copied()
+            .unwrap_or(false);
         let hidden = !prev;
         self.hidden_header_footer.insert(key, hidden);
         // 렌더 트리 캐시 무효화

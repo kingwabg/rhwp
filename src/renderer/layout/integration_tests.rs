@@ -103,7 +103,8 @@ mod tests {
             page_number: 0,
             section_index: 0,
             layout,
-            column_contents: vec![ColumnContent { topbottom_bands: Vec::new(),
+            column_contents: vec![ColumnContent {
+                topbottom_bands: Vec::new(),
                 column_index: 0,
                 start_height: 0.0,
                 endnote_flow: false,
@@ -2415,7 +2416,10 @@ mod tests {
                 run.baseline
             );
         }
-        assert!(found > 0, "s0#145 cell#5 두 번째 문단의 TextRun 을 못 찾았다");
+        assert!(
+            found > 0,
+            "s0#145 cell#5 두 번째 문단의 TextRun 을 못 찾았다"
+        );
     }
 
     /// [oracle-pdf-mining-20260806 §2-E] `ensure_min_baseline` 어센트 가드
@@ -2437,7 +2441,8 @@ mod tests {
     /// 가드를 걷어내면(저장 bd 통과) 기준선이 0.5·lh 로 떨어져 이 핀이 터진다.
     #[test]
     fn center_pure_text_min_baseline_guard_matches_hancom_print() {
-        let Some(mut core) = load_document("samples/2022년 국립국어원 업무계획.hwp") else {
+        let Some(mut core) = load_document("samples/2022년 국립국어원 업무계획.hwp")
+        else {
             return;
         };
 

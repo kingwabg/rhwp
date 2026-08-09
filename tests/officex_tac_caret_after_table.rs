@@ -46,7 +46,8 @@ fn make_tac_table(doc: &mut HwpDocument) {
         c["paraIdx"].as_u64().unwrap() as u32,
         c["controlIdx"].as_u64().unwrap() as u32,
     );
-    doc.set_table_column_widths(0, pi, ci, "[5000,5000,5000]").unwrap();
+    doc.set_table_column_widths(0, pi, ci, "[5000,5000,5000]")
+        .unwrap();
 }
 
 /// 표만 있는 문단의 논리 길이는 1 — 표 **뒤**에 캐럿을 둘 자리가 있어야 한다.
@@ -57,16 +58,16 @@ fn inline_table_counts_as_one_char_so_caret_can_sit_after_it() {
     make_tac_table(&mut doc);
 
     let len = doc.get_paragraph_length(0, 0).unwrap();
-    assert_eq!(len, 1, "글자처럼 취급 표는 한 글자로 세어야 한다(표 뒤 오프셋 확보)");
+    assert_eq!(
+        len, 1,
+        "글자처럼 취급 표는 한 글자로 세어야 한다(표 뒤 오프셋 확보)"
+    );
 
     let before: serde_json::Value =
         serde_json::from_str(&doc.get_cursor_rect(0, 0, 0).unwrap()).unwrap();
     let after: serde_json::Value =
         serde_json::from_str(&doc.get_cursor_rect(0, 0, 1).unwrap()).unwrap();
-    let (x0, x1) = (
-        before["x"].as_f64().unwrap(),
-        after["x"].as_f64().unwrap(),
-    );
+    let (x0, x1) = (before["x"].as_f64().unwrap(), after["x"].as_f64().unwrap());
     assert!(
         x1 - x0 > 100.0,
         "표 뒤 캐럿이 표 폭만큼 오른쪽에 서야 한다: 앞={x0} 뒤={x1}"

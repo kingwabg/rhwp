@@ -372,7 +372,13 @@ impl DocumentCore {
             // (location, field_range_index, is_cell_field)
             let targets: Vec<(FieldLocation, usize, bool)> = matched
                 .iter()
-                .map(|f| (f.location.clone(), f.field_range_index, f.field.ctrl_id == 0))
+                .map(|f| {
+                    (
+                        f.location.clone(),
+                        f.field_range_index,
+                        f.field.ctrl_id == 0,
+                    )
+                })
                 .collect();
             (field_id, old_value, targets)
         };

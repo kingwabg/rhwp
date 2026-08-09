@@ -1416,7 +1416,11 @@ fn vertical_align_center_paragraph_reflow_baseline_matches_stored_ratio() {
 
     // 3층의 값 매핑 자체 — 오라클 확정 3종 + 미측정(위쪽)은 기본값.
     assert_eq!(para_vertical_align_baseline_ratio(0), 0.85, "글꼴기준");
-    assert_eq!(para_vertical_align_baseline_ratio(1 << 20), 0.85, "위쪽=미측정");
+    assert_eq!(
+        para_vertical_align_baseline_ratio(1 << 20),
+        0.85,
+        "위쪽=미측정"
+    );
     assert_eq!(para_vertical_align_baseline_ratio(2 << 20), 0.50, "가운데");
     assert_eq!(para_vertical_align_baseline_ratio(3 << 20), 1.00, "아래쪽");
 

@@ -14,11 +14,20 @@ fn main() {
         let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(&format!(
             r#"{{"sectionIdx":0,"paraIdx":2,"charOffset":{len},"rowCount":3,"colCount":3,"treatAsChar":false}}"#
         )).unwrap()).unwrap();
-        let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+        let (pi, ci) = (
+            c["paraIdx"].as_u64().unwrap() as u32,
+            c["controlIdx"].as_u64().unwrap() as u32,
+        );
         doc.set_table_properties(0, pi, ci, &format!(
             r#"{{"treatAsChar":false,"textWrap":"Square","vertRelTo":"Para","horzRelTo":"Column","horzAlign":"Right","vertOffset":{voff},"restrictInPage":false}}"#
         )).unwrap();
-        let b: serde_json::Value = serde_json::from_str(&doc.get_table_bbox(0, pi, ci).unwrap()).unwrap();
-        println!("voff={voff:6}  pages={}  tblPage={} tblY={:.0}", doc.page_count(), b["pageIndex"], b["y"].as_f64().unwrap());
+        let b: serde_json::Value =
+            serde_json::from_str(&doc.get_table_bbox(0, pi, ci).unwrap()).unwrap();
+        println!(
+            "voff={voff:6}  pages={}  tblPage={} tblY={:.0}",
+            doc.page_count(),
+            b["pageIndex"],
+            b["y"].as_f64().unwrap()
+        );
     }
 }

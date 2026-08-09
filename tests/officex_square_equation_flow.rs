@@ -50,10 +50,8 @@ fn tac_table_with_non_tac_equation_stays_on_one_line() {
 
     // 같은 문단에 수식 추가(표 뒤) 후 비-TAC Square 로 — 인라인 컨트롤이 2개가 된다.
     // 비-TAC 이어도 렌더러는 수식을 인라인 취급하므로 폭에 계상된다.
-    let e: serde_json::Value = serde_json::from_str(
-        &doc.insert_equation(0, 0, 3, "a over b", 1000, 0).unwrap(),
-    )
-    .unwrap();
+    let e: serde_json::Value =
+        serde_json::from_str(&doc.insert_equation(0, 0, 3, "a over b", 1000, 0).unwrap()).unwrap();
     let eq_ci = e["controlIdx"].as_u64().unwrap() as u32;
     doc.set_equation_properties(
         0,
@@ -143,8 +141,7 @@ fn square_equation_narrows_neighbor_lines() {
     // 문단 2 끝에서 분할 → 문단 3 = 빈 host, 문단 4·5 = 후속 본문.
     doc.split_paragraph_native(0, 2, flen).unwrap();
     let e: serde_json::Value = serde_json::from_str(
-        &doc
-            .insert_equation(0, 3, 0, "{sum from 1 to n} over {k+1}", 3000, 0)
+        &doc.insert_equation(0, 3, 0, "{sum from 1 to n} over {k+1}", 3000, 0)
             .unwrap(),
     )
     .unwrap();
@@ -163,7 +160,10 @@ fn square_equation_narrows_neighbor_lines() {
     doc.insert_text(0, 4, 0, "덧말 ").unwrap();
 
     let (ex, ey, ew, eh) = equation_bbox(&doc, 3).expect("수식 노드가 렌더트리에 없음");
-    assert!(eh > 30.0, "사전조건: 수식이 여러 줄을 덮을 만큼 커야 한다 (h={eh:.0})");
+    assert!(
+        eh > 30.0,
+        "사전조건: 수식이 여러 줄을 덮을 만큼 커야 한다 (h={eh:.0})"
+    );
     let lines = visible_body_lines(&doc);
     let overlapping = lines
         .iter()

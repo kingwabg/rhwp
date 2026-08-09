@@ -2,7 +2,8 @@
 
 use super::super::helpers::{
     border_line_type_to_u8_val, build_tab_def_from_json, color_ref_to_css, json_has_border_keys,
-    json_has_tab_keys, json_str, parse_char_shape_mods, parse_json_i16_array, parse_para_shape_mods,
+    json_has_tab_keys, json_str, parse_char_shape_mods, parse_json_i16_array,
+    parse_para_shape_mods,
 };
 use crate::document_core::DocumentCore;
 use crate::error::HwpError;
@@ -1015,12 +1016,16 @@ impl DocumentCore {
     /// 종전엔 파서가 fontId만 읽어 fontName/fontFamily를 조용히 무시했다(ok:true인데 글꼴 그대로).
     /// 되읽기 키(fontFamily)와 문서 표기(fontName) 둘 다 받아, 명시적 fontId가 없을 때만
     /// findOrCreateFontId 경유로 font_id를 채운다(앱이 쓰던 우회로를 엔진이 흡수).
-    fn resolve_font_id_from_name(&mut self, props_json: &str, mods_font_id: Option<u16>) -> Option<u16> {
+    fn resolve_font_id_from_name(
+        &mut self,
+        props_json: &str,
+        mods_font_id: Option<u16>,
+    ) -> Option<u16> {
         if mods_font_id.is_some() {
             return mods_font_id; // 명시적 fontId가 우선
         }
-        let name = json_str(props_json, "fontName")
-            .or_else(|| json_str(props_json, "fontFamily"))?;
+        let name =
+            json_str(props_json, "fontName").or_else(|| json_str(props_json, "fontFamily"))?;
         if name.is_empty() {
             return None;
         }

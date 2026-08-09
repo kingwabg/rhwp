@@ -20,10 +20,7 @@ pub(crate) enum EmphasisPrim {
         stroke_width: f64,
     },
     /// 이어 그리는 선
-    Polyline {
-        points: Vec<(f64, f64)>,
-        width: f64,
-    },
+    Polyline { points: Vec<(f64, f64)>, width: f64 },
 }
 
 /// 글자 하나에 얹을 강조점 도형.

@@ -25,8 +25,14 @@ fn get_tables_enumerates_every_table() {
 
     let json = doc.get_tables_native(0).unwrap();
     assert_eq!(json.matches("\"controlIdx\"").count(), 2, "표 2개: {json}");
-    assert!(json.contains("\"rowCount\":2") && json.contains("\"colCount\":3"), "첫 표 2×3: {json}");
-    assert!(json.contains("\"rowCount\":4") && json.contains("\"colCount\":5"), "둘째 표 4×5: {json}");
+    assert!(
+        json.contains("\"rowCount\":2") && json.contains("\"colCount\":3"),
+        "첫 표 2×3: {json}"
+    );
+    assert!(
+        json.contains("\"rowCount\":4") && json.contains("\"colCount\":5"),
+        "둘째 표 4×5: {json}"
+    );
 }
 
 #[test]

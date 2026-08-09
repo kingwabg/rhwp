@@ -18,7 +18,10 @@ fn build() -> Vec<(f64, f64, f64, String)> {
     let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(
         r#"{"sectionIdx":0,"paraIdx":7,"charOffset":0,"rowCount":3,"colCount":1,"treatAsChar":false}"#
     ).unwrap()).unwrap();
-    let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+    let (pi, ci) = (
+        c["paraIdx"].as_u64().unwrap() as u32,
+        c["controlIdx"].as_u64().unwrap() as u32,
+    );
     doc.set_table_column_widths(0, pi, ci, "[15000]").unwrap();
     doc.set_table_properties(0, pi, ci,
         r#"{"treatAsChar":false,"textWrap":"Square","vertRelTo":"Para","horzRelTo":"Column","horzAlign":"Left","vertOffset":0,"horzOffset":0}"#
@@ -63,7 +66,12 @@ fn narrow_square_table_flows_text_beside_with_rewrap() {
         "표 옆에 좁혀 재줄바꿈된 채움08 줄이 없다 — 옆 흐름 미작동. lines={:?}",
         lines
             .iter()
-            .map(|(y, x, w, t)| (*y as i32, *x as i32, *w as i32, t.chars().take(6).collect::<String>()))
+            .map(|(y, x, w, t)| (
+                *y as i32,
+                *x as i32,
+                *w as i32,
+                t.chars().take(6).collect::<String>()
+            ))
             .collect::<Vec<_>>()
     );
     // ② 좁은 줄바꿈 연속성: 채움08 문단의 다음 줄이 좁은 폭에서 넘어온 내용으로 시작

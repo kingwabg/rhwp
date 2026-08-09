@@ -24,7 +24,10 @@ fn partial_square_table(doc: &mut HwpDocument, para_idx: usize) -> (u32, u32) {
     let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(&format!(
         r#"{{"sectionIdx":0,"paraIdx":{para_idx},"charOffset":0,"rowCount":2,"colCount":2,"treatAsChar":false,"colWidths":[3000,3000]}}"#
     )).unwrap()).unwrap();
-    let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+    let (pi, ci) = (
+        c["paraIdx"].as_u64().unwrap() as u32,
+        c["controlIdx"].as_u64().unwrap() as u32,
+    );
     doc.delete_table_column(0, pi, ci, 1).unwrap();
     doc.set_table_properties(0, pi, ci,
         r#"{"treatAsChar":false,"textWrap":"Square","vertRelTo":"Para","horzRelTo":"Column","vertOffset":0}"#
@@ -37,13 +40,17 @@ fn overlap_count(doc: &HwpDocument, pi: u32, ci: u32) -> usize {
     let bb: serde_json::Value =
         serde_json::from_str(&doc.get_table_bbox(0, pi, ci).unwrap()).unwrap();
     let (tx, ty, tw, th) = (
-        bb["x"].as_f64().unwrap(), bb["y"].as_f64().unwrap(),
-        bb["width"].as_f64().unwrap(), bb["height"].as_f64().unwrap(),
+        bb["x"].as_f64().unwrap(),
+        bb["y"].as_f64().unwrap(),
+        bb["width"].as_f64().unwrap(),
+        bb["height"].as_f64().unwrap(),
     );
     let tree = doc.build_page_render_tree(0).unwrap();
     fn walk(n: &RenderNode, in_table: bool, out: &mut Vec<(f64, f64, f64, f64)>) {
         if matches!(n.node_type, RenderNodeType::Table(_)) {
-            for c in &n.children { walk(c, true, out); }
+            for c in &n.children {
+                walk(c, true, out);
+            }
             return;
         }
         if let RenderNodeType::TextLine(tl) = &n.node_type {
@@ -53,13 +60,18 @@ fn overlap_count(doc: &HwpDocument, pi: u32, ci: u32) -> usize {
                 out.push((n.bbox.x, n.bbox.y, n.bbox.width, n.bbox.height));
             }
         }
-        for c in &n.children { walk(c, in_table, out); }
+        for c in &n.children {
+            walk(c, in_table, out);
+        }
     }
     let mut lines = Vec::new();
     walk(&tree.root, false, &mut lines);
-    lines.iter().filter(|(x, y, w, h)| {
-        x + 0.0 < tx + tw - 1.0 && x + w > tx + 1.0 && *y < ty + th - 1.0 && y + h > ty + 1.0
-    }).count()
+    lines
+        .iter()
+        .filter(|(x, y, w, h)| {
+            x + 0.0 < tx + tw - 1.0 && x + w > tx + 1.0 && *y < ty + th - 1.0 && y + h > ty + 1.0
+        })
+        .count()
 }
 
 /// 표를 아래로 끌어 뒤 문단들과 겹치는 케이스 — 뒤 문단이 표 옆으로 갈라진다.
@@ -91,25 +103,37 @@ fn tac_table_move_is_noop() {
     let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(
         r#"{"sectionIdx":0,"paraIdx":2,"charOffset":0,"rowCount":1,"colCount":1,"treatAsChar":true,"colWidths":[3000]}"#
     ).unwrap()).unwrap();
-    let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+    let (pi, ci) = (
+        c["paraIdx"].as_u64().unwrap() as u32,
+        c["controlIdx"].as_u64().unwrap() as u32,
+    );
     let para_text = |doc: &HwpDocument, p: u32| -> String {
         let len = doc.get_paragraph_length(0, p).unwrap();
-        if len == 0 { return String::new(); }
+        if len == 0 {
+            return String::new();
+        }
         doc.get_text_range(0, p, 0, len).unwrap()
     };
     let pc = doc.get_paragraph_count(0).unwrap();
     let text_before: Vec<String> = (0..pc).map(|p| para_text(&doc, p)).collect();
 
-    let r: serde_json::Value = serde_json::from_str(
-        &doc.move_table_offset(0, pi, ci, 0, 99000).unwrap()).unwrap();
+    let r: serde_json::Value =
+        serde_json::from_str(&doc.move_table_offset(0, pi, ci, 0, 99000).unwrap()).unwrap();
     assert_eq!(r["ppi"].as_u64(), Some(pi as u64), "TAC 이동이 문단을 바꿈");
 
     let text_after: Vec<String> = (0..pc).map(|p| para_text(&doc, p)).collect();
-    assert_eq!(text_before, text_after, "TAC 이동이 문단 순서를 교환함 — 무동작이어야 한다");
+    assert_eq!(
+        text_before, text_after,
+        "TAC 이동이 문단 순서를 교환함 — 무동작이어야 한다"
+    );
 
-    let tp: serde_json::Value = serde_json::from_str(
-        &doc.get_table_properties(0, pi, ci).unwrap()).unwrap();
-    assert_eq!(tp["vertOffset"].as_i64(), Some(0), "TAC 이동이 오프셋을 누적함");
+    let tp: serde_json::Value =
+        serde_json::from_str(&doc.get_table_properties(0, pi, ci).unwrap()).unwrap();
+    assert_eq!(
+        tp["vertOffset"].as_i64(),
+        Some(0),
+        "TAC 이동이 오프셋을 누적함"
+    );
 }
 
 /// [실사고 2026-07-30] studio 배치 UX 는 가로 기준을 **종이(Paper)** 로 저장한다 —
@@ -121,13 +145,20 @@ fn square_move_flows_with_paper_horz_rel() {
     let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(
         r#"{"sectionIdx":0,"paraIdx":3,"charOffset":0,"rowCount":2,"colCount":2,"treatAsChar":false,"colWidths":[3000,3000]}"#
     ).unwrap()).unwrap();
-    let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+    let (pi, ci) = (
+        c["paraIdx"].as_u64().unwrap() as u32,
+        c["controlIdx"].as_u64().unwrap() as u32,
+    );
     doc.delete_table_column(0, pi, ci, 1).unwrap();
     doc.set_table_properties(0, pi, ci,
         r#"{"treatAsChar":false,"textWrap":"Square","vertRelTo":"Para","horzRelTo":"Paper","horzAlign":"Left","horzOffset":8504,"vertOffset":0}"#
     ).unwrap();
     doc.move_table_offset(0, pi, ci, 0, 3000).unwrap();
-    assert_eq!(overlap_count(&doc, pi, ci), 0, "Paper 기준 어울림 표가 rewrap 에서 빠짐");
+    assert_eq!(
+        overlap_count(&doc, pi, ci),
+        0,
+        "Paper 기준 어울림 표가 rewrap 에서 빠짐"
+    );
 }
 
 // ─── 양쪽 흐름(BothSides) 2조각 잠금 ───────────────────────────────
@@ -176,7 +207,10 @@ fn bothsides_table(doc: &mut HwpDocument, host: usize, dh: i32, dv: i32) -> (u32
     let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(&format!(
         r#"{{"sectionIdx":0,"paraIdx":{host},"charOffset":0,"rowCount":2,"colCount":2,"treatAsChar":false,"colWidths":[3000,3000]}}"#
     )).unwrap()).unwrap();
-    let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+    let (pi, ci) = (
+        c["paraIdx"].as_u64().unwrap() as u32,
+        c["controlIdx"].as_u64().unwrap() as u32,
+    );
     doc.delete_table_column(0, pi, ci, 1).unwrap();
     doc.set_table_properties(0, pi, ci,
         r#"{"treatAsChar":false,"textWrap":"Square","textFlow":"BothSides","vertRelTo":"Para","horzRelTo":"Column","vertOffset":0,"horzOffset":0}"#
@@ -215,7 +249,10 @@ fn bothsides_center_table_splits_lines_into_two_fragments() {
             );
         }
     }
-    assert!(pairs >= 1, "좌·우 조각 쌍이 없다 — 양쪽 흐름 회귀: {lines:?}");
+    assert!(
+        pairs >= 1,
+        "좌·우 조각 쌍이 없다 — 양쪽 흐름 회귀: {lines:?}"
+    );
     // 표를 덮는 본문 줄은 없다.
     assert_eq!(overlap_count(&doc, pi, ci), 0);
 }
@@ -231,8 +268,11 @@ fn bothsides_left_edge_table_flows_right_only() {
         serde_json::from_str(&doc.get_table_bbox(0, pi, ci).unwrap()).unwrap();
     let (tx, tw) = (bb["x"].as_f64().unwrap(), bb["width"].as_f64().unwrap());
     let lines = body_lines(&doc);
-    eprintln!("표 x={tx:.0} y={:.0} h={:.0} w={tw:.0} / 줄 {lines:?}",
-        bb["y"].as_f64().unwrap(), bb["height"].as_f64().unwrap());
+    eprintln!(
+        "표 x={tx:.0} y={:.0} h={:.0} w={tw:.0} / 줄 {lines:?}",
+        bb["y"].as_f64().unwrap(),
+        bb["height"].as_f64().unwrap()
+    );
     // 표와 같은 y 인 줄은 모두 표 우단 이후에서 시작한다.
     for &(x, y, w) in &lines {
         let overlaps_y = (y as f64) < bb["y"].as_f64().unwrap() + bb["height"].as_f64().unwrap()
@@ -307,8 +347,10 @@ fn selection_rects_respect_bothsides_fragments() {
     let bb: serde_json::Value =
         serde_json::from_str(&doc.get_table_bbox(0, pi, ci).unwrap()).unwrap();
     let (tx, ty, tw, th) = (
-        bb["x"].as_f64().unwrap(), bb["y"].as_f64().unwrap(),
-        bb["width"].as_f64().unwrap(), bb["height"].as_f64().unwrap(),
+        bb["x"].as_f64().unwrap(),
+        bb["y"].as_f64().unwrap(),
+        bb["width"].as_f64().unwrap(),
+        bb["height"].as_f64().unwrap(),
     );
     let len = doc.get_logical_length(0, 0).unwrap();
     let rs: serde_json::Value =
@@ -316,8 +358,10 @@ fn selection_rects_respect_bothsides_fragments() {
     let mut covering = 0;
     for r in rs.as_array().unwrap() {
         let (x, y, w, h) = (
-            r["x"].as_f64().unwrap(), r["y"].as_f64().unwrap(),
-            r["width"].as_f64().unwrap(), r["height"].as_f64().unwrap(),
+            r["x"].as_f64().unwrap(),
+            r["y"].as_f64().unwrap(),
+            r["width"].as_f64().unwrap(),
+            r["height"].as_f64().unwrap(),
         );
         let x_ov = x < tx + tw - 1.0 && x + w > tx + 1.0;
         let y_ov = y < ty + th - 1.0 && y + h > ty + 1.0;
@@ -340,7 +384,10 @@ fn square_rewrap_works_for_every_vert_basis() {
         let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(&format!(
             r#"{{"sectionIdx":0,"paraIdx":{host},"charOffset":0,"rowCount":2,"colCount":2,"treatAsChar":false,"colWidths":[3000,3000]}}"#
         )).unwrap()).unwrap();
-        let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+        let (pi, ci) = (
+            c["paraIdx"].as_u64().unwrap() as u32,
+            c["controlIdx"].as_u64().unwrap() as u32,
+        );
         doc.delete_table_column(0, pi, ci, 1).unwrap();
         doc.set_table_properties(0, pi, ci, &format!(
             r#"{{"treatAsChar":false,"textWrap":"Square","textFlow":"BothSides","vertRelTo":"{vrel}","horzRelTo":"Column","vertOffset":0,"horzOffset":0}}"#
@@ -368,7 +415,10 @@ fn two_tables_on_same_line_produce_three_fragments() {
         let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(&format!(
             r#"{{"sectionIdx":0,"paraIdx":{host},"charOffset":0,"rowCount":2,"colCount":3,"treatAsChar":false}}"#
         )).unwrap()).unwrap();
-        let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+        let (pi, ci) = (
+            c["paraIdx"].as_u64().unwrap() as u32,
+            c["controlIdx"].as_u64().unwrap() as u32,
+        );
         doc.delete_table_column(0, pi, ci, 2).unwrap();
         doc.delete_table_column(0, pi, ci, 1).unwrap();
         doc.set_table_properties(0, pi, ci,
@@ -391,7 +441,8 @@ fn two_tables_on_same_line_produce_three_fragments() {
             serde_json::from_str(&doc.get_table_bbox(0, pb, cb).unwrap()).unwrap();
         v["y"].as_f64().unwrap()
     };
-    doc.move_table_offset(0, pb, cb, 0, ((ya - yb) * 75.0) as i32).unwrap();
+    doc.move_table_offset(0, pb, cb, 0, ((ya - yb) * 75.0) as i32)
+        .unwrap();
     let bba: serde_json::Value =
         serde_json::from_str(&doc.get_table_bbox(0, pa, ca).unwrap()).unwrap();
     let bbb: serde_json::Value =

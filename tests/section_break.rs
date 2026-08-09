@@ -32,7 +32,11 @@ fn section_break_splits_and_survives_roundtrip() {
     assert_eq!(doc.get_section_count(), 2, "구역 1→2");
     // 커서에서 가르는 의미론(쪽/단 나누기와 동일): 문단 머리에서 나누면 원 구역
     // 끝에 빈 문단이 남는다 — 한컴의 Enter 계열 나누기와 같은 동작.
-    assert_eq!(doc.get_paragraph_count(0).unwrap(), 2, "원 구역 문단 수(끝 빈 문단 포함)");
+    assert_eq!(
+        doc.get_paragraph_count(0).unwrap(),
+        2,
+        "원 구역 문단 수(끝 빈 문단 포함)"
+    );
     assert_eq!(doc.get_paragraph_count(1).unwrap(), 1, "새 구역 문단 수");
     assert_eq!(all_text(&doc), before_text, "본문 텍스트 총량 불변");
 

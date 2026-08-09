@@ -43,7 +43,11 @@ fn tracked_insert_and_delete() {
 
     // ② ON 삭제 — 글자는 남고 Delete 마크
     doc.delete_text(0, 0, 0, 1).unwrap(); // '원' 삭제 시도
-    assert_eq!(text0(&doc), "원본추가요내용", "추적 삭제는 글자를 지우지 않는다");
+    assert_eq!(
+        text0(&doc),
+        "원본추가요내용",
+        "추적 삭제는 글자를 지우지 않는다"
+    );
     let ch = changes(&doc);
     assert_eq!(ch.len(), 2, "Delete 변경 추가: {ch:?}");
     assert!(ch.iter().any(|c| c.1 == "delete" && c.2 == "원"));
@@ -52,7 +56,10 @@ fn tracked_insert_and_delete() {
     doc.delete_text(0, 0, 4, 1).unwrap(); // '요' (자기 Insert 안)
     assert_eq!(text0(&doc), "원본추가내용", "자기 삽입분은 실삭제");
     let ch = changes(&doc);
-    assert!(ch.iter().any(|c| c.1 == "insert" && c.2 == "추가"), "마크 축소: {ch:?}");
+    assert!(
+        ch.iter().any(|c| c.1 == "insert" && c.2 == "추가"),
+        "마크 축소: {ch:?}"
+    );
 
     // ③ 검토 연산 4종
     let ins_id = ch.iter().find(|c| c.1 == "insert").unwrap().0;
@@ -105,7 +112,6 @@ fn changes_summary(doc: &HwpDocument) -> Vec<(String, String, String)> {
         .collect()
 }
 
-
 fn cell_text(doc: &HwpDocument, host: u32, ctrl_hint: u32, cei: usize) -> String {
     let _ = ctrl_hint;
     let host = &doc.document().sections[0].paragraphs[host as usize];
@@ -125,27 +131,51 @@ fn tracked_range_and_cell_edits() {
 
     // 선택(범위) 삭제 — 지워지지 않고 Delete 마크
     doc.delete_range_native(0, 0, 1, 0, 3, None).unwrap();
-    assert_eq!(text0(&doc), "가나다라마", "범위 삭제도 글자를 지우지 않는다");
+    assert_eq!(
+        text0(&doc),
+        "가나다라마",
+        "범위 삭제도 글자를 지우지 않는다"
+    );
     let ch = changes(&doc);
-    assert!(ch.iter().any(|c| c.1 == "delete" && c.2 == "나다"), "범위 마크: {ch:?}");
+    assert!(
+        ch.iter().any(|c| c.1 == "delete" && c.2 == "나다"),
+        "범위 마크: {ch:?}"
+    );
 
     // 셀 편집 — 삽입·삭제 모두 추적
     doc.set_track_changes(false, "", "");
     let t: serde_like::Table = serde_like::create_table(&mut doc);
     doc.set_track_changes(true, "검토자", "2026-07-30");
-    doc.insert_text_in_cell_native(0, t.para as usize, t.ctrl as usize, 0, 0, 0, "셀추가").unwrap();
-    assert_eq!(cell_text(&doc, t.para, t.ctrl, 0), "셀추가", "셀 삽입 자체는 정상");
+    doc.insert_text_in_cell_native(0, t.para as usize, t.ctrl as usize, 0, 0, 0, "셀추가")
+        .unwrap();
+    assert_eq!(
+        cell_text(&doc, t.para, t.ctrl, 0),
+        "셀추가",
+        "셀 삽입 자체는 정상"
+    );
     let ch = changes(&doc);
-    assert!(ch.iter().any(|c| c.1 == "insert" && c.2 == "셀추가"), "셀 Insert 마크: {ch:?}");
+    assert!(
+        ch.iter().any(|c| c.1 == "insert" && c.2 == "셀추가"),
+        "셀 Insert 마크: {ch:?}"
+    );
 
     // 셀 삭제 (자기 삽입이 아닌 기존 글자) — 먼저 추적 끄고 글자 심기
     doc.set_track_changes(false, "", "");
-    doc.insert_text_in_cell_native(0, t.para as usize, t.ctrl as usize, 1, 0, 0, "원본").unwrap();
+    doc.insert_text_in_cell_native(0, t.para as usize, t.ctrl as usize, 1, 0, 0, "원본")
+        .unwrap();
     doc.set_track_changes(true, "검토자", "2026-07-30");
-    doc.delete_text_in_cell_native(0, t.para as usize, t.ctrl as usize, 1, 0, 0, 1).unwrap();
-    assert_eq!(cell_text(&doc, t.para, t.ctrl, 1), "원본", "셀 추적 삭제는 글자 유지");
+    doc.delete_text_in_cell_native(0, t.para as usize, t.ctrl as usize, 1, 0, 0, 1)
+        .unwrap();
+    assert_eq!(
+        cell_text(&doc, t.para, t.ctrl, 1),
+        "원본",
+        "셀 추적 삭제는 글자 유지"
+    );
     let ch = changes(&doc);
-    assert!(ch.iter().any(|c| c.1 == "delete" && c.2 == "원"), "셀 Delete 마크: {ch:?}");
+    assert!(
+        ch.iter().any(|c| c.1 == "delete" && c.2 == "원"),
+        "셀 Delete 마크: {ch:?}"
+    );
 
     let before: Vec<(String, String)> = changes(&doc).into_iter().map(|(_, k, t)| (k, t)).collect();
     // 사이드카 왕복 — 셀 마크 잔존.
@@ -153,7 +183,10 @@ fn tracked_range_and_cell_edits() {
     //  charPrIDRef 0 미등록. 본문 전체 왕복은 위 테스트가, 여기선 사이드카 논리를 검증)
     let sidecar = rhwp::serializer::track_sidecar::build_track_sidecar(doc.document())
         .expect("사이드카 생성");
-    assert!(sidecar.contains("\"cei\":"), "셀 좌표가 실려야 함: {sidecar}");
+    assert!(
+        sidecar.contains("\"cei\":"),
+        "셀 좌표가 실려야 함: {sidecar}"
+    );
     {
         let d = doc.document_mut();
         let ids: Vec<u32> = d.track_changes.iter().map(|r| r.id).collect();
@@ -181,20 +214,30 @@ fn tracked_range_and_cell_edits() {
 
     // 모두 적용 — 셀 실삭제까지
     doc.resolve_all_track_changes_native(true).unwrap();
-    assert_eq!(cell_text(&doc, t.para, t.ctrl, 1), "본", "accept → 셀 실삭제");
+    assert_eq!(
+        cell_text(&doc, t.para, t.ctrl, 1),
+        "본",
+        "accept → 셀 실삭제"
+    );
     assert_eq!(changes(&doc).len(), 0);
 }
 
 /// 테스트 안 표 생성 헬퍼 — wasm createTable 반환(JSON)을 얇게 파싱
 mod serde_like {
     use super::*;
-    pub struct Table { pub para: u32, pub ctrl: u32 }
+    pub struct Table {
+        pub para: u32,
+        pub ctrl: u32,
+    }
     pub fn create_table(doc: &mut HwpDocument) -> Table {
         let r = doc.create_table_native(0, 0, 0, 2, 2).unwrap();
         let get = |k: &str| -> u32 {
             let s = r.split(&format!("\"{}\":", k)).nth(1).unwrap();
             s[..s.find([',', '}']).unwrap()].parse().unwrap()
         };
-        Table { para: get("paraIdx"), ctrl: get("controlIdx") }
+        Table {
+            para: get("paraIdx"),
+            ctrl: get("controlIdx"),
+        }
     }
 }

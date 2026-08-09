@@ -15,7 +15,8 @@ fn create_floating_shape(doc: &mut HwpDocument, shape_type: &str) -> (usize, usi
     let json = format!(
         r#"{{"sectionIdx":0,"paraIdx":0,"charOffset":0,"shapeType":"{shape_type}","width":{W_HU},"height":{H_HU},"treatAsChar":false}}"#
     );
-    let c: serde_json::Value = serde_json::from_str(&doc.create_shape_control(&json).unwrap()).unwrap();
+    let c: serde_json::Value =
+        serde_json::from_str(&doc.create_shape_control(&json).unwrap()).unwrap();
     (
         c["paraIdx"].as_u64().unwrap() as usize,
         c["controlIdx"].as_u64().unwrap() as usize,

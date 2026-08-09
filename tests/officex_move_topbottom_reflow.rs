@@ -11,7 +11,8 @@ use rhwp::wasm_api::HwpDocument;
 fn lines_and_table(move_v: i32) -> (Vec<(usize, i32)>, (i32, i32)) {
     let mut doc = HwpDocument::create_empty();
     doc.create_blank_document().unwrap();
-    let filler = |n: usize| format!("채움 {n:02} 가나다라마바사 아자차카타파하 강물이 흐르고 산이 높다");
+    let filler =
+        |n: usize| format!("채움 {n:02} 가나다라마바사 아자차카타파하 강물이 흐르고 산이 높다");
     doc.insert_text(0, 0, 0, &filler(14)).unwrap();
     for n in (1..14).rev() {
         doc.insert_paragraph(0, 0).unwrap();
@@ -20,7 +21,10 @@ fn lines_and_table(move_v: i32) -> (Vec<(usize, i32)>, (i32, i32)) {
     let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(
         r#"{"sectionIdx":0,"paraIdx":7,"charOffset":0,"rowCount":3,"colCount":2,"treatAsChar":false}"#
     ).unwrap()).unwrap();
-    let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+    let (pi, ci) = (
+        c["paraIdx"].as_u64().unwrap() as u32,
+        c["controlIdx"].as_u64().unwrap() as u32,
+    );
     doc.set_table_properties(0, pi, ci,
         r#"{"treatAsChar":false,"textWrap":"TopAndBottom","vertRelTo":"Para","horzRelTo":"Column","vertOffset":0}"#
     ).unwrap();
@@ -73,7 +77,10 @@ fn moving_topbottom_table_down_reflows_following_text() {
         "표 아래로 이어지는 문단이 없음 — 상자 건너뛰기 실패"
     );
     // ④ 이동량 자체는 소비된다: 표 top 이 이동 전(≈281)보다 아래.
-    assert!(tbl_top > 320, "표 top={tbl_top} — vertOffset 이 소비되지 않음");
+    assert!(
+        tbl_top > 320,
+        "표 top={tbl_top} — vertOffset 이 소비되지 않음"
+    );
 }
 
 /// [자리차지 이동 2026-07-30] 사용자 신고 ①② — 빈 문서에서 표를 만들어(빈 host 앵커)
@@ -86,7 +93,10 @@ fn moving_empty_host_table_down_keeps_anchor_cursor_in_flow() {
     let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(
         r#"{"sectionIdx":0,"paraIdx":0,"charOffset":0,"rowCount":2,"colCount":2,"treatAsChar":false}"#
     ).unwrap()).unwrap();
-    let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+    let (pi, ci) = (
+        c["paraIdx"].as_u64().unwrap() as u32,
+        c["controlIdx"].as_u64().unwrap() as u32,
+    );
     doc.set_table_properties(0, pi, ci,
         r#"{"treatAsChar":false,"textWrap":"TopAndBottom","vertRelTo":"Para","horzRelTo":"Column","vertOffset":0}"#
     ).unwrap();
@@ -133,7 +143,10 @@ fn moved_anchor_paragraph_keeps_its_own_line_above_following_text() {
     let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(
         r#"{"sectionIdx":0,"paraIdx":0,"charOffset":0,"rowCount":2,"colCount":2,"treatAsChar":false}"#
     ).unwrap()).unwrap();
-    let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+    let (pi, ci) = (
+        c["paraIdx"].as_u64().unwrap() as u32,
+        c["controlIdx"].as_u64().unwrap() as u32,
+    );
     doc.set_table_properties(0, pi, ci,
         r#"{"treatAsChar":false,"textWrap":"TopAndBottom","vertRelTo":"Para","horzRelTo":"Column","vertOffset":0}"#
     ).unwrap();

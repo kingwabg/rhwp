@@ -244,7 +244,10 @@ fn hwpx_table_properties_report_physics_not_mirror() {
         _ => unreachable!(),
     };
     // 전제: 물리는 살아 있고 미러 bit13 은 비어 있다 — 결함의 성립 조건.
-    assert!(table.common.flow_with_text, "물리(flow_with_text)가 유실됐다");
+    assert!(
+        table.common.flow_with_text,
+        "물리(flow_with_text)가 유실됐다"
+    );
     assert_eq!(
         (table.attr >> 13) & 0x01,
         0,

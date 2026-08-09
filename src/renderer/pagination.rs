@@ -621,7 +621,8 @@ impl PaginationResult {
                 column_contents: old_page
                     .column_contents
                     .iter()
-                    .map(|cc| ColumnContent { topbottom_bands: Vec::new(),
+                    .map(|cc| ColumnContent {
+                        topbottom_bands: Vec::new(),
                         column_index: cc.column_index,
                         start_height: cc.start_height,
                         endnote_flow: cc.endnote_flow,

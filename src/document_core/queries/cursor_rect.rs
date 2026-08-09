@@ -1862,9 +1862,15 @@ impl DocumentCore {
                     {
                         if let Some((char_offset, sole)) = char_slot(si, pi, ci) {
                             hits.push((
-                                si, pi, char_offset,
-                                node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height,
-                                false, sole,
+                                si,
+                                pi,
+                                char_offset,
+                                node.bbox.x,
+                                node.bbox.y,
+                                node.bbox.width,
+                                node.bbox.height,
+                                false,
+                                sole,
                             ));
                         }
                     }
@@ -1875,9 +1881,15 @@ impl DocumentCore {
                     {
                         if let Some((char_offset, sole)) = char_slot(si, pi, ci) {
                             hits.push((
-                                si, pi, char_offset,
-                                node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height,
-                                true, sole,
+                                si,
+                                pi,
+                                char_offset,
+                                node.bbox.x,
+                                node.bbox.y,
+                                node.bbox.width,
+                                node.bbox.height,
+                                true,
+                                sole,
                             ));
                         }
                     }
@@ -2021,23 +2033,40 @@ impl DocumentCore {
             //   ① 문단이 이 개체 하나뿐(sole) — 앞뒤 텍스트를 가로채지 않게
             //   ② 개체 오른쪽(같은 y)에 다른 셀이 없어야 — 좌우로 나란한 표(예: 2단 표)
             //      사이 클릭은 셀로 가야 하므로. 오른쪽에 셀이 있으면 좁은 밴드로 양보.
-            let has_right_neighbor = cell_bboxes.iter().any(|cb| {
-                cb.x > right + 1.0 && cb.y < iy + ih && cb.y + cb.h > iy
-            });
+            let has_right_neighbor = cell_bboxes
+                .iter()
+                .any(|cb| cb.x > right + 1.0 && cb.y < iy + ih && cb.y + cb.h > iy);
             // 오른쪽에 이웃 셀이 있으면(나란한 표) 밴드를 아예 끈다 — 좁은 밴드조차
             // 표 사이 좁은 간격을 삼켜 셀 클릭을 가로챈다(exam_social 2단 표 실측).
             // 오른쪽에 이웃 셀이 있으면(나란한 표) 밴드를 끈다 — 표 사이 클릭은 셀로.
             // 없으면 표 오른쪽은 줄 끝까지 빈 여백이므로, 멀리 클릭해도 표 뒤로 보낸다.
-            let right_band = if has_right_neighbor { 0.0 } else { f64::INFINITY };
+            let right_band = if has_right_neighbor {
+                0.0
+            } else {
+                f64::INFINITY
+            };
             let _ = sole;
-            if right_band > 0.0 && x >= right && x <= right + right_band && y >= iy && y <= iy + ih {
+            if right_band > 0.0 && x >= right && x <= right + right_band && y >= iy && y <= iy + ih
+            {
                 return Ok(format_body_inline_image_hit(
-                    page_num, si, pi, char_offset + 1, right, caret_y, caret_h,
+                    page_num,
+                    si,
+                    pi,
+                    char_offset + 1,
+                    right,
+                    caret_y,
+                    caret_h,
                 ));
             }
             if x < ix && x >= ix - caret_h && y >= iy && y <= iy + ih {
                 return Ok(format_body_inline_image_hit(
-                    page_num, si, pi, char_offset, ix, caret_y, caret_h,
+                    page_num,
+                    si,
+                    pi,
+                    char_offset,
+                    ix,
+                    caret_y,
+                    caret_h,
                 ));
             }
         }

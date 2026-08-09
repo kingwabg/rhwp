@@ -9,11 +9,11 @@ pub mod cfb_writer;
 pub mod control;
 pub mod doc_info;
 pub mod header;
-pub mod track_sidecar;
 pub mod hml;
 pub mod hwpx;
 pub mod mini_cfb;
 pub mod record_writer;
+pub mod track_sidecar;
 
 pub use cfb_writer::serialize_hwp;
 pub use hml::serialize_hml;

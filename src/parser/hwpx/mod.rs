@@ -475,7 +475,6 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
         }
     }
 
-
     // [Task #873] BinData Link 타입 의 외부 file path 영역 영역 Picture.external_path 영역
     // 전달. 이후 model::document::populate_external_images_from_dir (Task #741) 가 같은
     // dir 영역 basename 매칭 영역 image 영역 자동 load. HWP5 parser 와 동일 처리.

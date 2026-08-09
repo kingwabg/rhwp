@@ -7,7 +7,10 @@ fn main() {
     let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(
         r#"{"sectionIdx":0,"paraIdx":0,"charOffset":5,"rowCount":2,"colCount":2,"treatAsChar":false}"#
     ).unwrap()).unwrap();
-    let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+    let (pi, ci) = (
+        c["paraIdx"].as_u64().unwrap() as u32,
+        c["controlIdx"].as_u64().unwrap() as u32,
+    );
     let border = r##"{"borderLeft":{"type":1,"width":4,"color":"#000000"},"borderRight":{"type":1,"width":4,"color":"#000000"},"borderTop":{"type":1,"width":4,"color":"#000000"},"borderBottom":{"type":1,"width":4,"color":"#000000"}}"##;
     for cell in 0..4u32 {
         doc.set_cell_properties(0, pi, ci, cell, border).unwrap();
@@ -23,6 +26,7 @@ fn main() {
         eprintln!("{tag} strokes={cnt:?}");
     };
     strokes(&doc, "apply후");
-    doc.set_table_column_widths(0, pi, ci, "[15000,15000]").unwrap();
+    doc.set_table_column_widths(0, pi, ci, "[15000,15000]")
+        .unwrap();
     strokes(&doc, "colW후");
 }

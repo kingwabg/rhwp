@@ -2341,11 +2341,7 @@ impl Renderer for WebCanvasRenderer {
                         font_style, font_weight, scaled, font_family
                     );
                     self.ctx.set_font(&emoji_font);
-                    let _ = self.ctx.fill_text(
-                        cluster_str,
-                        char_x + dx,
-                        y - lift,
-                    );
+                    let _ = self.ctx.fill_text(cluster_str, char_x + dx, y - lift);
                     self.ctx.restore();
                     self.ctx.set_font(&font);
                     continue;
@@ -2468,7 +2464,9 @@ impl Renderer for WebCanvasRenderer {
                             stroke_width,
                         } => {
                             self.ctx.begin_path();
-                            let _ = self.ctx.arc(cx, cy, r.max(0.1), 0.0, std::f64::consts::PI * 2.0);
+                            let _ =
+                                self.ctx
+                                    .arc(cx, cy, r.max(0.1), 0.0, std::f64::consts::PI * 2.0);
                             if filled {
                                 self.ctx.fill();
                             } else {

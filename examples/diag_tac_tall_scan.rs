@@ -13,8 +13,12 @@ fn main() {
         if !(name.ends_with(".hwp") || name.ends_with(".hwpx")) {
             continue;
         }
-        let Ok(bytes) = std::fs::read(&path) else { continue };
-        let Ok(doc) = rhwp::parse_document(&bytes) else { continue };
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let Ok(doc) = rhwp::parse_document(&bytes) else {
+            continue;
+        };
         for (si, sec) in doc.sections.iter().enumerate() {
             // 본문 높이 = 용지 − 위아래 여백·머리말꼬리말 (대략)
             let pd = &sec.section_def.page_def;

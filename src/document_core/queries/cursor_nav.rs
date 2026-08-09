@@ -1390,8 +1390,14 @@ impl DocumentCore {
                     // ArrowDown → **첫 행에서 캐럿 x 가 걸친 열**의 첫 줄.
                     // 종전엔 무조건 첫 셀(1행 1열)로 들어가, 마지막 셀로 들어오는 ↑ 와
                     // 짝이 안 맞았다(2026-08-02 사용자 지적: 표 위아래 이동이 다르다).
-                    let entry = self
-                        .pick_cell_in_row_by_x(sec, target_para, ctrl_idx, table, 0, preferred_x);
+                    let entry = self.pick_cell_in_row_by_x(
+                        sec,
+                        target_para,
+                        ctrl_idx,
+                        table,
+                        0,
+                        preferred_x,
+                    );
                     if let Some(cell) = table.cells.get(entry) {
                         if !cell.paragraphs.is_empty() {
                             let cell_para = &cell.paragraphs[0];
@@ -1407,8 +1413,14 @@ impl DocumentCore {
                 } else {
                     // ArrowUp → **마지막 행에서 캐럿 x 가 걸친 열**의 마지막 줄 (↓ 와 대칭)
                     let last_row = table.row_count.saturating_sub(1);
-                    let last_cell_idx = self
-                        .pick_cell_in_row_by_x(sec, target_para, ctrl_idx, table, last_row, preferred_x);
+                    let last_cell_idx = self.pick_cell_in_row_by_x(
+                        sec,
+                        target_para,
+                        ctrl_idx,
+                        table,
+                        last_row,
+                        preferred_x,
+                    );
                     if let Some(last_cell) = table.cells.get(last_cell_idx) {
                         let last_cpi = last_cell.paragraphs.len().saturating_sub(1);
                         if let Some(cell_para) = last_cell.paragraphs.get(last_cpi) {

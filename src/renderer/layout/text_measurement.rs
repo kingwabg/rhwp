@@ -150,11 +150,13 @@ pub(crate) fn emoji_draw_offsets(font_size: f64, advance: f64) -> (f64, f64) {
 /// 이모지 결합용 문자 — 앞 글자에 붙어 그려지므로 폭 0.
 /// (변이 선택자·ZWJ·피부색 수정자·keycap 결합자)
 fn is_emoji_zero_width(c: char) -> bool {
-    matches!(c as u32,
+    matches!(
+        c as u32,
         0xFE0E | 0xFE0F       // 변이 선택자 15/16
         | 0x200D              // ZWJ (가족·직업 조합)
-        | 0x1F3FB..=0x1F3FF   // 피부색 수정자
-        | 0x20E3              // keycap 결합자
+        | 0x1F3FB
+            ..=0x1F3FF   // 피부색 수정자
+        | 0x20E3 // keycap 결합자
     )
 }
 
@@ -2122,11 +2124,20 @@ mod emoji_offset_tests {
     fn emoji_offsets_match_ink_measurements() {
         let fs = 100.0;
         let (dx, lift) = emoji_draw_offsets(fs, fs); // 어드밴스 = 1em
-        // 무보정 계약(2026-08-04 사용자 판정 — 구글 독스와 같게):
-        // 배율 1.0 → 잉크가 어드밴스를 정확히 채우므로 가로 보정 0, 세로 올림 0.
-        assert!((dx - 0.0).abs() < 0.01, "dx {dx} != 0 — 이모지는 자기 칸을 채운다");
-        assert!((lift - 0.0).abs() < 0.01, "lift {lift} != 0 — 기준선 그대로");
-        assert!((EMOJI_GLYPH_SCALE - 1.0).abs() < 1e-9, "이모지는 글자 크기 그대로 그린다");
+                                                     // 무보정 계약(2026-08-04 사용자 판정 — 구글 독스와 같게):
+                                                     // 배율 1.0 → 잉크가 어드밴스를 정확히 채우므로 가로 보정 0, 세로 올림 0.
+        assert!(
+            (dx - 0.0).abs() < 0.01,
+            "dx {dx} != 0 — 이모지는 자기 칸을 채운다"
+        );
+        assert!(
+            (lift - 0.0).abs() < 0.01,
+            "lift {lift} != 0 — 기준선 그대로"
+        );
+        assert!(
+            (EMOJI_GLYPH_SCALE - 1.0).abs() < 1e-9,
+            "이모지는 글자 크기 그대로 그린다"
+        );
     }
 }
 
@@ -2909,7 +2920,10 @@ mod tests {
         let hangul = estimate_text_width_unrounded("가", &style);
         let latin = estimate_text_width_unrounded("a", &style);
         assert!(hangul > 0.0 && latin > 0.0);
-        assert!(latin < hangul, "라틴 글자가 전각이 되면 안 된다: a={latin}px, 가={hangul}px");
+        assert!(
+            latin < hangul,
+            "라틴 글자가 전각이 되면 안 된다: a={latin}px, 가={hangul}px"
+        );
     }
 
     /// 캐럿 위치도 이모지를 전각으로 잡아야 한다 — 폭 계산과 **같은 답**이어야 겹치지 않는다.

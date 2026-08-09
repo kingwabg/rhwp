@@ -25,9 +25,16 @@ fn main() {
                 }
             }
         }
-        println!("{}: Square 그림 {}개", f.rsplit('/').next().unwrap(), mrs.len());
+        println!(
+            "{}: Square 그림 {}개",
+            f.rsplit('/').next().unwrap(),
+            mrs.len()
+        );
         for (si, pi, mr, w) in mrs.iter().take(8) {
-            println!("   sec{si} para{pi} margin_left={mr}HU({:.2}px) w={w}", *mr as f64 / 7200.0 * 96.0);
+            println!(
+                "   sec{si} para{pi} margin_left={mr}HU({:.2}px) w={w}",
+                *mr as f64 / 7200.0 * 96.0
+            );
         }
     }
 }

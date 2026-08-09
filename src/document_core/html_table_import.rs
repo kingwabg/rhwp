@@ -95,7 +95,11 @@ impl DocumentCore {
                     // [paste-import/폭%] parse_css_dimension_pt는 %를 0으로 버린다 —
                     // 결재 양식이 폭을 %로만 준다. 원본 %값을 따로 붙잡아 표 폭 기준으로 환산.
                     let mut width_pct = parse_css_value(&css_lower, "width")
-                        .and_then(|v| v.trim().strip_suffix('%').and_then(|n| n.trim().parse::<f64>().ok()))
+                        .and_then(|v| {
+                            v.trim()
+                                .strip_suffix('%')
+                                .and_then(|n| n.trim().parse::<f64>().ok())
+                        })
                         .unwrap_or(0.0);
                     let height_pt = parse_css_dimension_pt(&css_lower, "height");
 
@@ -107,10 +111,13 @@ impl DocumentCore {
                     if width_pt <= 0.0 && width_pct <= 0.0 {
                         if let Some(w) = parse_html_attr_str(tag_str, "width") {
                             let w = w.trim();
-                            if let Some(pct) = w.strip_suffix('%').and_then(|n| n.trim().parse::<f64>().ok())
+                            if let Some(pct) = w
+                                .strip_suffix('%')
+                                .and_then(|n| n.trim().parse::<f64>().ok())
                             {
                                 width_pct = pct;
-                            } else if let Ok(px) = w.strip_suffix("px").unwrap_or(w).trim().parse::<f64>()
+                            } else if let Ok(px) =
+                                w.strip_suffix("px").unwrap_or(w).trim().parse::<f64>()
                             {
                                 width_pt = px * 0.75; // HTML width 속성은 px
                             }
@@ -603,10 +610,7 @@ impl DocumentCore {
             // [paste-import/rowspan] rowspan이 실제 행 수를 넘으면 표 밖을 가리키는
             // 병합 정보가 저장돼 규격을 벗어난다. 저장값을 남은 행 수로 클램프한다
             // (레이아웃 계산에 쓰인 occupied 그리드는 그대로 두고 저장/조회값만 보정).
-            let clamped_row_span = cp
-                .row_span
-                .min(row_count.saturating_sub(cp.row))
-                .max(1);
+            let clamped_row_span = cp.row_span.min(row_count.saturating_sub(cp.row)).max(1);
 
             cells.push(Cell {
                 col: cp.col,
@@ -732,12 +736,11 @@ impl DocumentCore {
         let tbl_rec_attr: u32 = 0x04000006; // bit 1(셀분리금지) + bit 2 + bit 26
 
         let outer_margin: i16 = 283; // 바깥 여백 기본값 ~1mm
-        // [pagination-overflow/paste-import #2] in-memory `common` 을 raw_ctrl_data 에서
-        // 파싱해 채운다(종전엔 Default 라 vert=Paper=종이 절대배치로 200행이 겹쳐 쌓였다).
-        // 위 table_attr(bit0/bit13 off)에 따라 common 은 비-TAC·자리차지·vert=Para 로 잡혀
-        // 흐름에 참여하고, in-memory==재로드 정합이 보장된다.
-        let parsed_common =
-            crate::parser::control::parse_common_obj_attr(&raw_ctrl_data);
+                                     // [pagination-overflow/paste-import #2] in-memory `common` 을 raw_ctrl_data 에서
+                                     // 파싱해 채운다(종전엔 Default 라 vert=Paper=종이 절대배치로 200행이 겹쳐 쌓였다).
+                                     // 위 table_attr(bit0/bit13 off)에 따라 common 은 비-TAC·자리차지·vert=Para 로 잡혀
+                                     // 흐름에 참여하고, in-memory==재로드 정합이 보장된다.
+        let parsed_common = crate::parser::control::parse_common_obj_attr(&raw_ctrl_data);
         let mut table = Table {
             // attr == common.attr (파서 규약 유지) — 위 table_attr 에서 bit0/bit13 을 껐다.
             attr: table_attr,

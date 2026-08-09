@@ -3936,7 +3936,8 @@ impl LayoutEngine {
             separator_color: 0,
             pagination_tolerance_px: 0.0,
         };
-        let col_content = ColumnContent { topbottom_bands: Vec::new(),
+        let col_content = ColumnContent {
+            topbottom_bands: Vec::new(),
             column_index: 0,
             start_height,
             endnote_flow: true,
@@ -6069,8 +6070,12 @@ impl LayoutEngine {
                 RenderNodeType::Image(v) => v.para_index.zip(v.control_index),
                 _ => None,
             };
-            (pc == Some((para_index, control_index)))
-                .then_some((n.bbox.x - col_area.x, n.bbox.x + n.bbox.width - col_area.x, n.bbox.y, n.bbox.y + n.bbox.height))
+            (pc == Some((para_index, control_index))).then_some((
+                n.bbox.x - col_area.x,
+                n.bbox.x + n.bbox.width - col_area.x,
+                n.bbox.y,
+                n.bbox.y + n.bbox.height,
+            ))
         });
         let (x0, x1, top, bottom) = measured.unwrap_or_else(|| {
             let w_px = hwpunit_to_px(common.width as i32, self.dpi);
@@ -6078,8 +6083,7 @@ impl LayoutEngine {
             let ctx = super::float_placement::FloatPlacementContext::new(*col_area)
                 .with_body_area(layout.body_area)
                 .with_paper_width(layout.page_width);
-            let (ax0, ax1) =
-                super::float_placement::horizontal_range(common, w_px, ctx, self.dpi);
+            let (ax0, ax1) = super::float_placement::horizontal_range(common, w_px, ctx, self.dpi);
             let top =
                 flow_y_before + hwpunit_to_px(signed_hwpunit(common.vertical_offset), self.dpi);
             (ax0 - col_area.x, ax1 - col_area.x, top, top + h_px)
@@ -6474,12 +6478,20 @@ impl LayoutEngine {
                     } else {
                         let paper_h = {
                             let ph = self.current_paper_height.get();
-                            if ph > 0.0 { ph } else { col_area.y * 2.0 + col_area.height }
+                            if ph > 0.0 {
+                                ph
+                            } else {
+                                col_area.y * 2.0 + col_area.height
+                            }
                         };
                         paper_h - tbl_h_px
                     };
                     // 위쪽 하한도 같은 계약: 제한 ON=본문 위(col_area.y), OFF=용지 위(0).
-                    let top_floor = if t.common.flow_with_text { col_area.y } else { 0.0 };
+                    let top_floor = if t.common.flow_with_text {
+                        col_area.y
+                    } else {
+                        0.0
+                    };
                     let raw_top = raw_top.max(top_floor).min(max_top.max(col_area.y));
                     let lane_top = para_float_lanes
                         .entry(para_index)
@@ -6709,12 +6721,11 @@ impl LayoutEngine {
                     // 조판부호·앵커 줄을 흐름 위치에 그대로 둔다(부록2 O7). 단 옆 흐름
                     // 계약이 흐름을 table_y_before 로 유지하는 건 **부분폭** square 뿐이라
                     // (아래 y_offset 분기와 같은 판정) 전폭은 종전대로 둔다.
-                    let square_side_flow = super::float_placement::is_para_square_family_float(
-                        &t.common,
-                    ) && {
-                        let w_px = hwpunit_to_px(t.common.width as i32, self.dpi);
-                        col_area.width - w_px >= crate::renderer::composer::MIN_SIDE_PX
-                    };
+                    let square_side_flow =
+                        super::float_placement::is_para_square_family_float(&t.common) && {
+                            let w_px = hwpunit_to_px(t.common.width as i32, self.dpi);
+                            col_area.width - w_px >= crate::renderer::composer::MIN_SIDE_PX
+                        };
                     let marker_y = if (is_para_topbottom_float(&t.common) || square_side_flow)
                         && signed_hwpunit(t.common.vertical_offset) > 0
                     {
@@ -6840,23 +6851,26 @@ impl LayoutEngine {
                     if table_visual_end > table_visual_top + 0.5 {
                         // 방금 layout_table 이 col_node 에 붙인 Table 노드의 실측 x 를 쓴다
                         // (정렬·오프셋 규칙을 여기서 재현하지 않기 위해 — 렌더가 정본).
-                        let tbl_x_range = col_node
-                            .children
-                            .iter()
-                            .rev()
-                            .find_map(|n| match &n.node_type {
-                                RenderNodeType::Table(_) => {
-                                    // 한컴의 표-글 간격 = 표 바깥 여백. 밴드 폭에 포함해
-                                    // 옆 줄이 여백만큼 떨어져 시작하게 한다.
-                                    let ml = hwpunit_to_px(t.outer_margin_left as i32, self.dpi);
-                                    let mr = hwpunit_to_px(t.outer_margin_right as i32, self.dpi);
-                                    Some((
-                                        n.bbox.x - ml - col_area.x,
-                                        n.bbox.x + n.bbox.width + mr - col_area.x,
-                                    ))
-                                }
-                                _ => None,
-                            });
+                        let tbl_x_range =
+                            col_node
+                                .children
+                                .iter()
+                                .rev()
+                                .find_map(|n| match &n.node_type {
+                                    RenderNodeType::Table(_) => {
+                                        // 한컴의 표-글 간격 = 표 바깥 여백. 밴드 폭에 포함해
+                                        // 옆 줄이 여백만큼 떨어져 시작하게 한다.
+                                        let ml =
+                                            hwpunit_to_px(t.outer_margin_left as i32, self.dpi);
+                                        let mr =
+                                            hwpunit_to_px(t.outer_margin_right as i32, self.dpi);
+                                        Some((
+                                            n.bbox.x - ml - col_area.x,
+                                            n.bbox.x + n.bbox.width + mr - col_area.x,
+                                        ))
+                                    }
+                                    _ => None,
+                                });
                         let margin_bottom_px =
                             hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi);
                         let (x0, x1) = tbl_x_range.unwrap_or((f64::NEG_INFINITY, f64::INFINITY));

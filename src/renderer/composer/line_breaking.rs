@@ -755,17 +755,18 @@ fn fill_lines_per_line(
                     line_max_fs = *max_font_size;
                 }
 
-                if next_tab_hwp > eff_w_at(is_first_line, current_line_idx) && line_start_idx < *idx {
+                if next_tab_hwp > eff_w_at(is_first_line, current_line_idx) && line_start_idx < *idx
+                {
                     if let Some(_) = last_break_token_idx {
                         results.push(LineBreakResult {
                             start_idx: line_start_idx,
                             end_idx: last_break_char_idx,
                             max_font_size: fs_at_last_break,
                             has_line_break: false,
-                    continues_line: false,
+                            continues_line: false,
                             object_height_hwp: line_max_obj_h,
                         });
-                current_line_idx += 1;
+                        current_line_idx += 1;
                         line_start_idx = last_break_char_idx;
                         lw = lw - width_at_last_break;
                         line_space_savings -= space_savings_at_last_break;
@@ -776,10 +777,10 @@ fn fill_lines_per_line(
                             end_idx: *idx,
                             max_font_size: line_max_fs,
                             has_line_break: false,
-                    continues_line: false,
+                            continues_line: false,
                             object_height_hwp: line_max_obj_h,
                         });
-                current_line_idx += 1;
+                        current_line_idx += 1;
                         line_start_idx = *idx;
                         lw = 0;
                         line_space_savings = 0;
@@ -925,10 +926,10 @@ fn fill_lines_per_line(
                                 end_idx: last_break_char_idx,
                                 max_font_size: fs_at_last_break,
                                 has_line_break: false,
-                    continues_line: false,
+                                continues_line: false,
                                 object_height_hwp: line_max_obj_h,
                             });
-                current_line_idx += 1;
+                            current_line_idx += 1;
                             let mut next_start = last_break_char_idx;
                             while next_start < text_chars.len() && text_chars[next_start] == ' ' {
                                 next_start += 1;
@@ -1005,7 +1006,7 @@ fn fill_lines_per_line(
             continues_line: false,
             object_height_hwp: line_max_obj_h,
         });
-                current_line_idx += 1;
+        current_line_idx += 1;
     }
 
     if results.is_empty() {
@@ -1017,7 +1018,7 @@ fn fill_lines_per_line(
             continues_line: false,
             object_height_hwp: line_max_obj_h,
         });
-                current_line_idx += 1;
+        current_line_idx += 1;
     }
 
     results
@@ -1107,7 +1108,7 @@ fn char_level_break_hwp(
                 end_idx: ci,
                 max_font_size: line_max_fs,
                 has_line_break: false,
-                    continues_line: false,
+                continues_line: false,
                 object_height_hwp: 0,
             });
             *line_start_idx = ci;
@@ -1263,7 +1264,11 @@ pub fn side_pick_for_band(
         TextFlow::LeftOnly => left(),
         TextFlow::RightOnly => right(),
         TextFlow::BothSides | TextFlow::LargestOnly => {
-            if right_room >= left_room { right().or_else(left) } else { left().or_else(right) }
+            if right_room >= left_room {
+                right().or_else(left)
+            } else {
+                left().or_else(right)
+            }
         }
     }
 }

@@ -40,7 +40,11 @@ fn caret_advances_monotonically_across_emoji() {
 fn emoji_line_keeps_all_caret_slots() {
     let emoji = caret_xs("앞 😀😀😀 뒤");
     let cjk = caret_xs("앞 가나다 뒤");
-    assert_eq!(emoji.len(), cjk.len(), "글자 수가 달라졌다: {emoji:?} vs {cjk:?}");
+    assert_eq!(
+        emoji.len(),
+        cjk.len(),
+        "글자 수가 달라졌다: {emoji:?} vs {cjk:?}"
+    );
     // 앞머리("앞 ")는 이모지와 무관하니 좌표가 같아야 한다 — 줄 시작이 밀리면 다른 결함이다.
     for i in 0..3 {
         assert!(
@@ -88,7 +92,11 @@ fn emoji_line_box_grows_to_wrap_glyph() {
         doc.insert_text(0, 0, 0, text).unwrap();
         let j = doc.get_selection_rects(0, 0, 0, 0, 4).unwrap();
         let v: serde_json::Value = serde_json::from_str(&j).unwrap();
-        let rects = v["rects"].as_array().or_else(|| v.as_array()).cloned().unwrap_or_default();
+        let rects = v["rects"]
+            .as_array()
+            .or_else(|| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         rects
             .iter()
             .filter_map(|r| r["h"].as_f64().or_else(|| r["height"].as_f64()))

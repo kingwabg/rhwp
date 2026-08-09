@@ -804,7 +804,8 @@ impl Table {
                 if span < 2 || start + span > sizes.len() {
                     continue;
                 }
-                let unknown: Vec<usize> = (start..start + span).filter(|&i| sizes[i] == 0).collect();
+                let unknown: Vec<usize> =
+                    (start..start + span).filter(|&i| sizes[i] == 0).collect();
                 if unknown.len() == 1 {
                     let known: u32 = (start..start + span).map(|i| sizes[i]).sum();
                     if total > known {
@@ -1765,16 +1766,22 @@ impl Table {
             if delta > 0 {
                 // 이웃 왼쪽 조각을 잘라 대상에 흡수
                 if n.col_span != 1 {
-                    return Err("이미 어긋난 칸 쪽으로는 더 어긋낼 수 없습니다 — 되돌리려면 ⌘Z".to_string());
+                    return Err(
+                        "이미 어긋난 칸 쪽으로는 더 어긋낼 수 없습니다 — 되돌리려면 ⌘Z".to_string(),
+                    );
                 }
                 let d = delta.min(n.width as i32 - MIN_CELL);
                 if d <= 0 {
                     return Err("이웃 칸에 남는 폭이 없습니다".to_string());
                 }
                 self.split_cell_into(n.row, n.col, 1, 2, true, false)?;
-                let left = self.cell_index_at(t.row, boundary).ok_or("분할 조각(좌) 소실")?;
+                let left = self
+                    .cell_index_at(t.row, boundary)
+                    .ok_or("분할 조각(좌) 소실")?;
                 self.cells[left].width = d as HwpUnit;
-                let right = self.cell_index_at(t.row, boundary + 1).ok_or("분할 조각(우) 소실")?;
+                let right = self
+                    .cell_index_at(t.row, boundary + 1)
+                    .ok_or("분할 조각(우) 소실")?;
                 self.cells[right].width = (n.width as i32 - d) as HwpUnit;
                 // split 은 내용을 첫 조각에 남긴다 — 흡수될 조각은 비우고 이웃 조각에 내용을 되돌린다
                 if left != right {
@@ -1794,20 +1801,33 @@ impl Table {
             } else {
                 // 대상 오른쪽 조각을 잘라 이웃에 넘김
                 if t.col_span != 1 {
-                    return Err("이미 어긋난 경계를 다시 정렬하는 건 ⌘Z 로 되돌려 주세요".to_string());
+                    return Err(
+                        "이미 어긋난 경계를 다시 정렬하는 건 ⌘Z 로 되돌려 주세요".to_string()
+                    );
                 }
                 let d = (-delta).min(t.width as i32 - MIN_CELL);
                 if d <= 0 {
                     return Err("대상 칸에 남는 폭이 없습니다".to_string());
                 }
                 self.split_cell_into(t.row, t.col, 1, 2, true, false)?;
-                let left = self.cell_index_at(t.row, t.col).ok_or("분할 조각(좌) 소실")?;
+                let left = self
+                    .cell_index_at(t.row, t.col)
+                    .ok_or("분할 조각(좌) 소실")?;
                 self.cells[left].width = (t.width as i32 - d) as HwpUnit;
-                let strip = self.cell_index_at(t.row, t.col + 1).ok_or("분할 조각(우) 소실")?;
+                let strip = self
+                    .cell_index_at(t.row, t.col + 1)
+                    .ok_or("분할 조각(우) 소실")?;
                 self.cells[strip].width = d as HwpUnit;
                 // 이웃은 새 열 삽입으로 한 칸 밀렸다: boundary+1 에서 시작, 스팬 유지
-                self.merge_cells(t.row, t.col + 1, t.row + t.row_span - 1, boundary + n.col_span)?;
-                let merged = self.cell_index_at(t.row, t.col + 1).ok_or("병합 결과 소실")?;
+                self.merge_cells(
+                    t.row,
+                    t.col + 1,
+                    t.row + t.row_span - 1,
+                    boundary + n.col_span,
+                )?;
+                let merged = self
+                    .cell_index_at(t.row, t.col + 1)
+                    .ok_or("병합 결과 소실")?;
                 self.cells[merged].width = (n.width as i32 + d) as HwpUnit;
                 // 빈 조각이 병합 기준(primary)이라 이웃 내용이 뒤로 밀린다 — 선두 빈 문단 제거
                 if self.cells[merged].paragraphs.len() > 1
@@ -1831,16 +1851,22 @@ impl Table {
             }
             if delta > 0 {
                 if n.row_span != 1 {
-                    return Err("이미 어긋난 칸 쪽으로는 더 어긋낼 수 없습니다 — 되돌리려면 ⌘Z".to_string());
+                    return Err(
+                        "이미 어긋난 칸 쪽으로는 더 어긋낼 수 없습니다 — 되돌리려면 ⌘Z".to_string(),
+                    );
                 }
                 let d = delta.min(n.height as i32 - MIN_CELL);
                 if d <= 0 {
                     return Err("이웃 칸에 남는 높이가 없습니다".to_string());
                 }
                 self.split_cell_into(n.row, n.col, 2, 1, true, false)?;
-                let top = self.cell_index_at(boundary, t.col).ok_or("분할 조각(상) 소실")?;
+                let top = self
+                    .cell_index_at(boundary, t.col)
+                    .ok_or("분할 조각(상) 소실")?;
                 self.cells[top].height = d as HwpUnit;
-                let bot = self.cell_index_at(boundary + 1, t.col).ok_or("분할 조각(하) 소실")?;
+                let bot = self
+                    .cell_index_at(boundary + 1, t.col)
+                    .ok_or("분할 조각(하) 소실")?;
                 self.cells[bot].height = (n.height as i32 - d) as HwpUnit;
                 // split 은 내용을 첫 조각에 남긴다 — 흡수될 조각은 비우고 이웃 조각에 내용을 되돌린다
                 if top != bot {
@@ -1858,19 +1884,32 @@ impl Table {
                 self.cells[merged].height = (t.height as i32 + d) as HwpUnit;
             } else {
                 if t.row_span != 1 {
-                    return Err("이미 어긋난 경계를 다시 정렬하는 건 ⌘Z 로 되돌려 주세요".to_string());
+                    return Err(
+                        "이미 어긋난 경계를 다시 정렬하는 건 ⌘Z 로 되돌려 주세요".to_string()
+                    );
                 }
                 let d = (-delta).min(t.height as i32 - MIN_CELL);
                 if d <= 0 {
                     return Err("대상 칸에 남는 높이가 없습니다".to_string());
                 }
                 self.split_cell_into(t.row, t.col, 2, 1, true, false)?;
-                let top = self.cell_index_at(t.row, t.col).ok_or("분할 조각(상) 소실")?;
+                let top = self
+                    .cell_index_at(t.row, t.col)
+                    .ok_or("분할 조각(상) 소실")?;
                 self.cells[top].height = (t.height as i32 - d) as HwpUnit;
-                let strip = self.cell_index_at(t.row + 1, t.col).ok_or("분할 조각(하) 소실")?;
+                let strip = self
+                    .cell_index_at(t.row + 1, t.col)
+                    .ok_or("분할 조각(하) 소실")?;
                 self.cells[strip].height = d as HwpUnit;
-                self.merge_cells(t.row + 1, t.col, boundary + n.row_span, t.col + t.col_span - 1)?;
-                let merged = self.cell_index_at(t.row + 1, t.col).ok_or("병합 결과 소실")?;
+                self.merge_cells(
+                    t.row + 1,
+                    t.col,
+                    boundary + n.row_span,
+                    t.col + t.col_span - 1,
+                )?;
+                let merged = self
+                    .cell_index_at(t.row + 1, t.col)
+                    .ok_or("병합 결과 소실")?;
                 self.cells[merged].height = (n.height as i32 + d) as HwpUnit;
                 // 빈 조각이 병합 기준(primary)이라 이웃 내용이 뒤로 밀린다 — 선두 빈 문단 제거
                 if self.cells[merged].paragraphs.len() > 1
@@ -1890,7 +1929,11 @@ impl Table {
     /// 어긋나며 흡수했던 조각을 병합 해제로 되찾아 이웃에 되돌리고, 크기는 같은 구간을
     /// 공유하는 다른 열/행 셀(목격자)에서 복사한다. 그 결과 아무 셀 경계도 쓰지 않게 된
     /// 격자 줄은 접어서 원래의 단순한 격자로 되돌린다.
-    pub fn restore_cell_boundary(&mut self, cell_idx: usize, edge_right: bool) -> Result<(), String> {
+    pub fn restore_cell_boundary(
+        &mut self,
+        cell_idx: usize,
+        edge_right: bool,
+    ) -> Result<(), String> {
         let t = self
             .cells
             .get(cell_idx)
@@ -1917,7 +1960,12 @@ impl Table {
             if t.col_span > 2 {
                 self.merge_cells(t.row, t.col, t.row + t.row_span - 1, boundary - 2)?;
             }
-            self.merge_cells(t.row, boundary - 1, t.row + t.row_span - 1, boundary + n.col_span - 1)?;
+            self.merge_cells(
+                t.row,
+                boundary - 1,
+                t.row + t.row_span - 1,
+                boundary + n.col_span - 1,
+            )?;
             // 크기 목격자 복사: 같은 (col, col_span) 구간을 쓰는 다른 행의 셀
             let copy_w = |cells: &[Cell], col: u16, span: u16, skip_row: u16| -> Option<HwpUnit> {
                 cells
@@ -1937,7 +1985,8 @@ impl Table {
             }
             // 병합 결과 선두 빈 문단 정리(빈 조각이 primary)
             if let Some(i) = self.cell_index_at(t.row, boundary - 1) {
-                if self.cells[i].paragraphs.len() > 1 && self.cells[i].paragraphs[0].text.is_empty() {
+                if self.cells[i].paragraphs.len() > 1 && self.cells[i].paragraphs[0].text.is_empty()
+                {
                     self.cells[i].paragraphs.remove(0);
                 }
             }
@@ -1961,7 +2010,12 @@ impl Table {
             if t.row_span > 2 {
                 self.merge_cells(t.row, t.col, boundary - 2, t.col + t.col_span - 1)?;
             }
-            self.merge_cells(boundary - 1, t.col, boundary + n.row_span - 1, t.col + t.col_span - 1)?;
+            self.merge_cells(
+                boundary - 1,
+                t.col,
+                boundary + n.row_span - 1,
+                t.col + t.col_span - 1,
+            )?;
             let copy_h = |cells: &[Cell], row: u16, span: u16, skip_col: u16| -> Option<HwpUnit> {
                 cells
                     .iter()
@@ -1979,7 +2033,8 @@ impl Table {
                 }
             }
             if let Some(i) = self.cell_index_at(boundary - 1, t.col) {
-                if self.cells[i].paragraphs.len() > 1 && self.cells[i].paragraphs[0].text.is_empty() {
+                if self.cells[i].paragraphs.len() > 1 && self.cells[i].paragraphs[0].text.is_empty()
+                {
                     self.cells[i].paragraphs.remove(0);
                 }
             }
@@ -1992,7 +2047,11 @@ impl Table {
     /// 치유 반대 방향: 정렬된 칸의 경계를 **어긋난 선 쪽으로** 끌어 맞춘다.
     /// 이웃이 어긋나(스팬≥2) 있을 때, 이웃의 첫 조각을 대상이 흡수해 전 열/행이
     /// 어긋난 선 위치로 정렬되고, 못 쓰게 된 원래 격자 줄은 접힌다.
-    fn extend_cell_to_offset_line(&mut self, cell_idx: usize, edge_right: bool) -> Result<(), String> {
+    fn extend_cell_to_offset_line(
+        &mut self,
+        cell_idx: usize,
+        edge_right: bool,
+    ) -> Result<(), String> {
         let t = self
             .cells
             .get(cell_idx)
@@ -2028,7 +2087,12 @@ impl Table {
             }
             self.merge_cells(t.row, t.col, t.row + t.row_span - 1, boundary)?;
             if n.col_span > 2 {
-                self.merge_cells(t.row, boundary + 1, t.row + t.row_span - 1, boundary + n.col_span - 1)?;
+                self.merge_cells(
+                    t.row,
+                    boundary + 1,
+                    t.row + t.row_span - 1,
+                    boundary + n.col_span - 1,
+                )?;
             }
             let copy_w = |cells: &[Cell], col: u16, span: u16, skip_row: u16| -> Option<HwpUnit> {
                 cells
@@ -2076,7 +2140,12 @@ impl Table {
             }
             self.merge_cells(t.row, t.col, boundary, t.col + t.col_span - 1)?;
             if n.row_span > 2 {
-                self.merge_cells(boundary + 1, t.col, boundary + n.row_span - 1, t.col + t.col_span - 1)?;
+                self.merge_cells(
+                    boundary + 1,
+                    t.col,
+                    boundary + n.row_span - 1,
+                    t.col + t.col_span - 1,
+                )?;
             }
             let copy_h = |cells: &[Cell], row: u16, span: u16, skip_col: u16| -> Option<HwpUnit> {
                 cells
@@ -2108,7 +2177,11 @@ impl Table {
             let mut target: Option<u16> = None;
             for line in 1..count {
                 let used = self.cells.iter().any(|c| {
-                    let (start, span) = if cols { (c.col, c.col_span) } else { (c.row, c.row_span) };
+                    let (start, span) = if cols {
+                        (c.col, c.col_span)
+                    } else {
+                        (c.row, c.row_span)
+                    };
                     start == line || start + span == line
                 });
                 if !used {

@@ -1242,7 +1242,10 @@ pub(crate) fn strip_script_style(html: &str) -> String {
     let mut i = 0;
     while i < len {
         if chars[i] == '<' {
-            let head: String = chars[i..(i + 7).min(len)].iter().collect::<String>().to_lowercase();
+            let head: String = chars[i..(i + 7).min(len)]
+                .iter()
+                .collect::<String>()
+                .to_lowercase();
             let name = if head.starts_with("<script") {
                 Some("script")
             } else if head.starts_with("<style") {

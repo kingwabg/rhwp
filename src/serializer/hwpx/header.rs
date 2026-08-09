@@ -1388,9 +1388,18 @@ mod tests {
         let ctx = SerializeContext::collect_from_document(&doc);
         let bytes = write_header(&doc, &ctx).expect("write_header");
         let xml = std::str::from_utf8(&bytes).unwrap();
-        assert!(xml.contains(r#"numFormat="CIRCLED_DIGIT""#), "1수준 번호 종류: {xml}");
-        assert!(xml.contains(r#"numFormat="HANGUL_JAMO""#), "2수준 번호 종류");
-        assert!(xml.contains(">^1.<"), "1수준 형식 문자열이 태그 텍스트로 실려야 한다");
+        assert!(
+            xml.contains(r#"numFormat="CIRCLED_DIGIT""#),
+            "1수준 번호 종류: {xml}"
+        );
+        assert!(
+            xml.contains(r#"numFormat="HANGUL_JAMO""#),
+            "2수준 번호 종류"
+        );
+        assert!(
+            xml.contains(">^1.<"),
+            "1수준 형식 문자열이 태그 텍스트로 실려야 한다"
+        );
         assert!(xml.contains(">(^2)<"), "2수준 형식 문자열");
     }
 

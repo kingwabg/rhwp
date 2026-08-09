@@ -855,7 +855,10 @@ impl HwpDocument {
         // ponytail: 텍스트 중간의 컨트롤 뒤 삽입은 여전히 컨트롤 앞으로 감 —
         // 스트림 좌표 삽입 코어 도입 시 승격.
         let insert_offset = if at_ctrl {
-            let text_len = self.document.sections[sec].paragraphs[pi].text.chars().count();
+            let text_len = self.document.sections[sec].paragraphs[pi]
+                .text
+                .chars()
+                .count();
             if text_offset >= text_len {
                 let logical_at_text_end = crate::document_core::helpers::text_to_logical_offset(
                     &self.document.sections[sec].paragraphs[pi],
@@ -1890,19 +1893,25 @@ impl HwpDocument {
     /// 변경 적용 — Insert 는 확정(마크 해제), Delete 는 실삭제
     #[wasm_bindgen(js_name = acceptTrackChange)]
     pub fn accept_track_change(&mut self, tc_id: u32) -> Result<String, JsValue> {
-        self.core.accept_track_change_native(tc_id).map_err(|e| e.into())
+        self.core
+            .accept_track_change_native(tc_id)
+            .map_err(|e| e.into())
     }
 
     /// 변경 취소 — Insert 는 실삭제(입력 되돌림), Delete 는 마크 해제
     #[wasm_bindgen(js_name = rejectTrackChange)]
     pub fn reject_track_change(&mut self, tc_id: u32) -> Result<String, JsValue> {
-        self.core.reject_track_change_native(tc_id).map_err(|e| e.into())
+        self.core
+            .reject_track_change_native(tc_id)
+            .map_err(|e| e.into())
     }
 
     /// 모두 적용/취소
     #[wasm_bindgen(js_name = resolveAllTrackChanges)]
     pub fn resolve_all_track_changes(&mut self, accept: bool) -> Result<String, JsValue> {
-        self.core.resolve_all_track_changes_native(accept).map_err(|e| e.into())
+        self.core
+            .resolve_all_track_changes_native(accept)
+            .map_err(|e| e.into())
     }
 
     /// 구역 나누기 (Alt+Shift+Enter) — 커서부터 끝까지를 새 구역으로
@@ -3751,7 +3760,11 @@ impl HwpDocument {
         // attr 리터럴(0x046A4000)은 bits21-23=3=InFrontOfText 라 **메모리 enum(Square)과 저장 attr이
         // 태생부터 어긋나** 있었다. 재열기하면 attr 쪽이 이겨 전부 InFrontOfText 로 뒤집혔다.
         // inline 글상자는 0x0A0210(=Square)이므로 "Square" 그대로 — Task #1280 v2 계약 유지.
-        let default_wrap = if shape_type == "textbox" && treat_as_char { "Square" } else { "InFrontOfText" };
+        let default_wrap = if shape_type == "textbox" && treat_as_char {
+            "Square"
+        } else {
+            "InFrontOfText"
+        };
         let text_wrap = json_str(json, "textWrap").unwrap_or_else(|| default_wrap.to_string());
         let line_flip_x = json_bool(json, "lineFlipX").unwrap_or(false);
         let line_flip_y = json_bool(json, "lineFlipY").unwrap_or(false);
@@ -6462,7 +6475,10 @@ impl HwpDocument {
         let has_level_formats = parsed
             .get("levelFormats")
             .and_then(|x| x.as_array())
-            .map(|a| a.iter().any(|s| s.as_str().map_or(false, |s| !s.is_empty())))
+            .map(|a| {
+                a.iter()
+                    .any(|s| s.as_str().map_or(false, |s| !s.is_empty()))
+            })
             .unwrap_or(false);
         if !has_level_formats {
             return 0;
@@ -6515,7 +6531,9 @@ impl HwpDocument {
         }
 
         // 음수·0·u16 초과 startNumber를 as u16 언더/오버플로로 뒤집지 말고 클램프한다.
-        let start_number = json_i32(json, "startNumber").unwrap_or(1).clamp(1, u16::MAX as i32) as u16;
+        let start_number = json_i32(json, "startNumber")
+            .unwrap_or(1)
+            .clamp(1, u16::MAX as i32) as u16;
         n.start_number = start_number;
         n.level_start_numbers = [start_number as u32; 7];
         self.core.document.doc_info.numberings.push(n);
@@ -6753,7 +6771,8 @@ impl HwpDocument {
     /// 논리 칸을 차지하는 양식 개체의 컨트롤 인덱스(없으면 -1) — Backspace/Delete 분기용.
     #[wasm_bindgen(js_name = formControlAtLogical)]
     pub fn form_control_at_logical(&self, sec_idx: usize, para_idx: usize, logical: usize) -> i32 {
-        self.core.form_control_at_logical_native(sec_idx, para_idx, logical)
+        self.core
+            .form_control_at_logical_native(sec_idx, para_idx, logical)
     }
 
     /// 양식 개체를 삭제한다(삽입의 역연산).
@@ -7481,7 +7500,12 @@ impl HwpViewer {
         // 설계된 사용법인데 WASM 래퍼만 이 단계를 빠뜨렸다. HwpViewer 는 문서를 소유만 하고
         // 편집 API 가 없으므로 생성 시 1회 계산으로 충분하다.
         let heights: Vec<f64> = (0..page_count)
-            .filter_map(|i| document.find_page(i).ok().map(|(pc, _, _)| pc.layout.page_height))
+            .filter_map(|i| {
+                document
+                    .find_page(i)
+                    .ok()
+                    .map(|(pc, _, _)| pc.layout.page_height)
+            })
             .collect();
         if heights.len() == page_count as usize {
             scheduler.set_page_heights(&heights);

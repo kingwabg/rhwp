@@ -2486,14 +2486,13 @@ impl LayoutEngine {
                 // "앞 내용 아래로 강제"가 아니다. 종전엔 제한을 꺼도 이 push-down 이
                 // 아래 클램프보다 **먼저** 걸려 위쪽 이동이 통째로 막혔다
                 // (실측: restrictInPage=false·vertOffset=-20mm 인데 y 가 132.3 그대로).
-                let pushed =
-                    if table.common.flow_with_text
-                        && matches!(table_text_wrap, crate::model::shape::TextWrap::TopAndBottom)
-                    {
-                        raw_y.max(y_start)
-                    } else {
-                        raw_y
-                    };
+                let pushed = if table.common.flow_with_text
+                    && matches!(table_text_wrap, crate::model::shape::TextWrap::TopAndBottom)
+                {
+                    raw_y.max(y_start)
+                } else {
+                    raw_y
+                };
                 // [officex] bit13(restrictInPage = common.flow_with_text)을 실제로 존중한다.
                 // 명세(한글 문서 파일 형식 5.0, 개체 공통 속성 bit13): "VertRelTo가 'para'일 때
                 // 오브젝트의 세로 위치를 본문 영역으로 제한할지 여부(0=off, 1=on)".
@@ -2513,7 +2512,11 @@ impl LayoutEngine {
                 } else {
                     let paper_h = {
                         let ph = self.current_paper_height.get();
-                        if ph > 0.0 { ph } else { col_area.y * 2.0 + col_area.height }
+                        if ph > 0.0 {
+                            ph
+                        } else {
+                            col_area.y * 2.0 + col_area.height
+                        }
                     };
                     (paper_h - table_height).max(min_y)
                 };
@@ -3837,7 +3840,9 @@ impl LayoutEngine {
                 if std::env::var("RHWP_BORDER_DBG").is_ok() {
                     eprintln!(
                         "[BORDER] cell r{}c{} bf_id={} styles_len={} hit={}",
-                        cell.row, cell.col, cell.border_fill_id,
+                        cell.row,
+                        cell.col,
+                        cell.border_fill_id,
                         styles.border_styles.len(),
                         styles.border_styles.get(idx).is_some()
                     );

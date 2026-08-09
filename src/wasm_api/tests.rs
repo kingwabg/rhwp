@@ -263,12 +263,26 @@ fn style_apply_overwrite_flag_controls_para_shape() {
         doc.document.doc_info.char_shapes = vec![CharShape::default(), CharShape::default()];
         doc.document.doc_info.para_shapes = vec![
             ParaShape::default(),
-            ParaShape { margin_left: 1000, ..Default::default() },
-            ParaShape { margin_left: 7777, ..Default::default() }, // 직접 서식
+            ParaShape {
+                margin_left: 1000,
+                ..Default::default()
+            },
+            ParaShape {
+                margin_left: 7777,
+                ..Default::default()
+            }, // 직접 서식
         ];
         doc.document.doc_info.styles = vec![
-            Style { para_shape_id: 0, char_shape_id: 0, ..Default::default() },
-            Style { para_shape_id: 1, char_shape_id: 1, ..Default::default() },
+            Style {
+                para_shape_id: 0,
+                char_shape_id: 0,
+                ..Default::default()
+            },
+            Style {
+                para_shape_id: 1,
+                char_shape_id: 1,
+                ..Default::default()
+            },
         ];
         doc.insert_text_native(0, 0, 0, "가나다").expect("텍스트");
         // 직접 문단서식: 스타일 0 의 psid(0) 과 다른 2 번을 물려 둔다
@@ -281,7 +295,10 @@ fn style_apply_overwrite_flag_controls_para_shape() {
     // '아니오' — 직접 서식 보존(종전 동작)
     let mut keep = mk();
     keep.apply_style_native(0, 0, 1).expect("스타일 적용(보존)");
-    assert_eq!(keep.document.sections[0].paragraphs[0].style_id, 1, "스타일 id 는 바뀐다");
+    assert_eq!(
+        keep.document.sections[0].paragraphs[0].style_id, 1,
+        "스타일 id 는 바뀐다"
+    );
     assert_eq!(
         keep.document.sections[0].paragraphs[0].para_shape_id, 2,
         "'아니오' 는 직접 문단서식을 보존한다"
@@ -289,14 +306,12 @@ fn style_apply_overwrite_flag_controls_para_shape() {
 
     // '예' — 스타일 문단모양으로 덮어쓰기
     let mut over = mk();
-    over
-        .apply_style_native_ex(0, 0, 1, true)
+    over.apply_style_native_ex(0, 0, 1, true)
         .expect("스타일 적용(덮어쓰기)");
     let psid = over.document.sections[0].paragraphs[0].para_shape_id;
     assert_ne!(psid, 2, "'예' 는 직접 문단서식을 버린다");
     assert_eq!(
-        over.document.doc_info.para_shapes[psid as usize].margin_left,
-        1000,
+        over.document.doc_info.para_shapes[psid as usize].margin_left, 1000,
         "'예' 는 스타일의 문단모양(margin_left 1000)을 따른다"
     );
 }
@@ -2031,13 +2046,30 @@ fn issue2214_deferred_table_caption_reports_flow_change() {
 // 검증 목적으로는 0건이었다.
 fn officex_make_shape(doc: &mut HwpDocument, wrap: &str, tac: bool, kind: &str) -> (usize, usize) {
     let made = doc
-        .create_shape_control_native(0, 0, 0, 21_600, 7_200, 0, 0, tac, wrap, kind, false, false, &[])
+        .create_shape_control_native(
+            0,
+            0,
+            0,
+            21_600,
+            7_200,
+            0,
+            0,
+            tac,
+            wrap,
+            kind,
+            false,
+            false,
+            &[],
+        )
         .expect("도형 생성");
     // 반환은 JSON 문자열 — paraIdx/controlIdx 를 뽑는다(다른 테스트와 같은 방식).
     let grab = |key: &str| -> usize {
         made.split(&format!("\"{key}\":"))
             .nth(1)
-            .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).find(|t| !t.is_empty()))
+            .and_then(|rest| {
+                rest.split(|c: char| !c.is_ascii_digit())
+                    .find(|t| !t.is_empty())
+            })
             .and_then(|num| num.parse().ok())
             .unwrap_or_else(|| panic!("{key} 를 못 찾음: {made}"))
     };
@@ -2047,18 +2079,29 @@ fn officex_make_shape(doc: &mut HwpDocument, wrap: &str, tac: bool, kind: &str) 
 #[test]
 fn officex_shape_textwrap_survives_save_roundtrip() {
     // 6종 전부: 지정한 배치가 저장 왕복 뒤에도 그대로여야 한다.
-    for wrap in ["Square", "Tight", "Through", "TopAndBottom", "BehindText", "InFrontOfText"] {
+    for wrap in [
+        "Square",
+        "Tight",
+        "Through",
+        "TopAndBottom",
+        "BehindText",
+        "InFrontOfText",
+    ] {
         let mut doc = HwpDocument::create_empty();
         doc.create_blank_document();
         let (para, ctrl) = officex_make_shape(&mut doc, wrap, false, "rectangle");
-        let before = doc.get_shape_properties_native(0, para, ctrl).expect("생성 직후 조회");
+        let before = doc
+            .get_shape_properties_native(0, para, ctrl)
+            .expect("생성 직후 조회");
         assert!(
             before.contains(wrap),
             "메모리 단계부터 어긋난다(wrap={wrap}): {before}"
         );
         let bytes = doc.export_hwp().expect("저장");
         let reopened = HwpDocument::from_bytes(&bytes).expect("재열기");
-        let after = reopened.get_shape_properties_native(0, para, ctrl).expect("재열기 후 조회");
+        let after = reopened
+            .get_shape_properties_native(0, para, ctrl)
+            .expect("재열기 후 조회");
         assert!(
             after.contains(wrap),
             "저장 왕복에서 배치가 유실됐다(wrap={wrap}): {after}"
@@ -2074,11 +2117,17 @@ fn officex_shape_textwrap_default_is_unchanged() {
     doc.create_blank_document();
     let (p1, c1) = officex_make_shape(&mut doc, "InFrontOfText", false, "rectangle");
     let floating = doc.get_shape_properties_native(0, p1, c1).expect("조회");
-    assert!(floating.contains("InFrontOfText"), "floating 기본 배치가 바뀌었다: {floating}");
+    assert!(
+        floating.contains("InFrontOfText"),
+        "floating 기본 배치가 바뀌었다: {floating}"
+    );
 
     let (p2, c2) = officex_make_shape(&mut doc, "Square", true, "textbox");
     let inline = doc.get_shape_properties_native(0, p2, c2).expect("조회");
-    assert!(inline.contains("Square"), "inline 글상자 기본 배치가 바뀌었다: {inline}");
+    assert!(
+        inline.contains("Square"),
+        "inline 글상자 기본 배치가 바뀌었다: {inline}"
+    );
 }
 
 #[test]
@@ -4372,7 +4421,8 @@ fn test_export_selection_html_includes_table_in_range() {
         s[..s.find([',', '}']).unwrap()].parse().unwrap()
     };
     // 셀에 내용을 넣어 셀 텍스트 직렬화까지 확인
-    doc.insert_text_in_cell_native(0, host, 0, 0, 0, 0, "셀본문").unwrap();
+    doc.insert_text_in_cell_native(0, host, 0, 0, 0, 0, "셀본문")
+        .unwrap();
 
     let last = doc.document().sections[0].paragraphs.len() - 1;
     let html = doc
@@ -4631,7 +4681,10 @@ fn test_paste_html_table_as_control() {
         // 취급)·bit13(쪽영역제한)을 껐다(0x082A2311 & !0x2001 = 0x082A0310). 종전값은 조판기
         // is_effective_tac_table 을 발동시켜 쪽 넘는 표가 안 갈라지게 만들었다. 비-TAC 블록 표로
         // 잡혀 행 단위 분할된다. attr==common.attr 정합은 아래 4540 단언이 계속 지킨다.
-        assert_eq!(tbl.attr, 0x082A0310, "table.attr = 비-TAC 블록 표(bit0·bit13 off)");
+        assert_eq!(
+            tbl.attr, 0x082A0310,
+            "table.attr = 비-TAC 블록 표(bit0·bit13 off)"
+        );
         assert_eq!(
             tbl.raw_table_record_attr, 0x04000006,
             "raw_table_record_attr (DIFF-5: 셀분리금지 항상 설정)"
@@ -5045,7 +5098,10 @@ fn test_html_utility_functions() {
     // [paste-import/nbsp] &nbsp;는 고정폭 공백(U+00A0) — 일반 공백(U+0020) 아님
     assert_eq!(super::decode_html_entities("&nbsp;"), "\u{00A0}");
     // [paste-import/엔티티] 숫자/16진 문자참조 + 이름 있는 엔티티 전반 디코딩
-    assert_eq!(super::decode_html_entities("&#039;&copy;&#x2014;"), "'\u{00A9}\u{2014}");
+    assert_eq!(
+        super::decode_html_entities("&#039;&copy;&#x2014;"),
+        "'\u{00A9}\u{2014}"
+    );
     // 알 수 없는 엔티티는 '&' 그대로 보존
     assert_eq!(super::decode_html_entities("a & b"), "a & b");
 
@@ -25022,7 +25078,10 @@ fn delete_range_logical_removes_spanned_inline_table() {
 
     // 논리 1~4 선택(나 + 표 + 다) 삭제 → 표가 사라지고 '가'만 남는다.
     doc.delete_range_logical(0, 0, 1, 0, 4).unwrap();
-    assert_eq!(doc.document.sections[0].paragraphs[0].text, "가", "텍스트 잔여");
+    assert_eq!(
+        doc.document.sections[0].paragraphs[0].text, "가",
+        "텍스트 잔여"
+    );
     assert_eq!(inline_count(&doc), 0, "표가 남았다 — O8 위반");
     assert_eq!(
         crate::document_core::helpers::logical_paragraph_length(

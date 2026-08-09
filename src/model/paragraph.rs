@@ -883,8 +883,16 @@ impl Paragraph {
                         tc_id: tm.tc_id,
                     });
                 } else {
-                    kept.push(TrackMark { start_pos: tm.start_pos, end_pos: utf16_split, tc_id: tm.tc_id });
-                    new_track_marks.push(TrackMark { start_pos: 0, end_pos: tm.end_pos - utf16_split, tc_id: tm.tc_id });
+                    kept.push(TrackMark {
+                        start_pos: tm.start_pos,
+                        end_pos: utf16_split,
+                        tc_id: tm.tc_id,
+                    });
+                    new_track_marks.push(TrackMark {
+                        start_pos: 0,
+                        end_pos: tm.end_pos - utf16_split,
+                        tc_id: tm.tc_id,
+                    });
                 }
             }
             self.track_marks = kept;

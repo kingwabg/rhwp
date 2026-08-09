@@ -7,7 +7,8 @@ fn main() {
     doc.create_blank_document().unwrap();
     let long = "가나다라마바사 아자차카타파하 강물이 흐르고 산이 높다 바람이 분다 구름이 간다 하늘이 푸르다 나무가 자란다 새가 웃는다 경치가 아름답다 보리가 여무다 들판이 넓다 여기에 표를 놓으면 글이 어떻게 흐르는지 본다 뒤에 말을 더 붙여 여러 줄이 되도록 한다 그래야 어울림이 보인다";
     doc.insert_text(0, 0, 0, long).unwrap();
-    doc.split_paragraph_native(0, 0, long.chars().count()).unwrap();
+    doc.split_paragraph_native(0, 0, long.chars().count())
+        .unwrap();
     let host = doc.get_paragraph_count(0).unwrap() - 1;
 
     // 폭 12000HU(160px) 어울림(양쪽) 표를 본문 3째 줄 높이·가운데로

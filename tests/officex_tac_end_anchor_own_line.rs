@@ -40,7 +40,8 @@ fn make_doc_with_end_anchor_table() -> HwpDocument {
         c["paraIdx"].as_u64().unwrap() as u32,
         c["controlIdx"].as_u64().unwrap() as u32,
     );
-    doc.set_table_column_widths(0, pi, ci, "[7087,7087]").unwrap();
+    doc.set_table_column_widths(0, pi, ci, "[7087,7087]")
+        .unwrap();
     doc
 }
 

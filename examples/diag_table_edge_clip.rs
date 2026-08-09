@@ -6,10 +6,8 @@ use rhwp::wasm_api::HwpDocument;
 fn main() {
     let mut doc = HwpDocument::create_empty();
     doc.create_blank_document().unwrap();
-    let c: serde_json::Value = serde_json::from_str(
-        &doc.create_table(0, 0, 0, 2, 5).unwrap(),
-    )
-    .unwrap();
+    let c: serde_json::Value =
+        serde_json::from_str(&doc.create_table(0, 0, 0, 2, 5).unwrap()).unwrap();
     let (pi, ci) = (
         c["paraIdx"].as_u64().unwrap() as u32,
         c["controlIdx"].as_u64().unwrap() as u32,
@@ -42,8 +40,16 @@ fn main() {
     };
     let (cx, cy, cw, ch) = (num("x"), num("y"), num("width"), num("height"));
 
-    println!("표 bbox   x={tx:.3} y={ty:.3} r={:.3} b={:.3}", tx + tw, ty + th);
-    println!("body clip x={cx:.3} y={cy:.3} r={:.3} b={:.3}", cx + cw, cy + ch);
+    println!(
+        "표 bbox   x={tx:.3} y={ty:.3} r={:.3} b={:.3}",
+        tx + tw,
+        ty + th
+    );
+    println!(
+        "body clip x={cx:.3} y={cy:.3} r={:.3} b={:.3}",
+        cx + cw,
+        cy + ch
+    );
     println!(
         "여유(px)  left={:.3} top={:.3} right={:.3} bottom={:.3}",
         tx - cx,
@@ -67,7 +73,10 @@ fn main() {
             }
         }
     }
-    println!("\n표 왼쪽 세로선 stroke-width={widest:.3} → 바깥으로 {:.3}px 삐져나감", widest / 2.0);
+    println!(
+        "\n표 왼쪽 세로선 stroke-width={widest:.3} → 바깥으로 {:.3}px 삐져나감",
+        widest / 2.0
+    );
     println!(
         "잘리는 양: 왼쪽 {:.3}px ({:.0}%)",
         (widest / 2.0 - (tx - cx)).max(0.0),

@@ -51,7 +51,9 @@ fn insert_each_kind_and_roundtrip_hwp() {
     }
     assert_eq!(seen.len(), 5, "왕복 후 양식 개체 5개여야: {}개", seen.len());
     for (kind, caption) in KINDS {
-        let found = seen.iter().find(|i| i.contains(&format!("\"formType\":\"{kind}\"")));
+        let found = seen
+            .iter()
+            .find(|i| i.contains(&format!("\"formType\":\"{kind}\"")));
         let info = found.unwrap_or_else(|| panic!("왕복 후 {kind} 가 없다"));
         if !caption.is_empty() {
             assert!(info.contains(caption), "{kind} 캡션 소실: {info}");
@@ -82,7 +84,10 @@ fn delete_then_roundtrip_stays_consistent() {
     doc.delete_form_object_native(0, 0, ci).unwrap();
     assert!(
         doc.get_form_object_info_native(0, 0, ci).is_err()
-            || !doc.get_form_object_info_native(0, 0, ci).unwrap().contains("\"ok\":true"),
+            || !doc
+                .get_form_object_info_native(0, 0, ci)
+                .unwrap()
+                .contains("\"ok\":true"),
         "삭제 후에도 양식 개체가 남아 있다"
     );
 
@@ -99,8 +104,15 @@ fn delete_then_roundtrip_stays_consistent() {
 fn textless_paragraph_with_wrapping_forms_renders_each_form_once() {
     let mut doc = new_doc();
     doc.insert_text_native(0, 0, 0, "동의: ").unwrap();
-    doc.insert_form_object_native(0, 0, 4, r#"{"formType":"CheckBox"}"#).unwrap();
-    for kind in ["PushButton", "ComboBox", "RadioButton", "RadioButton", "Edit"] {
+    doc.insert_form_object_native(0, 0, 4, r#"{"formType":"CheckBox"}"#)
+        .unwrap();
+    for kind in [
+        "PushButton",
+        "ComboBox",
+        "RadioButton",
+        "RadioButton",
+        "Edit",
+    ] {
         doc.insert_form_object_native(0, 0, 5, &format!(r#"{{"formType":"{kind}"}}"#))
             .unwrap();
     }
@@ -128,13 +140,18 @@ fn combobox_items_roundtrip_hwp() {
         .expect("controlIdx");
 
     doc.set_form_object_props_native(
-        0, 0, ci,
+        0,
+        0,
+        ci,
         r#"{"text":"계절 선택","items":["봄","여름","가을","겨울"]}"#,
     )
     .unwrap();
 
     let info = doc.get_form_object_info_native(0, 0, ci).unwrap();
-    assert!(info.contains(r#"["봄","여름","가을","겨울"]"#), "즉시 반영 실패: {info}");
+    assert!(
+        info.contains(r#"["봄","여름","가을","겨울"]"#),
+        "즉시 반영 실패: {info}"
+    );
 
     let bytes = doc.export_hwp_with_adapter().unwrap();
     let doc2 = HwpDocument::from_bytes(&bytes).unwrap();
@@ -143,7 +160,10 @@ fn combobox_items_roundtrip_hwp() {
         info2.contains(r#"["봄","여름","가을","겨울"]"#),
         "HWP 왕복 후 항목 소실: {info2}"
     );
-    assert!(info2.contains(r#""text":"계절 선택""#), "텍스트 소실: {info2}");
+    assert!(
+        info2.contains(r#""text":"계절 선택""#),
+        "텍스트 소실: {info2}"
+    );
 }
 
 /// 항목을 두 번 갈아끼워도 스크립트에 옛 줄이 안 쌓여야 한다(중복 InsertString 방지).
@@ -158,14 +178,19 @@ fn combobox_items_replace_not_append() {
         .nth(1)
         .and_then(|t| t.trim_end_matches('}').parse().ok())
         .unwrap();
-    doc.set_form_object_props_native(0, 0, ci, r#"{"items":["밥","빵"]}"#).unwrap();
-    doc.set_form_object_props_native(0, 0, ci, r#"{"items":["김치","라면","떡"]}"#).unwrap();
+    doc.set_form_object_props_native(0, 0, ci, r#"{"items":["밥","빵"]}"#)
+        .unwrap();
+    doc.set_form_object_props_native(0, 0, ci, r#"{"items":["김치","라면","떡"]}"#)
+        .unwrap();
 
     // 재열기 후에도 마지막 항목만 (스크립트에 옛 줄이 쌓였으면 옛 항목이 섞인다)
     let bytes = doc.export_hwp_with_adapter().unwrap();
     let doc2 = HwpDocument::from_bytes(&bytes).unwrap();
     let info2 = doc2.get_form_object_info_native(0, 0, ci).unwrap();
-    assert!(info2.contains(r#"["김치","라면","떡"]"#), "교체 실패: {info2}");
+    assert!(
+        info2.contains(r#"["김치","라면","떡"]"#),
+        "교체 실패: {info2}"
+    );
     assert!(!info2.contains("밥"), "옛 항목 잔존: {info2}");
 }
 
@@ -177,19 +202,28 @@ fn move_form_object_within_text() {
     let r = doc
         .insert_form_object_native(0, 0, 2, r#"{"formType":"CheckBox"}"#)
         .unwrap();
-    let ci: usize = r.split("\"controlIdx\":").nth(1).and_then(|t| t.trim_end_matches('}').parse().ok()).unwrap();
+    let ci: usize = r
+        .split("\"controlIdx\":")
+        .nth(1)
+        .and_then(|t| t.trim_end_matches('}').parse().ok())
+        .unwrap();
 
     // 렌더에서 체크박스의 x 가 텍스트 사이 어디냐로 위치를 판정한다 — 위치 2: "가나[☐]다라"
     let x_of = |d: &HwpDocument, needle: &str| -> f64 {
         let svg = d.render_page_svg_native(0).unwrap();
-        let line = svg.lines().find(|l| l.contains(needle)).unwrap_or_else(|| panic!("{needle} 없음"));
+        let line = svg
+            .lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} 없음"));
         let at = line.find(" x=\"").unwrap() + 4;
         line[at..].split('"').next().unwrap().parse().unwrap()
     };
     let box_x = |d: &HwpDocument| -> f64 {
         // 체크 사각형은 rect 로 그려진다 — 첫 검은 테두리 rect 의 x
         let svg = d.render_page_svg_native(0).unwrap();
-        let line = svg.lines().find(|l| l.starts_with("<rect") && l.contains("선택") || l.contains("checkbox"))
+        let line = svg
+            .lines()
+            .find(|l| l.starts_with("<rect") && l.contains("선택") || l.contains("checkbox"))
             .map(|l| l.to_string());
         // 렌더 구현에 기대지 말고 캡션 "선택 상자" 텍스트 x 로 판정한다
         drop(line);
@@ -197,15 +231,27 @@ fn move_form_object_within_text() {
     };
 
     let x2 = box_x(&doc); // 위치 2
-    // 왼쪽으로 한 칸 → 위치 1: "가[☐]나다라"
-    let r = doc.move_form_object_native(0, 0, ci, r#"{"delta":-1}"#).unwrap();
-    let ci: usize = r.split("\"controlIdx\":").nth(1).and_then(|t| t.trim_end_matches('}').parse().ok()).unwrap();
+                          // 왼쪽으로 한 칸 → 위치 1: "가[☐]나다라"
+    let r = doc
+        .move_form_object_native(0, 0, ci, r#"{"delta":-1}"#)
+        .unwrap();
+    let ci: usize = r
+        .split("\"controlIdx\":")
+        .nth(1)
+        .and_then(|t| t.trim_end_matches('}').parse().ok())
+        .unwrap();
     let x1 = box_x(&doc);
     assert!(x1 < x2, "왼쪽 이동 후 x 가 줄어야: {x1} vs {x2}");
 
     // 절대 위치 4(맨 끝) → "가나다라[☐]"
-    let r = doc.move_form_object_native(0, 0, ci, r#"{"offset":4}"#).unwrap();
-    let ci: usize = r.split("\"controlIdx\":").nth(1).and_then(|t| t.trim_end_matches('}').parse().ok()).unwrap();
+    let r = doc
+        .move_form_object_native(0, 0, ci, r#"{"offset":4}"#)
+        .unwrap();
+    let ci: usize = r
+        .split("\"controlIdx\":")
+        .nth(1)
+        .and_then(|t| t.trim_end_matches('}').parse().ok())
+        .unwrap();
     let x4 = box_x(&doc);
     assert!(x4 > x2, "끝 이동 후 x 가 커져야: {x4} vs {x2}");
 
@@ -213,7 +259,10 @@ fn move_form_object_within_text() {
     let bytes = doc.export_hwp_with_adapter().unwrap();
     let doc2 = HwpDocument::from_bytes(&bytes).unwrap();
     assert_eq!(doc2.get_text_range_native(0, 0, 0, 10).unwrap(), "가나다라");
-    assert!(doc2.get_form_object_info_native(0, 0, ci).unwrap().contains("\"ok\":true"));
+    assert!(doc2
+        .get_form_object_info_native(0, 0, ci)
+        .unwrap()
+        .contains("\"ok\":true"));
 }
 
 /// 캐럿이 개체 **오른쪽**에 설 수 있어야 한다 — 양식이 논리 길이에서 빠져 있으면
@@ -222,12 +271,16 @@ fn move_form_object_within_text() {
 fn caret_can_stand_right_of_form_object() {
     let mut doc = new_doc();
     doc.insert_text_native(0, 0, 0, "가나").unwrap();
-    doc.insert_form_object_native(0, 0, 2, r#"{"formType":"PushButton"}"#).unwrap();
+    doc.insert_form_object_native(0, 0, 2, r#"{"formType":"PushButton"}"#)
+        .unwrap();
     doc.insert_text_native(0, 0, 2, "다").unwrap();
 
     // 본문 글자 3 + 개체 1 = 논리 길이 4
     let logical = doc.get_logical_length(0, 0).unwrap();
-    assert_eq!(logical, 4, "양식이 논리 길이에 안 잡힌다(캐럿이 개체를 건너뛴다)");
+    assert_eq!(
+        logical, 4,
+        "양식이 논리 길이에 안 잡힌다(캐럿이 개체를 건너뛴다)"
+    );
 
     // 개체 오른쪽(논리 3)이 텍스트 좌표 2(=개체 뒤 '다' 앞)로 풀려야 한다
     let after_obj = doc.logical_to_text_offset(0, 0, 3).unwrap();
@@ -244,12 +297,18 @@ fn caret_can_stand_right_of_form_object() {
 fn caret_rect_moves_past_form_object_width() {
     let mut doc = new_doc();
     doc.insert_text_native(0, 0, 0, "나가 내").unwrap();
-    doc.insert_form_object_native(0, 0, 3, r#"{"formType":"PushButton"}"#).unwrap();
+    doc.insert_form_object_native(0, 0, 3, r#"{"formType":"PushButton"}"#)
+        .unwrap();
 
     let rect_x = |d: &HwpDocument, off: usize| -> f64 {
         let r = d.get_cursor_rect_native(0, 0, off).unwrap();
         let at = r.find("\"x\":").unwrap() + 4;
-        r[at..].split(|c| c == ',' || c == '}').next().unwrap().parse().unwrap()
+        r[at..]
+            .split(|c| c == ',' || c == '}')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
     };
 
     // 논리: 나(0)가(1)공백(2)[개체](3)내(4). 개체 앞(3) vs 개체 뒤(4).
@@ -279,14 +338,18 @@ fn typing_after_consecutive_forms_lands_after_them() {
 
     let svg = doc.render_page_svg_native(0).unwrap();
     let x_of = |needle: &str| -> f64 {
-        let line = svg.lines().find(|l| l.contains(needle)).unwrap_or_else(|| panic!("{needle} 없음"));
+        let line = svg
+            .lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} 없음"));
         let at = line.find(" x=\"").unwrap() + 4;
         line[at..].split('"').next().unwrap().parse().unwrap()
     };
     assert!(
         x_of(">끝<") > x_of(">라디오 단추<"),
         "글자가 개체들 앞에 그려졌다: 끝={} 라디오={}",
-        x_of(">끝<"), x_of(">라디오 단추<")
+        x_of(">끝<"),
+        x_of(">라디오 단추<")
     );
 }
 
@@ -300,12 +363,27 @@ fn inline_form_matches_font_size() {
     let r = doc
         .insert_form_object_native(0, 0, 2, r#"{"formType":"CheckBox"}"#)
         .unwrap();
-    let ci: usize = r.split("\"controlIdx\":").nth(1).and_then(|t| t.trim_end_matches('}').parse().ok()).unwrap();
+    let ci: usize = r
+        .split("\"controlIdx\":")
+        .nth(1)
+        .and_then(|t| t.trim_end_matches('}').parse().ok())
+        .unwrap();
     let info = doc.get_form_object_info_native(0, 0, ci).unwrap();
-    let h: u32 = info.split("\"height\":").nth(1).unwrap().split(',').next().unwrap().parse().unwrap();
+    let h: u32 = info
+        .split("\"height\":")
+        .nth(1)
+        .unwrap()
+        .split(',')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
     // 기본 10pt(=1000) 문서 → 1.0em. 글자 잉크(1000)를 넘으면 조판이 줄을 개체 높이로
     // 키워 글자가 아래로 몰린다(2026-08-04 신고) — 넘지 않아야 한다.
-    assert!(h <= 1000, "인라인 개체가 글자 잉크를 넘는다(줄이 커진다): {h} HWPUNIT");
+    assert!(
+        h <= 1000,
+        "인라인 개체가 글자 잉크를 넘는다(줄이 커진다): {h} HWPUNIT"
+    );
     assert!(h >= 900, "너무 작다: {h}");
 }
 
@@ -316,28 +394,48 @@ fn inline_form_matches_font_size() {
 fn insert_and_move_keep_char_shape_boundaries() {
     let mut doc = new_doc();
     doc.insert_text_native(0, 0, 0, "가나다라마바").unwrap();
-    doc.apply_char_format_native(0, 0, 3, 6, r#"{"fontSize":1500}"#).unwrap();
+    doc.apply_char_format_native(0, 0, 3, 6, r#"{"fontSize":1500}"#)
+        .unwrap();
     let sizes = |d: &HwpDocument| -> Vec<String> {
-        (0..6).map(|off| {
-            let j = d.get_char_properties_at_native(0, 0, off).unwrap();
-            j.split("\"fontSize\":").nth(1).unwrap().split(',').next().unwrap().to_string()
-        }).collect()
+        (0..6)
+            .map(|off| {
+                let j = d.get_char_properties_at_native(0, 0, off).unwrap();
+                j.split("\"fontSize\":")
+                    .nth(1)
+                    .unwrap()
+                    .split(',')
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
     };
     let want = vec!["1000", "1000", "1000", "1500", "1500", "1500"];
     assert_eq!(sizes(&doc), want);
 
     // 경계 앞(텍스트 2)에 삽입 → 서식 불변이어야
-    let r = doc.insert_form_object_native(0, 0, 2, r#"{"formType":"CheckBox"}"#).unwrap();
-    let ci: usize = r.split("\"controlIdx\":").nth(1).and_then(|t| t.trim_end_matches('}').parse().ok()).unwrap();
+    let r = doc
+        .insert_form_object_native(0, 0, 2, r#"{"formType":"CheckBox"}"#)
+        .unwrap();
+    let ci: usize = r
+        .split("\"controlIdx\":")
+        .nth(1)
+        .and_then(|t| t.trim_end_matches('}').parse().ok())
+        .unwrap();
     assert_eq!(sizes(&doc), want, "삽입 후 서식이 어긋났다");
 
     // 앞뒤로 몇 번 옮겨도 불변
-    doc.move_form_object_native(0, 0, ci, r#"{"delta":1}"#).unwrap();
+    doc.move_form_object_native(0, 0, ci, r#"{"delta":1}"#)
+        .unwrap();
     assert_eq!(sizes(&doc), want, "오른쪽 이동 후 서식이 어긋났다");
-    doc.move_form_object_native(0, 0, ci, r#"{"delta":1}"#).unwrap();
-    doc.move_form_object_native(0, 0, ci, r#"{"delta":-1}"#).unwrap();
-    doc.move_form_object_native(0, 0, ci, r#"{"delta":-1}"#).unwrap();
-    doc.move_form_object_native(0, 0, ci, r#"{"delta":-1}"#).unwrap();
+    doc.move_form_object_native(0, 0, ci, r#"{"delta":1}"#)
+        .unwrap();
+    doc.move_form_object_native(0, 0, ci, r#"{"delta":-1}"#)
+        .unwrap();
+    doc.move_form_object_native(0, 0, ci, r#"{"delta":-1}"#)
+        .unwrap();
+    doc.move_form_object_native(0, 0, ci, r#"{"delta":-1}"#)
+        .unwrap();
     assert_eq!(sizes(&doc), want, "왕복 이동 후 서식이 어긋났다");
 
     // 삭제 후에도 불변 + HWP 왕복
@@ -361,12 +459,26 @@ fn insert_into_document_with_header() {
     assert!(r.contains("\"ok\":true"), "{r}");
     // 개체 뒤 캐럿이 개체 오른쪽에 선다(= 삽입·조판·커서 계산 전부 생존)
     let rect = doc.get_cursor_rect_native(0, 0, 1).unwrap();
-    let x: f64 = rect.split("\"x\":").nth(1).unwrap().split(',').next().unwrap().parse().unwrap();
+    let x: f64 = rect
+        .split("\"x\":")
+        .nth(1)
+        .unwrap()
+        .split(',')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
     assert!(x > 150.0, "개체 뒤 캐럿 x 가 개체를 못 넘었다: {rect}");
     // 이동도 생존
-    let ci: usize = r.split("\"controlIdx\":").nth(1).and_then(|t| t.trim_end_matches('}').parse().ok()).unwrap();
+    let ci: usize = r
+        .split("\"controlIdx\":")
+        .nth(1)
+        .and_then(|t| t.trim_end_matches('}').parse().ok())
+        .unwrap();
     doc.insert_text_logical(0, 0, 1, "가나").unwrap();
-    let m = doc.move_form_object_native(0, 0, ci, r#"{"delta":1}"#).unwrap();
+    let m = doc
+        .move_form_object_native(0, 0, ci, r#"{"delta":1}"#)
+        .unwrap();
     assert!(m.contains("\"ok\":true"), "{m}");
 }
 
@@ -376,8 +488,10 @@ fn form_control_at_logical_slots() {
     let mut doc = new_doc();
     doc.insert_text_native(0, 0, 0, "가나").unwrap();
     // 논리: 가(0) 나(1) [A](2) [B](3)  — 위치 2에 개체 둘
-    doc.insert_form_object_native(0, 0, 2, r#"{"formType":"PushButton"}"#).unwrap();
-    doc.insert_form_object_native(0, 0, 2, r#"{"formType":"CheckBox"}"#).unwrap();
+    doc.insert_form_object_native(0, 0, 2, r#"{"formType":"PushButton"}"#)
+        .unwrap();
+    doc.insert_form_object_native(0, 0, 2, r#"{"formType":"CheckBox"}"#)
+        .unwrap();
     assert_eq!(doc.form_control_at_logical_native(0, 0, 0), -1, "글자 칸");
     assert_eq!(doc.form_control_at_logical_native(0, 0, 1), -1, "글자 칸");
     let a = doc.form_control_at_logical_native(0, 0, 2);

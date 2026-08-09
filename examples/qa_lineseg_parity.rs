@@ -36,14 +36,25 @@ fn main() {
         args
     };
 
-    let big: f64 = std::env::var("BIG").ok().and_then(|v| v.parse().ok()).unwrap_or(50.0);
+    let big: f64 = std::env::var("BIG")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50.0);
     let (mut tot_big, mut tot_all, mut bad_files) = (0usize, 0usize, 0usize);
     for f in &files {
-        let Ok(bytes) = std::fs::read(f) else { continue };
-        let Ok(doc) = HwpDocument::from_bytes(&bytes) else { continue };
+        let Ok(bytes) = std::fs::read(f) else {
+            continue;
+        };
+        let Ok(doc) = HwpDocument::from_bytes(&bytes) else {
+            continue;
+        };
         // 기대 폭: 문단별 line_segs (파서 모델). 실제: 렌더트리 TextLine bbox.
-        let Ok(parsed) = rhwp::parser::parse_hwp(&bytes) else { continue };
-        let Some(sec) = parsed.sections.first() else { continue };
+        let Ok(parsed) = rhwp::parser::parse_hwp(&bytes) else {
+            continue;
+        };
+        let Some(sec) = parsed.sections.first() else {
+            continue;
+        };
         let mut expected: Vec<f64> = Vec::new();
         for p in &sec.paragraphs {
             for s in &p.line_segs {
@@ -54,7 +65,9 @@ fn main() {
         }
         let mut actual: Vec<f64> = Vec::new();
         for pg in 0..doc.page_count() {
-            let Ok(tree) = doc.build_page_render_tree(pg) else { continue };
+            let Ok(tree) = doc.build_page_render_tree(pg) else {
+                continue;
+            };
             collect(&tree.root, &mut actual);
         }
         // 순서 대응이 보장되진 않으므로 **분포**로 비교한다: 기대 폭 각각에 대해
@@ -92,7 +105,11 @@ fn main() {
             continue;
         }
         let _ = ok;
-        let bigs: Vec<f64> = misses.iter().filter(|d| !d.is_nan() && d.abs() >= big).copied().collect();
+        let bigs: Vec<f64> = misses
+            .iter()
+            .filter(|d| !d.is_nan() && d.abs() >= big)
+            .copied()
+            .collect();
         tot_big += bigs.len();
         tot_all += all;
         let pct = 100 - (bigs.len() * 100 / all);

@@ -176,9 +176,7 @@ pub(crate) fn offset_for_target_x(
     let off_px = match horz_align {
         HorzAlign::Left | HorzAlign::Inside => target_x_px - ref_x,
         HorzAlign::Center => target_x_px - ref_x - (ref_w - width_px).max(0.0) / 2.0,
-        HorzAlign::Right | HorzAlign::Outside => {
-            ref_x + (ref_w - width_px).max(0.0) - target_x_px
-        }
+        HorzAlign::Right | HorzAlign::Outside => ref_x + (ref_w - width_px).max(0.0) - target_x_px,
     };
     px_offset_to_hwpunit(off_px, dpi)
 }
@@ -317,7 +315,13 @@ pub(crate) struct FloatBand {
 impl FloatBand {
     /// 가로 전폭을 가리는 밴드 — 종전 동작(x 무시)과 정확히 같다.
     pub(crate) fn full_width(top: f64, bottom: f64, owner_para: Option<usize>) -> Self {
-        Self { x_start: f64::NEG_INFINITY, x_end: f64::INFINITY, top, bottom, owner_para }
+        Self {
+            x_start: f64::NEG_INFINITY,
+            x_end: f64::INFINITY,
+            top,
+            bottom,
+            owner_para,
+        }
     }
 
     fn overlaps_x(&self, x_start: f64, x_end: f64) -> bool {
@@ -499,8 +503,18 @@ mod tests {
     #[test]
     fn rebase_roundtrip_all_frames() {
         let dpi = 96.0;
-        let col = LayoutRect { x: 60.0, y: 50.0, width: 500.0, height: 700.0 };
-        let body = LayoutRect { x: 40.0, y: 30.0, width: 540.0, height: 740.0 };
+        let col = LayoutRect {
+            x: 60.0,
+            y: 50.0,
+            width: 500.0,
+            height: 700.0,
+        };
+        let body = LayoutRect {
+            x: 40.0,
+            y: 30.0,
+            width: 540.0,
+            height: 740.0,
+        };
         let paper_w = 620.0;
         let frames = RebaseFrames {
             paper_w,
@@ -545,8 +559,18 @@ mod tests {
     #[test]
     fn rebase_roundtrip_vertical() {
         let dpi = 96.0;
-        let col = LayoutRect { x: 60.0, y: 50.0, width: 500.0, height: 700.0 };
-        let body = LayoutRect { x: 40.0, y: 30.0, width: 540.0, height: 740.0 };
+        let col = LayoutRect {
+            x: 60.0,
+            y: 50.0,
+            width: 500.0,
+            height: 700.0,
+        };
+        let body = LayoutRect {
+            x: 40.0,
+            y: 30.0,
+            width: 540.0,
+            height: 740.0,
+        };
         let frames = RebaseFrames {
             paper_w: 620.0,
             paper_h: 820.0,
@@ -581,7 +605,10 @@ mod tests {
             }
         }
         // para_y 미채취 → Para 축은 None (게이트와 생산이 한 소스).
-        let no_para = RebaseFrames { para_y: None, ..frames };
+        let no_para = RebaseFrames {
+            para_y: None,
+            ..frames
+        };
         assert!(offset_for_target_y(
             VertRelTo::Para,
             VertAlign::Top,
@@ -599,7 +626,13 @@ mod tests {
     }
     /// 가로 범위를 가진 밴드 — 좌·중·우 표가 나란히 서는 근거를 고정한다.
     fn xband(x0: f64, x1: f64, top: f64, bottom: f64) -> FloatBand {
-        FloatBand { x_start: x0, x_end: x1, top, bottom, owner_para: None }
+        FloatBand {
+            x_start: x0,
+            x_end: x1,
+            top,
+            bottom,
+            owner_para: None,
+        }
     }
 
     #[test]
@@ -648,8 +681,14 @@ mod tests {
         // 왼쪽 절반만 가리는 밴드. 오른쪽에 놓인 항목은 밀리지 않아야 한다
         // (빈-host 좌·중·우 표가 나란히 서는 근거 — tests/issue_986.rs:114).
         let bands = [xband(0.0, 100.0, 100.0, 200.0)];
-        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None, Some((0.0, 50.0))), 200.0);
-        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None, Some((120.0, 200.0))), 150.0);
+        assert_eq!(
+            skip_float_bands(150.0, &bands, 0.0, None, Some((0.0, 50.0))),
+            200.0
+        );
+        assert_eq!(
+            skip_float_bands(150.0, &bands, 0.0, None, Some((120.0, 200.0))),
+            150.0
+        );
         // x_range 를 안 주면 가로를 보지 않는다 = 종전 동작
         assert_eq!(skip_float_bands(150.0, &bands, 0.0, None, None), 200.0);
     }
@@ -658,12 +697,16 @@ mod tests {
     fn full_width_band_always_overlaps() {
         // 전폭 밴드는 어떤 x 를 줘도 민다(무한대 비교를 타지 않는 빠른 경로).
         let bands = [band(100.0, 200.0, None)];
-        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None, Some((9_000.0, 9_100.0))), 200.0);
+        assert_eq!(
+            skip_float_bands(150.0, &bands, 0.0, None, Some((9_000.0, 9_100.0))),
+            200.0
+        );
     }
 
     #[test]
     fn stack_lines_no_bands_is_cumulative() {
-        let (tops, end) = stack_lines_through_bands(100.0, &[(17.0, 3.0), (17.0, 3.0)], &[], None, None);
+        let (tops, end) =
+            stack_lines_through_bands(100.0, &[(17.0, 3.0), (17.0, 3.0)], &[], None, None);
         assert_eq!(tops, vec![100.0, 120.0]);
         assert_eq!(end, 140.0);
     }
@@ -696,7 +739,8 @@ mod tests {
         // 왼쪽 절반 밴드 — 오른쪽 레인의 줄은 관통이 아니라 '옆'이므로 안 밀린다.
         let bands = [xband(0.0, 100.0, 140.0, 300.0)];
         let lines = [(17.0, 3.0), (17.0, 3.0), (17.0, 3.0)];
-        let (right, _) = stack_lines_through_bands(100.0, &lines, &bands, None, Some((120.0, 200.0)));
+        let (right, _) =
+            stack_lines_through_bands(100.0, &lines, &bands, None, Some((120.0, 200.0)));
         assert_eq!(right, vec![100.0, 120.0, 140.0]);
         let (left, _) = stack_lines_through_bands(100.0, &lines, &bands, None, Some((0.0, 50.0)));
         assert_eq!(left[2], 300.0);

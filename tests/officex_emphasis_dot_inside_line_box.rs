@@ -25,7 +25,10 @@ fn body_clip_top(svg: &str) -> f64 {
 }
 
 fn text_baseline_and_size(svg: &str) -> (f64, f64) {
-    let line = svg.lines().find(|l| l.contains(">강<")).expect("본문 글자 없음");
+    let line = svg
+        .lines()
+        .find(|l| l.contains(">강<"))
+        .expect("본문 글자 없음");
     (attr(line, " y=\""), attr(line, " font-size=\""))
 }
 
@@ -54,7 +57,11 @@ fn every_emphasis_kind_is_drawn_inside_the_line_box() {
             if line.starts_with("<circle") {
                 let cy = attr(line, " cy=\"");
                 let r = attr(line, " r=\"");
-                let sw = if line.contains("stroke-width") { attr(line, " stroke-width=\"") } else { 0.0 };
+                let sw = if line.contains("stroke-width") {
+                    attr(line, " stroke-width=\"")
+                } else {
+                    0.0
+                };
                 lo = lo.min(cy - r - sw / 2.0);
                 hi = hi.max(cy + r + sw / 2.0);
                 shapes += 1;
@@ -71,7 +78,10 @@ fn every_emphasis_kind_is_drawn_inside_the_line_box() {
             }
         }
 
-        assert!(shapes >= 2, "강조점 {kind}: 글자 수만큼 그려져야 한다(그려진 도형 {shapes}개)");
+        assert!(
+            shapes >= 2,
+            "강조점 {kind}: 글자 수만큼 그려져야 한다(그려진 도형 {shapes}개)"
+        );
         assert!(
             lo >= clip_top,
             "강조점 {kind} 이 본문 clip 위로 나간다(첫 줄에서 잘린다): {lo:.2} < {clip_top:.2}"

@@ -11,7 +11,8 @@ fn probe(page_break: u8, filler_lines: usize, rows: u32) -> (u32, usize, i64, i6
     let filler = "가나다라마바사아자차카타파하 ".repeat(3);
     for _ in 0..filler_lines {
         let len = doc.get_paragraph_length(0, 0).unwrap_or(0);
-        doc.insert_text(0, 0, len, &format!("{filler}\n")).expect("text");
+        doc.insert_text(0, 0, len, &format!("{filler}\n"))
+            .expect("text");
     }
     let len = doc.get_paragraph_length(0, 0).unwrap_or(0);
     let created = doc.create_table(0, 0, len, 3, 3).expect("table");

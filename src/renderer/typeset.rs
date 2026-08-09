@@ -1900,7 +1900,8 @@ impl TypesetState {
         if self.current_items.is_empty() && self.current_column_wrap_around_paras.is_empty() {
             return;
         }
-        let col_content = ColumnContent { topbottom_bands: std::mem::take(&mut self.current_column_bands),
+        let col_content = ColumnContent {
+            topbottom_bands: std::mem::take(&mut self.current_column_bands),
             column_index: self.current_column,
             start_height: self.current_start_height,
             endnote_flow: self.current_endnote_flow,
@@ -1954,7 +1955,8 @@ impl TypesetState {
 
     /// 비어있어도 flush
     fn flush_column_always(&mut self) {
-        let col_content = ColumnContent { topbottom_bands: std::mem::take(&mut self.current_column_bands),
+        let col_content = ColumnContent {
+            topbottom_bands: std::mem::take(&mut self.current_column_bands),
             column_index: self.current_column,
             start_height: self.current_start_height,
             endnote_flow: self.current_endnote_flow,
@@ -11592,34 +11594,33 @@ impl TypesetEngine {
         // typeset 도 같은 계산부(stack_lines_through_bands)로 늘어난 만큼(extra)을
         // fit 판정과 누적에 더한다. 한쪽만 바꾸면 페이지 바닥이 터진다(S3·S4 병력).
         // 프로브 규약: HWP5 = 잉크(lh)만(#1789) · HWPX = lh+ls 유지(issue_1510).
-        let band_stack_extra = if st.visible_float_exclusions.is_empty()
-            || fmt.line_heights.is_empty()
-        {
-            0.0
-        } else {
-            let advances: Vec<(f64, f64)> = fmt
-                .line_heights
-                .iter()
-                .zip(fmt.line_spacings.iter())
-                .map(|(lh, ls)| {
-                    if st.is_hwpx_source {
-                        (lh + ls, 0.0)
-                    } else {
-                        (*lh, *ls)
-                    }
-                })
-                .collect();
-            let start = st.current_height + fmt.spacing_before;
-            let plain: f64 = advances.iter().map(|(ink, sp)| ink + sp).sum();
-            let (_, end) = crate::renderer::float_placement::stack_lines_through_bands(
-                start,
-                &advances,
-                &st.visible_float_exclusions,
-                None,
-                None,
-            );
-            (end - start - plain).max(0.0)
-        };
+        let band_stack_extra =
+            if st.visible_float_exclusions.is_empty() || fmt.line_heights.is_empty() {
+                0.0
+            } else {
+                let advances: Vec<(f64, f64)> = fmt
+                    .line_heights
+                    .iter()
+                    .zip(fmt.line_spacings.iter())
+                    .map(|(lh, ls)| {
+                        if st.is_hwpx_source {
+                            (lh + ls, 0.0)
+                        } else {
+                            (*lh, *ls)
+                        }
+                    })
+                    .collect();
+                let start = st.current_height + fmt.spacing_before;
+                let plain: f64 = advances.iter().map(|(ink, sp)| ink + sp).sum();
+                let (_, end) = crate::renderer::float_placement::stack_lines_through_bands(
+                    start,
+                    &advances,
+                    &st.visible_float_exclusions,
+                    None,
+                    None,
+                );
+                (end - start - plain).max(0.0)
+            };
         if forced_page_break_line.is_none()
             && (st.current_height + fmt.height_for_fit + band_stack_extra <= available
                 || saved_single_line_bottom_fits
@@ -13530,11 +13531,12 @@ impl TypesetEngine {
             let table_bottom = table_top + table_total_height.max(0.0);
             if signed_vertical_offset > 0 {
                 if table_bottom > table_top + 0.5 {
-                    st.visible_float_exclusions.push(VisibleFloatExclusion::full_width(
-                        table_top,
-                        table_bottom,
-                        None, // typeset 은 소유자 스킵을 쓰지 않는다(종전 동작 유지)
-                    ));
+                    st.visible_float_exclusions
+                        .push(VisibleFloatExclusion::full_width(
+                            table_top,
+                            table_bottom,
+                            None, // typeset 은 소유자 스킵을 쓰지 않는다(종전 동작 유지)
+                        ));
                 }
                 st.current_height += pre_height;
                 // [officex/S4] 높이 회계 구멍 — 밴드 방식은 표 높이를 예산에 안 넣고
@@ -13560,12 +13562,13 @@ impl TypesetEngine {
                 // 사전 밴드 생산 — 앞 문단을 미는 역방향 소비를 위해 flow 좌표를 싣는다.
                 // 양수 밴드는 self-registration(layout)이 전담하므로 싣지 않는다.
                 if signed_vertical_offset < 0 && table_bottom > table_top + 0.5 {
-                    st.current_column_bands.push(crate::renderer::pagination::PendingFloatBand {
-                        para_index: para_idx,
-                        offset_from_para_top: table_top - para_start_height,
-                        height: table_bottom - table_top,
-                        flow_top: table_top,
-                    });
+                    st.current_column_bands
+                        .push(crate::renderer::pagination::PendingFloatBand {
+                            para_index: para_idx,
+                            offset_from_para_top: table_top - para_start_height,
+                            height: table_bottom - table_top,
+                            flow_top: table_top,
+                        });
                 }
                 st.current_height = st.current_height.max(table_bottom + inter_float_gap);
             }
@@ -13588,12 +13591,13 @@ impl TypesetEngine {
                 let v_off_px = hwpunit_to_px(signed_vertical_offset, self.dpi);
                 let band_top = para_start_height + v_off_px;
                 if table_total_height > 0.5 {
-                    st.current_column_bands.push(crate::renderer::pagination::PendingFloatBand {
-                        para_index: para_idx,
-                        offset_from_para_top: v_off_px,
-                        height: table_total_height,
-                        flow_top: band_top,
-                    });
+                    st.current_column_bands
+                        .push(crate::renderer::pagination::PendingFloatBand {
+                            para_index: para_idx,
+                            offset_from_para_top: v_off_px,
+                            height: table_total_height,
+                            flow_top: band_top,
+                        });
                 }
             }
             // [#2097 프로브 기록] 빈 host 자리차지 float(v_off>0)의 흐름 전진에
@@ -13679,9 +13683,7 @@ impl TypesetEngine {
         // 표 배치 시점 + v_off + 표높이). post-text 미가산 케이스에서도 표 높이는 남는다.
         if let Some(base) = deferred_square_host_base {
             let v_off_px = hwpunit_to_px(signed_vertical_offset, self.dpi);
-            st.current_height = st
-                .current_height
-                .max(base + v_off_px + table_total_height);
+            st.current_height = st.current_height.max(base + v_off_px + table_total_height);
         }
 
         // TAC 표: trailing line_spacing 복원 (Paginator place_table_fits:777-783 동일)
@@ -15258,8 +15260,13 @@ impl TypesetEngine {
             if std::env::var("RHWP_DIAG_E3").is_ok() {
                 eprintln!(
                     "E3_MOVE pi={} rows={} total={:.1} cur_h={:.1} avail={:.1} wrap={:?} vrel={:?}",
-                    para_idx, table.row_count, table_total, st.current_height, available,
-                    table.common.text_wrap, table.common.vert_rel_to,
+                    para_idx,
+                    table.row_count,
+                    table_total,
+                    st.current_height,
+                    available,
+                    table.common.text_wrap,
+                    table.common.vert_rel_to,
                 );
             }
             st.advance_column_or_new_page();
@@ -17157,7 +17164,8 @@ mod tests {
                 &ColumnDef::default(),
                 DEFAULT_DPI,
             ),
-            column_contents: vec![ColumnContent { topbottom_bands: Vec::new(),
+            column_contents: vec![ColumnContent {
+                topbottom_bands: Vec::new(),
                 column_index: 0,
                 start_height: 0.0,
                 endnote_flow: false,

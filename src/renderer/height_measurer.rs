@@ -84,8 +84,8 @@ pub fn is_tac_table_inline_in_para(table: &Table, seg_width: i32, para: &Paragra
         + table.outer_margin_bottom as i64;
     let seg_matches_table_line =
         |ls: &crate::model::paragraph::LineSeg| (ls.line_height as i64 - tbl_line_h).abs() <= 75;
-    let has_own_line_seg = para.line_segs.len() >= 2
-        && para.line_segs.iter().skip(1).any(&seg_matches_table_line);
+    let has_own_line_seg =
+        para.line_segs.len() >= 2 && para.line_segs.iter().skip(1).any(&seg_matches_table_line);
 
     // 로드측 게이트: **저장 파일이** end-anchor 표를 자기 줄(**텍스트 없는** 후행 seg,
     // 높이 = 표높이+outer 여백)로 인코딩했으면 그 조판을 존중해 블록으로 본다
@@ -97,8 +97,7 @@ pub fn is_tac_table_inline_in_para(table: &Table, seg_width: i32, para: &Paragra
     let last_text_utf16 = para.char_offsets.last().copied();
     let textless_own_line_seg = para.line_segs.len() >= 2
         && para.line_segs.iter().skip(1).any(|ls| {
-            seg_matches_table_line(ls)
-                && last_text_utf16.is_none_or(|last| ls.text_start > last)
+            seg_matches_table_line(ls) && last_text_utf16.is_none_or(|last| ls.text_start > last)
         });
     if textless_own_line_seg
         && end_anchored_solo_tac_table(para).is_some_and(|control_index| {

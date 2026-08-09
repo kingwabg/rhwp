@@ -437,8 +437,7 @@ impl DocumentCore {
                 // [각주/빈 각주 2자] 각주 첫 문단은 번호 마커(AutoNumber)를 위한 placeholder
                 // 공백 2칸을 늘 품는다 — 이를 텍스트로 세면 빈 각주도 "  "(2자)로 온다.
                 // 실제 사용자 글자만 보이도록 마커 placeholder를 제외한다.
-                let visible: Vec<String> =
-                    f.paragraphs.iter().map(footnote_visible_text).collect();
+                let visible: Vec<String> = f.paragraphs.iter().map(footnote_visible_text).collect();
                 let texts: Vec<String> = visible
                     .iter()
                     .map(|t| t.replace('\\', "\\\\").replace('"', "\\\""))
@@ -454,8 +453,7 @@ impl DocumentCore {
             }
             Control::Endnote(e) => {
                 let para_count = e.paragraphs.len();
-                let visible: Vec<String> =
-                    e.paragraphs.iter().map(footnote_visible_text).collect();
+                let visible: Vec<String> = e.paragraphs.iter().map(footnote_visible_text).collect();
                 let texts: Vec<String> = visible
                     .iter()
                     .map(|t| t.replace('\\', "\\\\").replace('"', "\\\""))

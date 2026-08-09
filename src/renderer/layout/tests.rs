@@ -120,7 +120,8 @@ fn test_build_page_with_paragraph() {
         page_number: 0,
         section_index: 0,
         layout,
-        column_contents: vec![ColumnContent { topbottom_bands: Vec::new(),
+        column_contents: vec![ColumnContent {
+            topbottom_bands: Vec::new(),
             column_index: 0,
             start_height: 0.0,
             endnote_flow: false,
@@ -196,7 +197,8 @@ fn partial_paragraph_start_line_beyond_lines_does_not_panic() {
         page_number: 0,
         section_index: 0,
         layout,
-        column_contents: vec![ColumnContent { topbottom_bands: Vec::new(),
+        column_contents: vec![ColumnContent {
+            topbottom_bands: Vec::new(),
             column_index: 0,
             start_height: 0.0,
             endnote_flow: false,
@@ -298,7 +300,8 @@ fn test_layout_with_composed_styles() {
         page_number: 0,
         section_index: 0,
         layout,
-        column_contents: vec![ColumnContent { topbottom_bands: Vec::new(),
+        column_contents: vec![ColumnContent {
+            topbottom_bands: Vec::new(),
             column_index: 0,
             start_height: 0.0,
             endnote_flow: false,
@@ -425,7 +428,8 @@ fn test_layout_multi_run_x_position() {
         page_number: 0,
         section_index: 0,
         layout,
-        column_contents: vec![ColumnContent { topbottom_bands: Vec::new(),
+        column_contents: vec![ColumnContent {
+            topbottom_bands: Vec::new(),
             column_index: 0,
             start_height: 0.0,
             endnote_flow: false,
@@ -798,7 +802,8 @@ fn test_layout_table_basic() {
         page_number: 0,
         section_index: 0,
         layout,
-        column_contents: vec![ColumnContent { topbottom_bands: Vec::new(),
+        column_contents: vec![ColumnContent {
+            topbottom_bands: Vec::new(),
             column_index: 0,
             start_height: 0.0,
             endnote_flow: false,
@@ -949,7 +954,8 @@ fn test_layout_table_cell_positions() {
         page_number: 0,
         section_index: 0,
         layout,
-        column_contents: vec![ColumnContent { topbottom_bands: Vec::new(),
+        column_contents: vec![ColumnContent {
+            topbottom_bands: Vec::new(),
             column_index: 0,
             start_height: 0.0,
             endnote_flow: false,

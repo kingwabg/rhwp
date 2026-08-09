@@ -42,7 +42,11 @@ fn render(rel: &str, page: u32) -> RenderNode {
 }
 
 /// (표 bbox, 셀 bbox, 줄 노드, 텍스트 런) 을 술어로 골라 모으는 단일 순회.
-fn collect<T>(node: &RenderNode, pick: &mut impl FnMut(&RenderNode) -> Option<T>, out: &mut Vec<T>) {
+fn collect<T>(
+    node: &RenderNode,
+    pick: &mut impl FnMut(&RenderNode) -> Option<T>,
+    out: &mut Vec<T>,
+) {
     if let Some(v) = pick(node) {
         out.push(v);
     }

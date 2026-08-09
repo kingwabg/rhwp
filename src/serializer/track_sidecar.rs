@@ -39,19 +39,31 @@ pub fn build_track_sidecar(doc: &Document) -> Option<String> {
             format!(
                 "{{\"id\":{},\"kind\":\"{}\",\"author\":\"{}\",\"date\":\"{}\"}}",
                 r.id,
-                match r.kind { TrackKind::Insert => "insert", TrackKind::Delete => "delete" },
+                match r.kind {
+                    TrackKind::Insert => "insert",
+                    TrackKind::Delete => "delete",
+                },
                 esc(&r.author),
                 esc(&r.date),
             )
         })
         .collect();
     let mut marks: Vec<String> = Vec::new();
-    let push_mark = |marks: &mut Vec<String>, para: &crate::model::paragraph::Paragraph,
-                     tm: &TrackMark, sec_idx: usize, para_idx: usize,
+    let push_mark = |marks: &mut Vec<String>,
+                     para: &crate::model::paragraph::Paragraph,
+                     tm: &TrackMark,
+                     sec_idx: usize,
+                     para_idx: usize,
                      cell: Option<(usize, usize, usize)>| {
-        let start = para.char_offsets.iter().position(|&o| o >= tm.start_pos)
+        let start = para
+            .char_offsets
+            .iter()
+            .position(|&o| o >= tm.start_pos)
             .unwrap_or(para.char_offsets.len());
-        let end = para.char_offsets.iter().position(|&o| o >= tm.end_pos)
+        let end = para
+            .char_offsets
+            .iter()
+            .position(|&o| o >= tm.end_pos)
             .unwrap_or(para.char_offsets.len());
         let cell_json = cell
             .map(|(ci, cei, cpi)| format!(",\"ci\":{},\"cei\":{},\"cpi\":{}", ci, cei, cpi))
@@ -64,12 +76,20 @@ pub fn build_track_sidecar(doc: &Document) -> Option<String> {
     for (sec_idx, sec) in doc.sections.iter().enumerate() {
         for (para_idx, host) in sec.paragraphs.iter().enumerate() {
             for (ctrl_idx, ctrl) in host.controls.iter().enumerate() {
-                let crate::model::control::Control::Table(t) = ctrl else { continue };
+                let crate::model::control::Control::Table(t) = ctrl else {
+                    continue;
+                };
                 for (cell_idx, cell) in t.cells.iter().enumerate() {
                     for (cpi, para) in cell.paragraphs.iter().enumerate() {
                         for tm in &para.track_marks {
-                            push_mark(&mut marks, para, tm, sec_idx, para_idx,
-                                Some((ctrl_idx, cell_idx, cpi)));
+                            push_mark(
+                                &mut marks,
+                                para,
+                                tm,
+                                sec_idx,
+                                para_idx,
+                                Some((ctrl_idx, cell_idx, cpi)),
+                            );
                         }
                     }
                 }
@@ -99,10 +119,21 @@ pub fn restore_track_sidecar(doc: &mut Document, json: &str) {
                 str_field(&obj, "kind"),
                 str_field(&obj, "author"),
                 str_field(&obj, "date"),
-            ) else { continue };
-            let kind = if kind == "delete" { TrackKind::Delete } else { TrackKind::Insert };
+            ) else {
+                continue;
+            };
+            let kind = if kind == "delete" {
+                TrackKind::Delete
+            } else {
+                TrackKind::Insert
+            };
             max_id = max_id.max(id);
-            doc.track_changes.push(TrackChangeRec { id, kind, author, date });
+            doc.track_changes.push(TrackChangeRec {
+                id,
+                kind,
+                author,
+                date,
+            });
         }
     }
     if let Some(arr) = extract_array(json, "marks") {
@@ -113,21 +144,23 @@ pub fn restore_track_sidecar(doc: &mut Document, json: &str) {
                 num_field(&obj, "start"),
                 num_field(&obj, "end"),
                 num_field(&obj, "tc"),
-            ) else { continue };
+            ) else {
+                continue;
+            };
             let (sec, para) = (sec as usize, para as usize);
             // 셀 마크: ci/cei/cpi 가 있으면 표 셀 문단으로 복원
-            if let (Some(ci), Some(cei), Some(cpi)) =
-                (num_field(&obj, "ci"), num_field(&obj, "cei"), num_field(&obj, "cpi"))
-            {
+            if let (Some(ci), Some(cei), Some(cpi)) = (
+                num_field(&obj, "ci"),
+                num_field(&obj, "cei"),
+                num_field(&obj, "cpi"),
+            ) {
                 let target = doc
                     .sections
                     .get_mut(sec)
                     .and_then(|s| s.paragraphs.get_mut(para))
                     .and_then(|host| host.controls.get_mut(ci as usize))
                     .and_then(|ctrl| match ctrl {
-                        crate::model::control::Control::Table(t) => {
-                            t.cells.get_mut(cei as usize)
-                        }
+                        crate::model::control::Control::Table(t) => t.cells.get_mut(cei as usize),
                         _ => None,
                     })
                     .and_then(|cell| cell.paragraphs.get_mut(cpi as usize));
@@ -143,11 +176,19 @@ pub fn restore_track_sidecar(doc: &mut Document, json: &str) {
                             })
                         }
                     };
-                    p.track_marks.push(TrackMark { start_pos: at(start), end_pos: at(end), tc_id: tc });
+                    p.track_marks.push(TrackMark {
+                        start_pos: at(start),
+                        end_pos: at(end),
+                        tc_id: tc,
+                    });
                 }
                 continue;
             }
-            if let Some(p) = doc.sections.get_mut(sec).and_then(|s| s.paragraphs.get_mut(para)) {
+            if let Some(p) = doc
+                .sections
+                .get_mut(sec)
+                .and_then(|s| s.paragraphs.get_mut(para))
+            {
                 // 텍스트 문자 인덱스 → 이 문서의 utf16 위치
                 let at = |idx: u32| -> u32 {
                     let idx = idx as usize;
@@ -160,7 +201,11 @@ pub fn restore_track_sidecar(doc: &mut Document, json: &str) {
                         })
                     }
                 };
-                p.track_marks.push(TrackMark { start_pos: at(start), end_pos: at(end), tc_id: tc });
+                p.track_marks.push(TrackMark {
+                    start_pos: at(start),
+                    end_pos: at(end),
+                    tc_id: tc,
+                });
             }
         }
     }
@@ -178,12 +223,19 @@ fn extract_array(json: &str, key: &str) -> Option<String> {
     while j < bytes.len() {
         let b = bytes[j];
         if in_str {
-            if b == b'"' && prev != b'\\' { in_str = false; }
+            if b == b'"' && prev != b'\\' {
+                in_str = false;
+            }
         } else {
             match b {
                 b'"' => in_str = true,
                 b'[' => depth += 1,
-                b']' => { depth -= 1; if depth == 0 { return Some(json[i..j].to_string()); } }
+                b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(json[i..j].to_string());
+                    }
+                }
                 _ => {}
             }
         }
@@ -202,12 +254,26 @@ fn split_objects(arr: &str) -> Vec<String> {
     let mut prev = 0u8;
     for (i, &b) in bytes.iter().enumerate() {
         if in_str {
-            if b == b'"' && prev != b'\\' { in_str = false; }
+            if b == b'"' && prev != b'\\' {
+                in_str = false;
+            }
         } else {
             match b {
                 b'"' => in_str = true,
-                b'{' => { if depth == 0 { start = Some(i); } depth += 1; }
-                b'}' => { depth -= 1; if depth == 0 { if let Some(s) = start { out.push(arr[s..=i].to_string()); } } }
+                b'{' => {
+                    if depth == 0 {
+                        start = Some(i);
+                    }
+                    depth += 1;
+                }
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        if let Some(s) = start {
+                            out.push(arr[s..=i].to_string());
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -220,7 +286,9 @@ fn num_field(obj: &str, key: &str) -> Option<u32> {
     let pat = format!("\"{}\":", key);
     let i = obj.find(&pat)? + pat.len();
     let rest = &obj[i..];
-    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
     rest[..end].parse().ok()
 }
 
@@ -233,7 +301,14 @@ fn str_field(obj: &str, key: &str) -> Option<String> {
     while let Some(c) = chars.next() {
         match c {
             '"' => return Some(out),
-            '\\' => { if let Some(n) = chars.next() { match n { 'n' => out.push('\n'), _ => out.push(n) } } }
+            '\\' => {
+                if let Some(n) = chars.next() {
+                    match n {
+                        'n' => out.push('\n'),
+                        _ => out.push(n),
+                    }
+                }
+            }
             c => out.push(c),
         }
     }

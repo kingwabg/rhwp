@@ -43,7 +43,21 @@ fn restrict_in_page_paper_anchor_clamped() {
         .unwrap();
     // insert_picture_native 본문 기본 = Paper 앵커, floating.
     let r = core
-        .insert_picture_native(0, pi, 0, &[], TINY_PNG, 4000, 3000, 4, 3, "png", "", None, None)
+        .insert_picture_native(
+            0,
+            pi,
+            0,
+            &[],
+            TINY_PNG,
+            4000,
+            3000,
+            4,
+            3,
+            "png",
+            "",
+            None,
+            None,
+        )
         .unwrap();
     let ci = serde_json::from_str::<serde_json::Value>(&r).unwrap()["controlIdx"]
         .as_u64()
@@ -63,7 +77,10 @@ fn restrict_in_page_paper_anchor_clamped() {
         }
     }
     let (y, h, page_h) = found.expect("이미지가 어느 페이지에도 없음(완전 소실)");
-    println!("PAPER-CLAMP y={y:.1} h={h:.1} bottom={:.1} page_h={page_h:.1}", y + h);
+    println!(
+        "PAPER-CLAMP y={y:.1} h={h:.1} bottom={:.1} page_h={page_h:.1}",
+        y + h
+    );
     assert!(
         y + h <= page_h + 0.5,
         "restrictInPage=on Paper 앵커 그림이 쪽 밖: bottom={:.1} page_h={page_h:.1}",
@@ -78,7 +95,9 @@ fn header_paragraphs_monotonic_y() {
     core.insert_text_in_header_footer_native(0, true, 0, 0, 0, "머리말1")
         .unwrap();
     for i in 0..4 {
-        let info = core.get_header_footer_para_info_native(0, true, 0, i).unwrap();
+        let info = core
+            .get_header_footer_para_info_native(0, true, 0, i)
+            .unwrap();
         let cc = serde_json::from_str::<serde_json::Value>(&info).unwrap()["charCount"]
             .as_u64()
             .unwrap() as usize;

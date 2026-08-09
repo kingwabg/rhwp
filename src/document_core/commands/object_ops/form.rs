@@ -8,10 +8,9 @@
 //! 종류별 크기·캡션·배경색·BorderType 이 전부 그 문서의 새 개체 값이다.
 
 use crate::document_core::DocumentCore;
-use crate::model::event::DocumentEvent;
 use crate::error::HwpError;
 use crate::model::control::{Control, FormObject, FormType};
-
+use crate::model::event::DocumentEvent;
 
 /// 컨트롤 8-블록이 스트림 위치 `at` 에 끼어들 때(delta=+8) / 빠질 때(delta=-8),
 /// 스트림 위치를 참조하는 **모든 장부**를 함께 민다.
@@ -148,12 +147,15 @@ impl DocumentCore {
                 def_h = target_h;
             }
         }
-        let name = json_str(props_json, "name")
-            .unwrap_or_else(|| format!("{:?}", form_type));
+        let name = json_str(props_json, "name").unwrap_or_else(|| format!("{:?}", form_type));
         let caption = json_str(props_json, "caption").unwrap_or_else(|| def_caption.to_string());
         let text = json_str(props_json, "text").unwrap_or_default();
-        let width = json_i32(props_json, "width").map(|v| v as u32).unwrap_or(def_w);
-        let height = json_i32(props_json, "height").map(|v| v as u32).unwrap_or(def_h);
+        let width = json_i32(props_json, "width")
+            .map(|v| v as u32)
+            .unwrap_or(def_w);
+        let height = json_i32(props_json, "height")
+            .map(|v| v as u32)
+            .unwrap_or(def_h);
 
         let mut form = FormObject {
             form_type,
@@ -328,7 +330,10 @@ impl DocumentCore {
         if let Some(items) = &new_items {
             let mut i = 0;
             while form.properties.remove(&format!("listItem{i}")).is_some()
-                || form.properties.remove(&format!("listItemDisplay{i}")).is_some()
+                || form
+                    .properties
+                    .remove(&format!("listItemDisplay{i}"))
+                    .is_some()
             {
                 i += 1;
             }
@@ -392,7 +397,9 @@ impl DocumentCore {
         } else if let Some(off) = json_i32(props_json, "offset") {
             off.max(0) as usize
         } else {
-            return Err(HwpError::InvalidField("delta 또는 offset 이 필요합니다".into()));
+            return Err(HwpError::InvalidField(
+                "delta 또는 offset 이 필요합니다".into(),
+            ));
         };
 
         if to_para == para_idx && target_offset == cur_pos {
@@ -401,7 +408,10 @@ impl DocumentCore {
             ));
         }
         if to_para >= section.paragraphs.len() {
-            return Err(HwpError::RenderError(format!("대상 문단 {} 범위 초과", to_para)));
+            return Err(HwpError::RenderError(format!(
+                "대상 문단 {} 범위 초과",
+                to_para
+            )));
         }
 
         // ── 빼기 (delete_form_object_native 와 같은 장부) ──
@@ -430,7 +440,9 @@ impl DocumentCore {
             let positions = find_control_text_positions(dest);
             let mut idx = dest.controls.len();
             for (i, &pos) in positions.iter().enumerate() {
-                if pos > target_offset || (pos == target_offset && i >= control_idx && to_para == para_idx) {
+                if pos > target_offset
+                    || (pos == target_offset && i >= control_idx && to_para == para_idx)
+                {
                     idx = i;
                     break;
                 }
@@ -473,9 +485,15 @@ impl DocumentCore {
         para_idx: usize,
         logical: usize,
     ) -> i32 {
-        use crate::document_core::helpers::{find_control_text_positions, is_logical_inline_control};
-        let Some(section) = self.document.sections.get(section_idx) else { return -1 };
-        let Some(para) = section.paragraphs.get(para_idx) else { return -1 };
+        use crate::document_core::helpers::{
+            find_control_text_positions, is_logical_inline_control,
+        };
+        let Some(section) = self.document.sections.get(section_idx) else {
+            return -1;
+        };
+        let Some(para) = section.paragraphs.get(para_idx) else {
+            return -1;
+        };
         let positions = find_control_text_positions(para);
         // 스트림 순서대로 걸으며 각 논리 인라인 컨트롤의 논리 칸을 센다:
         // 컨트롤의 논리 칸 = 텍스트 위치 + (그보다 앞에 선 논리 인라인 컨트롤 수)
@@ -487,7 +505,11 @@ impl DocumentCore {
             let pos = positions.get(ci).copied().unwrap_or(0);
             let slot = pos + inline_seen;
             if slot == logical {
-                return if matches!(ctrl, Control::Form(_)) { ci as i32 } else { -1 };
+                return if matches!(ctrl, Control::Form(_)) {
+                    ci as i32
+                } else {
+                    -1
+                };
             }
             inline_seen += 1;
         }
@@ -633,9 +655,7 @@ fn sync_combobox_script(
     };
 
     // 선언이 없으면 추가 (한컴 정본 문구)
-    let decl_line = format!(
-        "var {name} = Document.XHwpFormComboBoxs.ItemFromName(\"{name}\");"
-    );
+    let decl_line = format!("var {name} = Document.XHwpFormComboBoxs.ItemFromName(\"{name}\");");
     if !decl.contains(&decl_line) {
         if !decl.ends_with('\n') {
             decl.push_str("\r\n");
@@ -696,8 +716,9 @@ fn sync_combobox_script(
         let mut enc =
             flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
         enc.write_all(&raw).ok();
-        document
-            .extra_streams
-            .push(("/Scripts/JScriptVersion".to_string(), enc.finish().unwrap_or_default()));
+        document.extra_streams.push((
+            "/Scripts/JScriptVersion".to_string(),
+            enc.finish().unwrap_or_default(),
+        ));
     }
 }

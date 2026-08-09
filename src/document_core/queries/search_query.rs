@@ -363,7 +363,11 @@ impl DocumentCore {
                 cell_para.insert_text_at(hit.char_offset, new_text);
                 if let Some(id) = orig_shape {
                     let new_len = new_text.chars().count();
-                    cell_para.apply_char_shape_range(hit.char_offset, hit.char_offset + new_len, id);
+                    cell_para.apply_char_shape_range(
+                        hit.char_offset,
+                        hit.char_offset + new_len,
+                        id,
+                    );
                 }
             } else {
                 // 본문 문단 치환 — delete_text_native + insert_text_native는 recompose를 호출하므로

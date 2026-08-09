@@ -89,10 +89,7 @@ fn anchor_leading_square_host_text_flows_beside_table() {
     );
 
     // ② host 텍스트 line_segs 의 text_start 단조 비감소 (앵커 8코드유닛 갭 재구성 리스크 핀).
-    let starts: Vec<u32> = doc
-        .document()
-        .sections[0]
-        .paragraphs[pi as usize]
+    let starts: Vec<u32> = doc.document().sections[0].paragraphs[pi as usize]
         .line_segs
         .iter()
         .map(|s| s.text_start)

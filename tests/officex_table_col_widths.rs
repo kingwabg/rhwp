@@ -15,8 +15,7 @@ fn table_width(doc: &HwpDocument, pi: u32, ci: u32) -> u64 {
 fn make(json: &str) -> (HwpDocument, u32, u32) {
     let mut doc = HwpDocument::create_empty();
     doc.create_blank_document().unwrap();
-    let c: serde_json::Value =
-        serde_json::from_str(&doc.create_table_ex(json).unwrap()).unwrap();
+    let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(json).unwrap()).unwrap();
     let (pi, ci) = (
         c["paraIdx"].as_u64().unwrap() as u32,
         c["controlIdx"].as_u64().unwrap() as u32,
@@ -30,7 +29,11 @@ fn floating_table_honors_col_widths() {
     let (doc, pi, ci) = make(
         r#"{"sectionIdx":0,"paraIdx":0,"charOffset":0,"rowCount":2,"colCount":2,"treatAsChar":false,"colWidths":[3000,5000]}"#,
     );
-    assert_eq!(table_width(&doc, pi, ci), 8000, "colWidths 합이 표 폭이어야 한다");
+    assert_eq!(
+        table_width(&doc, pi, ci),
+        8000,
+        "colWidths 합이 표 폭이어야 한다"
+    );
     // 열마다 다른 폭이 실제 셀에 반영됐는지 — 첫 두 셀 폭 비교
     let bb: serde_json::Value =
         serde_json::from_str(&doc.get_table_cell_bboxes(0, pi, ci, None).unwrap()).unwrap();

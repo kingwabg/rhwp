@@ -20,8 +20,13 @@ fn probe(page_break: u8, rows: u32) -> (u32, usize, f64) {
     let readback = doc.get_table_properties(0, pi, ci).expect("getprops");
     let rv: serde_json::Value = serde_json::from_str(&readback).unwrap();
     if rows == 40 {
-        println!("  setter 왕복: 요청={page_break} 회신={} (전체키: {})", rv["pageBreak"],
-            rv.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default());
+        println!(
+            "  setter 왕복: 요청={page_break} 회신={} (전체키: {})",
+            rv["pageBreak"],
+            rv.as_object()
+                .map(|o| o.keys().cloned().collect::<Vec<_>>().join(","))
+                .unwrap_or_default()
+        );
     }
     for _ in 0..rows {
         doc.insert_table_row(0, pi, ci, 1, true).expect("row");
@@ -30,10 +35,7 @@ fn probe(page_break: u8, rows: u32) -> (u32, usize, f64) {
     let boxes: serde_json::Value =
         serde_json::from_str(&doc.get_table_cell_bboxes(0, pi, ci, None).expect("bboxes")).unwrap();
     let arr = boxes.as_array().cloned().unwrap_or_default();
-    let mut pages: Vec<i64> = arr
-        .iter()
-        .filter_map(|b| b["pageIndex"].as_i64())
-        .collect();
+    let mut pages: Vec<i64> = arr.iter().filter_map(|b| b["pageIndex"].as_i64()).collect();
     pages.sort_unstable();
     pages.dedup();
     let max_bottom = arr

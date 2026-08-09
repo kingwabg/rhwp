@@ -6,7 +6,9 @@ use rhwp::renderer::height_measurer::is_tac_table_inline_in_para;
 use rhwp::wasm_api::HwpDocument;
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: diag_tac_reopen2 <tall.hwp>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: diag_tac_reopen2 <tall.hwp>");
     let bytes = std::fs::read(&path).expect("read");
     let doc = HwpDocument::from_bytes(&bytes).expect("open");
     println!("pages={}", doc.page_count());

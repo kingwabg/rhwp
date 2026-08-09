@@ -2014,7 +2014,10 @@ impl DocumentCore {
         ] {
             if let Some(n) = obj.get(key).and_then(|v| v.as_i64()) {
                 if n < 0 {
-                    return Err(HwpError::RenderError(format!("음수 값 거부: {}={}", key, n)));
+                    return Err(HwpError::RenderError(format!(
+                        "음수 값 거부: {}={}",
+                        key, n
+                    )));
                 }
             }
         }
@@ -2102,7 +2105,8 @@ impl DocumentCore {
             };
             let col_width = {
                 let s = &self.document.sections[section_idx];
-                let layout = PageLayoutInfo::from_page_def(&s.section_def.page_def, &column_def, dpi);
+                let layout =
+                    PageLayoutInfo::from_page_def(&s.section_def.page_def, &column_def, dpi);
                 layout
                     .column_areas
                     .first()
@@ -2118,9 +2122,7 @@ impl DocumentCore {
                 let available = (col_width - ml - mr).max(1.0);
                 let para = &mut self.document.sections[section_idx].paragraphs[pi];
                 para.line_segs.clear();
-                crate::renderer::composer::reflow_line_segs(
-                    para, available, &styles, dpi,
-                );
+                crate::renderer::composer::reflow_line_segs(para, available, &styles, dpi);
             }
         }
 
@@ -5345,7 +5347,8 @@ mod tests {
         let paragraphs = vec![p0, p1];
 
         // "page 2" 단: para 1 만 포함.
-        let cc = ColumnContent { topbottom_bands: Vec::new(),
+        let cc = ColumnContent {
+            topbottom_bands: Vec::new(),
             column_index: 0,
             start_height: 0.0,
             endnote_flow: false,

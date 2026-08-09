@@ -9,7 +9,9 @@ fn snap(doc: &mut HwpDocument, label: &str, para_idx: u32, ctrl_idx: u32) {
         .get_table_bbox(0, para_idx, ctrl_idx)
         .expect("getTableBBox");
     let front = doc.get_selection_rects(0, 0, 5, 0, 15).expect("rects");
-    let mid = doc.get_selection_rects(0, 0, 170, 0, 180).expect("rects_mid");
+    let mid = doc
+        .get_selection_rects(0, 0, 170, 0, 180)
+        .expect("rects_mid");
     let back = doc.get_selection_rects(0, 0, 380, 0, 390).expect("rects2");
     println!("{label} bbox={bbox} front={front} mid={mid} back={back}");
 }
@@ -43,5 +45,4 @@ fn main() {
     doc.move_table_offset(0, pi, ci, 0, (15.0 * mm).round() as i32)
         .expect("move+15");
     snap(&mut doc, "위로 -10mm  ", pi, ci); // 밴드가 문단 중간 줄에 걸림 — 줄 단위 회피 본편
-
 }

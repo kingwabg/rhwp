@@ -158,13 +158,13 @@ pub(crate) fn expand_numbering_format(
 /// HWP 표 43 번호 형식 코드 → NumberFormat 변환
 pub(crate) fn numbering_format_to_number_format(code: u8) -> NumFmt {
     match code {
-        0 => NumFmt::Digit,         // 1, 2, 3
-        1 => NumFmt::CircledDigit,  // ①, ②, ③
-        2 => NumFmt::RomanUpper,    // I, II, III
-        3 => NumFmt::RomanLower,    // i, ii, iii
-        4 => NumFmt::LatinUpper,    // A, B, C
-        5 => NumFmt::LatinLower,    // a, b, c
-        8 => NumFmt::HangulGaNaDa,  // 가, 나, 다
+        0 => NumFmt::Digit,        // 1, 2, 3
+        1 => NumFmt::CircledDigit, // ①, ②, ③
+        2 => NumFmt::RomanUpper,   // I, II, III
+        3 => NumFmt::RomanLower,   // i, ii, iii
+        4 => NumFmt::LatinUpper,   // A, B, C
+        5 => NumFmt::LatinLower,   // a, b, c
+        8 => NumFmt::HangulGaNaDa, // 가, 나, 다
         // 10 = 한글 자모(ㄱ,ㄴ,ㄷ) — studio 문단 번호 프리셋(NUM_FMT.HANGUL_JAMO)이 쓰는 코드.
         // 매핑이 없어 Digit 폴백으로 숫자가 찍혔다(2026-07-30 한컴 프리셋 4·6번 패리티 실패).
         // ⚠ 코드 체계 주의: 이 함수(문단 번호)와 NumberFormat::from_hwp_format(쪽 번호)의

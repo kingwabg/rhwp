@@ -42,7 +42,9 @@ fn probe(indent_px: f64) -> (f64, f64, usize, i64) {
     };
     println!(
         "    svg첫text x={first_text_x:7.1}  캐럿@0={:7.1}  캐럿@1={:7.1}  캐럿@5={:7.1}",
-        caret(0), caret(1), caret(5)
+        caret(0),
+        caret(1),
+        caret(5)
     );
     (
         x_of(0, 3),

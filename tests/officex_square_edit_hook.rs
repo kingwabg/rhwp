@@ -26,7 +26,10 @@ fn partial_square_table(doc: &mut HwpDocument, para_idx: usize) -> (u32, u32) {
     let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(&format!(
         r#"{{"sectionIdx":0,"paraIdx":{para_idx},"charOffset":0,"rowCount":2,"colCount":2,"treatAsChar":false,"colWidths":[3000,3000]}}"#
     )).unwrap()).unwrap();
-    let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as u32, c["controlIdx"].as_u64().unwrap() as u32);
+    let (pi, ci) = (
+        c["paraIdx"].as_u64().unwrap() as u32,
+        c["controlIdx"].as_u64().unwrap() as u32,
+    );
     doc.delete_table_column(0, pi, ci, 1).unwrap();
     doc.set_table_properties(0, pi, ci,
         r#"{"treatAsChar":false,"textWrap":"Square","vertRelTo":"Para","horzRelTo":"Column","vertOffset":0}"#
@@ -105,14 +108,22 @@ fn enter_beside_square_table_rewraps() {
     doc.split_paragraph_native(0, 2, 33).unwrap();
     let (pi, ci) = partial_square_table(&mut doc, 3);
     doc.move_table_offset(0, pi, ci, 6000, 3000).unwrap();
-    assert_eq!(overlap_count(&doc, pi, ci), 0, "사전조건: 이동 직후 겹침 없음");
+    assert_eq!(
+        overlap_count(&doc, pi, ci),
+        0,
+        "사전조건: 이동 직후 겹침 없음"
+    );
     assert!(!narrowed_paras(&doc).is_empty(), "사전조건: 좁힘 문단 존재");
 
     // Enter: 표 **앞** 문단을 갈라 host 인덱스를 3→4 로 민다 — 훅이 stale 인덱스로
     // 돌면 host 미스매치(밴드 0)로 좁힘 흔적이 전폭 오원복된다.
     doc.split_paragraph_native(0, 1, 10).unwrap();
     let (pi, ci) = (pi + 1, ci);
-    assert_eq!(overlap_count(&doc, pi, ci), 0, "Enter 후 본문 줄이 표를 뚫음");
+    assert_eq!(
+        overlap_count(&doc, pi, ci),
+        0,
+        "Enter 후 본문 줄이 표를 뚫음"
+    );
     assert!(
         !narrowed_paras(&doc).is_empty(),
         "Enter 후 좁힘 cs 기록이 사라짐 — 재줄바꿈 미발화"
@@ -127,12 +138,20 @@ fn backspace_merge_beside_square_table_rewraps() {
     doc.split_paragraph_native(0, 2, 33).unwrap();
     let (pi, ci) = partial_square_table(&mut doc, 3);
     doc.move_table_offset(0, pi, ci, 6000, 3000).unwrap();
-    assert_eq!(overlap_count(&doc, pi, ci), 0, "사전조건: 이동 직후 겹침 없음");
+    assert_eq!(
+        overlap_count(&doc, pi, ci),
+        0,
+        "사전조건: 이동 직후 겹침 없음"
+    );
 
     // 병합: 표 앞 문단 2 를 1 로 — host 인덱스 3→2. 병합 결과 문단이 밴드 기준 재줄바꿈.
     doc.merge_paragraph_native(0, 2).unwrap();
     let (pi, ci) = (pi - 1, ci);
-    assert_eq!(overlap_count(&doc, pi, ci), 0, "병합 후 본문 줄이 표를 뚫음");
+    assert_eq!(
+        overlap_count(&doc, pi, ci),
+        0,
+        "병합 후 본문 줄이 표를 뚫음"
+    );
     assert!(
         !narrowed_paras(&doc).is_empty(),
         "병합 후 좁힘 cs 기록이 사라짐 — 재줄바꿈 미발화"
@@ -147,14 +166,21 @@ fn paste_beside_square_table_rewraps() {
     doc.split_paragraph_native(0, 2, 33).unwrap();
     let (pi, ci) = partial_square_table(&mut doc, 3);
     doc.move_table_offset(0, pi, ci, 6000, 3000).unwrap();
-    assert_eq!(overlap_count(&doc, pi, ci), 0, "사전조건: 이동 직후 겹침 없음");
+    assert_eq!(
+        overlap_count(&doc, pi, ci),
+        0,
+        "사전조건: 이동 직후 겹침 없음"
+    );
 
     // 두 문단에 걸친 선택을 복사 → 표 옆 문단(4)에 붙여넣기(문단 삽입 경로).
     doc.copy_selection(0, 0, 0, 1, 20).unwrap();
-    let r: serde_json::Value =
-        serde_json::from_str(&doc.paste_internal(0, 4, 0).unwrap()).unwrap();
+    let r: serde_json::Value = serde_json::from_str(&doc.paste_internal(0, 4, 0).unwrap()).unwrap();
     assert_eq!(r["ok"].as_bool(), Some(true), "붙여넣기 실패: {r}");
-    assert_eq!(overlap_count(&doc, pi, ci), 0, "붙여넣기 후 본문 줄이 표를 뚫음");
+    assert_eq!(
+        overlap_count(&doc, pi, ci),
+        0,
+        "붙여넣기 후 본문 줄이 표를 뚫음"
+    );
     assert!(
         !narrowed_paras(&doc).is_empty(),
         "붙여넣기 후 좁힘 cs 기록이 사라짐 — 재줄바꿈 미발화"
@@ -188,7 +214,11 @@ fn batch_edits_rewrap_once_at_end_batch() {
         seg_cs(&doc, target).iter().any(|&c| c > 0),
         "end_batch 에서 좁힘이 확정되지 않음 — pending 소비 실패"
     );
-    assert_eq!(overlap_count(&doc, pi, ci), 0, "end_batch 후 본문 줄이 표를 뚫음");
+    assert_eq!(
+        overlap_count(&doc, pi, ci),
+        0,
+        "end_batch 후 본문 줄이 표를 뚫음"
+    );
 }
 
 // ─── 핀 5: 조기 탈출 흔적 판정 단위 핀 (비용 회귀 방지) ──────────────────
@@ -215,21 +245,27 @@ fn full_width_stored_segs_do_not_trip_trace() {
         "저장 전폭 lineseg 가 흔적으로 오판 — 조기 탈출이 죽어 타이핑 비용 회귀"
     );
     para.line_segs[0].segment_width = full_hu - 2000;
-    assert!(paragraph_has_narrow_trace(&para, full_hu), "좁힘 sw 는 흔적");
+    assert!(
+        paragraph_has_narrow_trace(&para, full_hu),
+        "좁힘 sw 는 흔적"
+    );
     para.line_segs[0].segment_width = full_hu;
     para.line_segs[0].column_start = 1200;
-    assert!(paragraph_has_narrow_trace(&para, full_hu), "column_start 는 흔적");
+    assert!(
+        paragraph_has_narrow_trace(&para, full_hu),
+        "column_start 는 흔적"
+    );
 }
 
 // ─── 핀 6: 그림 host 일반화 ──────────────────────────────────────────────
 
 /// 1x1 투명 PNG (67바이트) — 그림 삽입 핀용 최소 바이너리.
 const PNG_1X1: [u8; 67] = [
-    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
-    0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
-    0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x62, 0x00,
-    0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
-    0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+    0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x62, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+    0x42, 0x60, 0x82,
 ];
 
 /// 4줄짜리 한 문단 + 빈 앵커 문단 (officex_square_move_reflow.rs 재사용).
@@ -339,7 +375,11 @@ fn textbox_shape_does_not_pollute_para_tops() {
     // 편집 → 훅 1회.
     doc.insert_text(0, 4, 0, "가").unwrap();
 
-    assert_eq!(overlap_count(&doc, pi, ci), 0, "글상자 추가 후 본문이 표를 뚫음");
+    assert_eq!(
+        overlap_count(&doc, pi, ci),
+        0,
+        "글상자 추가 후 본문이 표를 뚫음"
+    );
     // 표 위쪽(밴드 밖) 문단들은 전폭 유지 — 스퓨리어스 좁힘 없음.
     for p in 0..3u32 {
         assert!(
@@ -362,8 +402,10 @@ fn picture_text_host_self_wrap() {
     // **텍스트가 있는** 문단 0 자신에 float Square 그림 삽입 — 표 host 와 달리
     // 공백뿐 필터를 통과해야 한다(phase A).
     let r: serde_json::Value = serde_json::from_str(
-        &doc.insert_picture(0, 0, 0, "[]", &PNG_1X1, 6000, 6000, 1, 1, "png", "", None, None)
-            .unwrap(),
+        &doc.insert_picture(
+            0, 0, 0, "[]", &PNG_1X1, 6000, 6000, 1, 1, "png", "", None, None,
+        )
+        .unwrap(),
     )
     .unwrap();
     let ci = r["controlIdx"].as_u64().unwrap() as u32;
@@ -414,7 +456,11 @@ fn host_delete_restores_full_width() {
     let (pi, ci) = partial_square_table(&mut doc, host);
     // 표를 위로 끌어 2쪽의 앞 문단들과 겹치게 — 첫 페이지 밖 좁힘 흔적 생성.
     doc.move_table_offset(0, pi, ci, 6000, -9000).unwrap();
-    assert!(doc.page_count() >= 2, "사전조건: 2쪽 문서 (현재 {}쪽)", doc.page_count());
+    assert!(
+        doc.page_count() >= 2,
+        "사전조건: 2쪽 문서 (현재 {}쪽)",
+        doc.page_count()
+    );
     let bb: serde_json::Value =
         serde_json::from_str(&doc.get_table_bbox(0, pi, ci).unwrap()).unwrap();
     assert!(
