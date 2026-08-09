@@ -9,7 +9,9 @@ use crate::model::event::DocumentEvent;
 use crate::model::page::ColumnDef;
 use crate::model::paragraph::Paragraph;
 use crate::model::shape::{ShapeObject, TextWrap, VertRelTo};
-use crate::renderer::composer::{compose_paragraph, reflow_line_segs, ComposedParagraph};
+use crate::renderer::composer::{
+    compose_paragraph, compose_section, reflow_line_segs, ComposedParagraph,
+};
 use crate::renderer::page_layout::PageLayoutInfo;
 use crate::renderer::style_resolver::{resolve_styles, ResolvedStyleSet};
 
@@ -460,6 +462,20 @@ impl DocumentCore {
             )));
         }
 
+        // char_offset 상한 방어: 문단 길이를 넘는 오프셋에 삽입하면 insert_text_at가 끝으로
+        // 클램프하지만 반환 charOffset은 원본값이라 거짓이 된다(다음 편집이 엉뚱한 곳으로 감).
+        // 음수 오프셋은 wasm u32 래핑으로 거대값이 되어 함께 걸린다. 후행 인라인 컨트롤 위치까지
+        // 포함한 논리 길이 초과만 거부한다(getTextRange와 같은 어법).
+        let max_offset = crate::document_core::helpers::logical_paragraph_length(
+            &self.document.sections[section_idx].paragraphs[para_idx],
+        );
+        if char_offset > max_offset {
+            return Err(HwpError::RenderError(format!(
+                "char_offset {} 범위 초과 (문단 길이 {})",
+                char_offset, max_offset
+            )));
+        }
+
         // 편집 시 raw 스트림 무효화 (재직렬화 유도)
         self.document.sections[section_idx].raw_stream = None;
 
@@ -490,6 +506,10 @@ impl DocumentCore {
             if has_clickhere_field_range(para) {
                 rebuild_char_offsets(para);
             }
+        }
+        // [변경 추적] ON 이면 방금 삽입분을 Insert 마크로 기록 (track.rs)
+        if self.track_enabled {
+            self.track_note_insert(section_idx, para_idx, char_offset, text);
         }
 
         // line_segs 재계산 (리플로우) → vpos 재계산 → 재구성 → 재페이지네이션
@@ -613,6 +633,26 @@ impl DocumentCore {
                 para_idx,
                 section.paragraphs.len()
             )));
+        }
+
+        // char_offset 상한 방어: 문단 길이를 넘는 오프셋 삭제는 조용히 끝으로 클램프됐다 —
+        // 범위 밖 오프셋은 정중히 거부한다(offset==len 끝 캐럿은 허용, count 클램프는 그대로).
+        let del_len = self.document.sections[section_idx].paragraphs[para_idx]
+            .text
+            .chars()
+            .count();
+        if char_offset > del_len {
+            return Err(HwpError::RenderError(format!(
+                "char_offset {} 범위 초과 (문단 길이 {})",
+                char_offset, del_len
+            )));
+        }
+
+        // [변경 추적] ON 이면 실삭제 대신 Delete 마크 — 자기 삽입분(Some=처리 끝)만 통과
+        if self.track_enabled {
+            if let Some(done) = self.track_delete(section_idx, para_idx, char_offset, count) {
+                return Ok(done);
+            }
         }
 
         // 편집 시 raw 스트림 무효화 (재직렬화 유도)
@@ -929,6 +969,19 @@ impl DocumentCore {
             self.paginate_if_needed();
         }
 
+        // [변경 추적] ON 이면 방금 삽입분을 Insert 마크로 (track.rs)
+        if self.track_enabled {
+            self.track_note_insert_in_cell(
+                section_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+                cell_para_idx,
+                char_offset,
+                text,
+            );
+        }
+
         let new_offset = char_offset + new_chars_count;
         self.event_log.push(DocumentEvent::CellTextChanged {
             section: section_idx,
@@ -958,6 +1011,22 @@ impl DocumentCore {
         char_offset: usize,
         count: usize,
     ) -> Result<String, HwpError> {
+        // [변경 추적] ON 이면 실삭제 대신 Delete 마크 (track.rs)
+        if self.track_enabled {
+            if let Some(done) = self.track_delete_in_cell(
+                section_idx,
+                parent_para_idx,
+                control_idx,
+                cell_idx,
+                cell_para_idx,
+                char_offset,
+                count,
+            ) {
+                self.mark_cell_control_dirty(section_idx, parent_para_idx, control_idx);
+                self.mark_section_dirty(section_idx);
+                return Ok(done);
+            }
+        }
         // 셀 문단 접근 검증 및 텍스트 삭제
         let cell_para = self.get_cell_paragraph_mut(
             section_idx,
@@ -1310,7 +1379,101 @@ impl DocumentCore {
 
     // ─── Phase 3 네이티브 구현: 커서 이동 API ─────────────────
 
-    pub(crate) fn delete_range_native(
+    /// 논리 좌표(텍스트 문자 + 인라인 컨트롤 각 1칸)로 범위를 삭제한다.
+    ///
+    /// [범위 삭제 2026-07-30] delete_range_native 는 텍스트만 지워서 표를 걸친 선택을
+    /// 지워도 표가 남았다. 한컴은 선택 삭제 시 **확인 없이 표까지 함께** 지운다(부록2 O8).
+    /// 여기서 논리 범위에 걸친 인라인 컨트롤을 먼저 제거한 뒤 텍스트 좌표로 위임한다.
+    /// 셀 컨텍스트는 셀용 논리 규격이 없어 종전 경로 그대로(변환 없이 위임).
+    pub fn delete_range_logical_native(
+        &mut self,
+        section_idx: usize,
+        start_para: usize,
+        start_logical: usize,
+        end_para: usize,
+        end_logical: usize,
+        cell_ctx: Option<(usize, usize, usize)>,
+    ) -> Result<String, HwpError> {
+        if cell_ctx.is_some() {
+            return self.delete_range_native(
+                section_idx,
+                start_para,
+                start_logical,
+                end_para,
+                end_logical,
+                cell_ctx,
+            );
+        }
+        if section_idx >= self.document.sections.len() {
+            return Err(HwpError::RenderError(format!(
+                "구역 인덱스 {} 범위 초과",
+                section_idx
+            )));
+        }
+        let para_count = self.document.sections[section_idx].paragraphs.len();
+        if start_para >= para_count || end_para >= para_count || start_para > end_para {
+            return Err(HwpError::RenderError(
+                "문단 범위가 올바르지 않습니다".to_string(),
+            ));
+        }
+
+        // 논리→텍스트 변환은 컨트롤 제거 **전에** — 제거해도 텍스트 좌표는 불변이지만
+        // 논리 좌표는 밀리므로 순서가 중요하다.
+        let to_text = |para: &Paragraph, off: usize| -> usize {
+            crate::document_core::helpers::logical_to_text_offset(para, off).0
+        };
+        let start_text = to_text(
+            &self.document.sections[section_idx].paragraphs[start_para],
+            start_logical,
+        );
+        let end_text = to_text(
+            &self.document.sections[section_idx].paragraphs[end_para],
+            end_logical,
+        );
+
+        // 범위에 걸친 인라인 컨트롤을 뒤에서부터 제거(인덱스 밀림 방지).
+        // 중간 문단은 통째로 사라지므로 손댈 필요가 없다.
+        let mut targets: Vec<(usize, usize)> = Vec::new();
+        {
+            let sec = &self.document.sections[section_idx];
+            let mut collect = |pi: usize, lo: Option<usize>, hi: Option<usize>| {
+                let para = &sec.paragraphs[pi];
+                let positions = crate::document_core::helpers::find_logical_control_positions(para);
+                for (ci, ctrl) in para.controls.iter().enumerate() {
+                    if !crate::document_core::helpers::is_logical_inline_control(ctrl) {
+                        continue;
+                    }
+                    let Some(&pos) = positions.get(ci) else {
+                        continue;
+                    };
+                    if lo.map_or(true, |l| pos >= l) && hi.map_or(true, |h| pos < h) {
+                        targets.push((pi, ci));
+                    }
+                }
+            };
+            if start_para == end_para {
+                collect(start_para, Some(start_logical), Some(end_logical));
+            } else {
+                collect(start_para, Some(start_logical), None);
+                collect(end_para, None, Some(end_logical));
+            }
+        }
+        targets.sort_by(|a, b| b.cmp(a));
+        for (pi, ci) in targets {
+            self.document.sections[section_idx].paragraphs[pi].remove_inline_control_at(ci);
+        }
+
+        self.delete_range_native(
+            section_idx,
+            start_para,
+            start_text,
+            end_para,
+            end_text,
+            None,
+        )
+    }
+
+    pub fn delete_range_native(
         &mut self,
         section_idx: usize,
         start_para: usize,
@@ -1319,6 +1482,24 @@ impl DocumentCore {
         end_offset: usize,
         cell_ctx: Option<(usize, usize, usize)>,
     ) -> Result<String, HwpError> {
+        // [변경 추적] ON 이면 실삭제 대신 걸친 문단마다 Delete 마크 (track.rs) —
+        // 문단 구조는 바꾸지 않는다(한컴처럼 삭제 표시 상태에서도 그대로 보인다).
+        if self.track_enabled {
+            if let Some(done) = self.track_delete_range(
+                section_idx,
+                start_para,
+                start_offset,
+                end_para,
+                end_offset,
+                cell_ctx,
+            ) {
+                if let Some((ppi, ci, _)) = cell_ctx {
+                    self.mark_cell_control_dirty(section_idx, ppi, ci);
+                }
+                self.mark_section_dirty(section_idx);
+                return Ok(done);
+            }
+        }
         // Section raw 스트림 무효화 (재직렬화 유도)
         self.document.sections[section_idx].raw_stream = None;
         // DocInfo raw_stream은 유지 (전체 재직렬화 시 FIX-4 문제 발생)
@@ -1937,6 +2118,96 @@ impl DocumentCore {
         Ok(super::super::helpers::json_ok_with(&format!(
             "\"paraIdx\":{},\"charOffset\":0",
             new_para_idx
+        )))
+    }
+
+    /// 구역 나누기 (Alt+Shift+Enter) — 커서 위치부터 끝까지를 새 구역으로 분리한다.
+    ///
+    /// 한컴 정본: 새 구역은 이전 구역 설정(용지·여백·단)을 복제해 시작하고, 쪽 번호는
+    /// "이어서"(page_num=0). 새 구역 문단0에는 SectionDef 컨트롤을 명시적으로 심는다 —
+    /// 직렬화기는 문단0 컨트롤이 있으면 그것을 읽으므로(Issue #1915 폴백은 없을 때만)
+    /// Section.section_def 만 갈라 두면 저장에서 사라진다(바탕쪽과 같은 함정).
+    pub fn insert_section_break_native(
+        &mut self,
+        section_idx: usize,
+        para_idx: usize,
+        char_offset: usize,
+    ) -> Result<String, HwpError> {
+        use crate::model::document::Section;
+
+        if section_idx >= self.document.sections.len() {
+            return Err(HwpError::RenderError(format!(
+                "구역 인덱스 {} 범위 초과",
+                section_idx
+            )));
+        }
+        if para_idx >= self.document.sections[section_idx].paragraphs.len() {
+            return Err(HwpError::RenderError(format!(
+                "문단 인덱스 {} 범위 초과",
+                para_idx
+            )));
+        }
+
+        self.document.sections[section_idx].raw_stream = None;
+
+        // 커서 문단을 쪼개고, 뒷문단부터 구역 끝까지를 새 구역으로 옮긴다
+        let tail_para =
+            self.document.sections[section_idx].paragraphs[para_idx].split_at(char_offset);
+        let mut moved: Vec<Paragraph> = self.document.sections[section_idx]
+            .paragraphs
+            .split_off(para_idx + 1);
+        moved.insert(0, tail_para);
+
+        let mut new_def = self.document.sections[section_idx].section_def.clone();
+        new_def.page_num = 0; // 쪽 번호 이어서
+
+        // 문단0 정리: 원 구역에서 딸려 온 구역 컨트롤이 있으면 중복 방지로 제거 후
+        // 새 SectionDef 를 맨 앞에 심는다 (ColumnDef 는 딸려 왔으면 그대로 살린다 —
+        // 단 설정도 복제가 정본이다).
+        moved[0]
+            .controls
+            .retain(|c| !matches!(c, Control::SectionDef(_)));
+        moved[0]
+            .controls
+            .insert(0, Control::SectionDef(Box::new(new_def.clone())));
+
+        let new_section = Section {
+            section_def: new_def,
+            paragraphs: moved,
+            raw_stream: None,
+        };
+        self.document.sections.insert(section_idx + 1, new_section);
+
+        // 조판 상태 벡터 동기화 — 나머지 per-section 벡터는 paginate()가 길이를 맞춘다
+        self.composed[section_idx] = compose_section(&self.document.sections[section_idx]);
+        self.composed.insert(
+            section_idx + 1,
+            compose_section(&self.document.sections[section_idx + 1]),
+        );
+        if section_idx < self.dirty_sections.len() {
+            self.dirty_sections[section_idx] = true;
+        }
+        if section_idx < self.dirty_sections.len() {
+            self.dirty_sections.insert(section_idx + 1, true);
+        }
+        if section_idx < self.dirty_paragraphs.len() {
+            self.dirty_paragraphs[section_idx] = None;
+        }
+        if section_idx < self.dirty_paragraphs.len() {
+            self.dirty_paragraphs.insert(section_idx + 1, None);
+        }
+
+        self.invalidate_page_tree_cache();
+        self.paginate_if_needed();
+
+        self.event_log.push(DocumentEvent::ParagraphSplit {
+            section: section_idx,
+            para: para_idx,
+            offset: char_offset,
+        });
+        Ok(super::super::helpers::json_ok_with(&format!(
+            "\"sectionIdx\":{},\"paraIdx\":0,\"charOffset\":0",
+            section_idx + 1
         )))
     }
 
@@ -2601,7 +2872,31 @@ impl DocumentCore {
                 section.paragraphs.len()
             ))
         })?;
-        Ok(para.text.chars().count())
+        // [글자처럼 취급 2026-08-05] 인라인(글자처럼) 컨트롤도 **한 글자**로 센다.
+        //
+        // 신고: 글자처럼 취급한 표 오른쪽에 커서를 두고 치면 글자가 겹쳐 보이고 표가
+        // 밀린다. 원인은 여기 — 길이를 text 글자 수로만 재서 표 뒤 오프셋이 존재하지
+        // 않았다. End·클릭이 표 **앞** 오프셋으로 접히고, 거기 삽입되니 표가 오른쪽으로
+        // 밀렸다(캐럿은 클릭한 표 오른쪽에 있는데 글자는 표 앞에 그려져 '겹침'으로 보임).
+        // 삽입 경로는 이미 `char_offset > text_len` 을 후행 컨트롤 뒤로 해석하므로
+        // (paragraph.rs insert_text), 길이만 논리 길이로 맞추면 좌표계가 이어진다.
+        let text_len = para.text.chars().count();
+        let trailing_inline = para
+            .control_text_positions()
+            .iter()
+            .zip(para.controls.iter())
+            .filter(|(&pos, ctrl)| {
+                pos >= text_len
+                    && match ctrl {
+                        crate::model::control::Control::Table(t) => t.common.treat_as_char,
+                        crate::model::control::Control::Picture(p) => p.common.treat_as_char,
+                        crate::model::control::Control::Shape(sh) => sh.common().treat_as_char,
+                        crate::model::control::Control::Equation(e) => e.common.treat_as_char,
+                        _ => false,
+                    }
+            })
+            .count();
+        Ok(text_len + trailing_inline)
     }
 
     /// 문단에 텍스트박스가 있는 Shape 컨트롤의 인덱스를 반환 (네이티브)

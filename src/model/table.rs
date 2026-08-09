@@ -777,13 +777,47 @@ impl Table {
                 }
             }
         }
-        // 폭이 0인 열은 기본값 1800 HWPUNIT (약 6.35mm)
+        // [경계선 재설계 2026-08-04] 어긋낸 표의 조각 열은 단독(span1) 목격자가 없다 —
+        // 기본값으로 채우면 update_ctrl_dimensions 를 부르는 다음 연산(일반 드래그 등)이
+        // 표를 슬쩍 키운다(신고: 오른쪽 끝이 커짐). 병합 셀 제약으로 먼저 푼다.
+        self.solve_span_gaps(&mut widths, true);
+        // 그래도 폭이 0인 열은 기본값 1800 HWPUNIT (약 6.35mm)
         for w in &mut widths {
             if *w == 0 {
                 *w = 1800;
             }
         }
         widths
+    }
+
+    /// 목격자 없는 열/행 크기를 병합 셀 제약(구간 합 = 셀 크기)으로 채운다.
+    /// 정확히 한 구간만 미지수인 병합 셀부터 반복 해소 — 레이아웃 솔버의 모델판.
+    fn solve_span_gaps(&self, sizes: &mut [HwpUnit], cols: bool) {
+        loop {
+            let mut progressed = false;
+            for cell in &self.cells {
+                let (start, span, total) = if cols {
+                    (cell.col as usize, cell.col_span as usize, cell.width)
+                } else {
+                    (cell.row as usize, cell.row_span as usize, cell.height)
+                };
+                if span < 2 || start + span > sizes.len() {
+                    continue;
+                }
+                let unknown: Vec<usize> =
+                    (start..start + span).filter(|&i| sizes[i] == 0).collect();
+                if unknown.len() == 1 {
+                    let known: u32 = (start..start + span).map(|i| sizes[i]).sum();
+                    if total > known {
+                        sizes[unknown[0]] = total - known;
+                        progressed = true;
+                    }
+                }
+            }
+            if !progressed {
+                break;
+            }
+        }
     }
 
     /// 열별 폭(HWPUNIT)을 절대값으로 설정한다.
@@ -820,7 +854,9 @@ impl Table {
     /// 높이가 0인 행은 기본값 400으로 대체 (새 셀 생성용).
     pub fn get_row_heights(&self) -> Vec<HwpUnit> {
         let mut heights = self.get_raw_row_heights();
-        // 높이가 0인 행은 기본값 400 HWPUNIT
+        // [경계선 재설계 2026-08-04] 어긋낸 표의 조각 행 — 열과 같은 제약 해소
+        self.solve_span_gaps(&mut heights, false);
+        // 그래도 높이가 0인 행은 기본값 400 HWPUNIT
         for h in &mut heights {
             if *h == 0 {
                 *h = 400;
@@ -970,6 +1006,9 @@ impl Table {
         let col_widths = self.get_column_widths();
         let row_heights = self.get_row_heights();
         let new_col_width = col_widths[col_idx as usize];
+        // [officex] 삽입 전 표 전체 폭 — 아래에서 이 값으로 되맞춘다.
+        // 한컴은 열을 넣어도 표 폭을 보존하고 기존 열에서 폭을 나눠 온다.
+        let original_total_width: u64 = col_widths.iter().map(|w| *w as u64).sum();
 
         // 병합 셀 확장 + 기존 셀 시프트
         let mut covered_rows = vec![false; self.row_count as usize];
@@ -1033,6 +1072,32 @@ impl Table {
         // 행 우선 순서 정렬
         self.cells.sort_by_key(|c| (c.row, c.col));
 
+        // [officex] 새 열 폭을 그냥 더하면 표가 본문·용지 밖으로 나간다
+        // (QA "열 삽입: 폭 배분" — 559.4→745.8px, 오른쪽 끝이 쪽 폭 793.7 초과).
+        // 한컴처럼 표 전체 폭을 보존한다: 새 열 포함 전 열을 원래 총폭 비율로 축소하고
+        // 내림 잔여분은 가장 넓은 열에 몰아 합을 정확히 되돌린다. MIN_COLUMN_WIDTH 바닥에
+        // 닿으면 더 줄이지 않는다 — 열이 지나치게 많을 때만 폭이 조금 는다(가독성 우선).
+        const MIN_COLUMN_WIDTH: u32 = 200;
+        if original_total_width > 0 {
+            let mut widths = self.get_column_widths();
+            let grown: u64 = widths.iter().map(|w| *w as u64).sum();
+            if grown > original_total_width {
+                for w in &mut widths {
+                    let scaled = (*w as u64 * original_total_width) / grown;
+                    *w = (scaled as u32).max(MIN_COLUMN_WIDTH);
+                }
+                let assigned: u64 = widths.iter().map(|w| *w as u64).sum();
+                if assigned < original_total_width {
+                    let delta = (original_total_width - assigned).min(u32::MAX as u64) as u32;
+                    if let Some(w) = widths.iter_mut().max_by_key(|w| **w) {
+                        *w = w.saturating_add(delta);
+                    }
+                }
+                // set_column_widths 가 병합 셀 폭(걸친 열 폭 합)까지 정합하게 다시 쓴다.
+                self.set_column_widths(&widths)?;
+            }
+        }
+
         // CommonObjAttr 크기 갱신
         self.update_ctrl_dimensions();
         if original_height > 0 {
@@ -1069,10 +1134,24 @@ impl Table {
             .and_then(|heights| heights.get(row_idx as usize).copied());
         let original_height = self.common.height;
 
-        // 삭제 행을 걸치는 병합 셀: row_span 축소
+        // [table-layout/삭제-세로병합] 삭제 행의 단일-행 높이(형제 row_span==1 셀 기준)를
+        // 미리 잡아 둔다. 세로 병합 셀은 걸친 행 수만큼 height 를 합산해 갖고 있는데,
+        // 걸친 행이 사라져 row_span 이 줄면 그만큼 height 도 줄여야 남은 행 높이가 실제
+        // 행 수에 비례한다. 안 줄이면 병합 셀이 2행치 높이를 그대로 물고 있어 행은
+        // 줄었는데 표 전체 높이(=행 높이 합)는 삭제 전과 같아지는 결함이 난다.
+        let deleted_row_height = self
+            .get_raw_row_heights()
+            .get(row_idx as usize)
+            .copied()
+            .unwrap_or(0);
+
+        // 삭제 행을 걸치는 병합 셀: row_span 축소 + 걸친 행 높이만큼 height 축소
         for cell in &mut self.cells {
             if cell.row < row_idx && cell.row + cell.row_span > row_idx {
                 cell.row_span -= 1;
+                if cell.height >= deleted_row_height {
+                    cell.height -= deleted_row_height;
+                }
             }
         }
 
@@ -1081,9 +1160,13 @@ impl Table {
             .retain(|cell| !(cell.row == row_idx && cell.row_span == 1));
 
         // 삭제 행에 앵커가 있지만 row_span > 1인 병합 셀: 다음 행으로 이동, row_span 축소
+        // 앵커 행이 사라지므로 그 행 높이만큼 병합 셀 height 도 함께 줄인다.
         for cell in &mut self.cells {
             if cell.row == row_idx && cell.row_span > 1 {
                 cell.row_span -= 1;
+                if cell.height >= deleted_row_height {
+                    cell.height -= deleted_row_height;
+                }
             }
         }
 
@@ -1278,21 +1361,14 @@ impl Table {
             if in_range {
                 for para in &cell.paragraphs {
                     if !para.text.is_empty() {
-                        extra_paragraphs.push(Paragraph {
-                            text: para.text.clone(),
-                            char_count: para.char_count,
-                            char_count_msb: para.char_count_msb,
-                            control_mask: para.control_mask,
-                            char_offsets: para.char_offsets.clone(),
-                            char_shapes: para.char_shapes.clone(),
-                            line_segs: para.line_segs.clone(),
-                            range_tags: para.range_tags.clone(),
-                            para_shape_id: para.para_shape_id,
-                            style_id: para.style_id,
-                            raw_header_extra: para.raw_header_extra.clone(),
-                            has_para_text: para.has_para_text,
-                            ..Default::default()
-                        });
+                        // [officex] 문단을 **통째로** 복제한다. 종전엔 필드를 골라 복사하고
+                        // 나머지를 ..Default::default() 로 버려서, 흡수되는 셀의 누름틀
+                        // (controls·field_ranges)·ctrl_data_records·중첩 표·그림·각주가
+                        // 조용히 증발했다 — 글자만 살아남아 "값 111은 있는데 필드 officex.b 는
+                        // 사라진" 문서가 ok:true 와 함께 남았다(엔진 단독 재현 확정).
+                        // field_ranges[i].control_idx 는 같은 문단 안 controls 인덱스라
+                        // 문단 단위 clone 이면 정합이 유지된다. 빈 문단만 버리는 정책은 그대로.
+                        extra_paragraphs.push(para.clone());
                     }
                 }
             }
@@ -1520,15 +1596,30 @@ impl Table {
             .map(|i| base_w + if i == 0 { remainder_w } else { 0 })
             .collect();
 
-        // 높이 분배
-        let sub_heights: Vec<HwpUnit> = if equal_row_height || n_rows > 1 {
+        // 높이 분배 — equal_row_height 가 의미를 갖는 유일한 지점.
+        //  · true  : 원래 셀 높이를 n_rows 로 균등 분배 → 표 전체 높이 보존
+        //            (한컴 "줄 높이를 같게 나누기" 체크 상태)
+        //  · false : 첫 서브행이 원래 높이를 유지하고 나머지는 최소 줄높이 →
+        //            표가 (n_rows-1)×최소높이 만큼 자란다(체크 해제 상태)
+        // ⚠ [officex] 옛 조건은 `equal_row_height || n_rows > 1` 이라 2행 이상 분할에선
+        // 플래그가 무시됐다(false 분기는 n_rows==1 일 때만 도달) — QA에서 true/false 결과가
+        // 완전히 동일했던 이유. 두 분기 모두 길이 n_rows 를 돌려줘야 한다(아래 sub_heights[ri] 인덱싱).
+        let sub_heights: Vec<HwpUnit> = if equal_row_height {
             let base_h = target_height / n_rows as u32;
             let remainder_h = target_height - base_h * n_rows as u32;
             (0..n_rows)
                 .map(|i| base_h + if i == 0 { remainder_h } else { 0 })
                 .collect()
         } else {
-            vec![target_height]
+            // 한 줄(1000HU) + 셀 상하 여백 = 빈 행의 최소 높이
+            let (pad_top, pad_bottom) = {
+                let p = &self.cells[cell_idx].padding;
+                (p.top.max(0) as u32, p.bottom.max(0) as u32)
+            };
+            let min_h: HwpUnit = pad_top + 1000 + pad_bottom;
+            (0..n_rows)
+                .map(|i| if i == 0 { target_height } else { min_h })
+                .collect()
         };
 
         // 서브셀의 col_span/row_span 분배 (grid_cols를 m_cols개에 분배)
@@ -1630,6 +1721,498 @@ impl Table {
     ///
     /// 우측→좌측, 하단→상단 순서로 처리하여 그리드 시프트가
     /// 아직 처리되지 않은 셀에 영향을 주지 않도록 한다.
+    /// [경계선 재설계 2026-08-04] 한 칸의 아래/오른쪽 경계를 어긋낸다 — 격자 재구성 정본.
+    ///
+    /// 렌더 흉내(renderHeight 힌트)가 아니라 진짜 격자를 다시 짠다: 경계가 파고드는 쪽 칸을
+    /// `split_cell_into` 로 둘로 나눠 격자선을 만들고, 가까운 조각을 대상 칸에 `merge_cells` 로
+    /// 흡수시킨다. 두 연산 모두 스팬 재계산·직렬화 왕복이 검증돼 있어 파일에 그대로 저장되고
+    /// 한컴에서도 동일하게 열린다. 표 바깥 크기는 불변(규칙 docs/table-border-rules.md #1·#5).
+    ///
+    /// * `edge_right` false = 아래 경계(세로 이동), true = 오른쪽 경계(가로 이동)
+    /// * `delta` > 0 = 아래/오른쪽으로(대상이 커짐), < 0 = 위/왼쪽으로(대상이 줄어듦)
+    ///
+    /// ponytail: 경계가 파고드는 쪽 칸이 이미 병합(스팬>1)이면 v1 은 오류 — 스냅으로 기존
+    /// 격자선에 맞춰 되돌리는 치유는 ⌘Z(스냅숏 undo)가 담당한다. 필요해지면 내부 격자선
+    /// 탐색으로 확장.
+    pub fn offset_cell_boundary(
+        &mut self,
+        cell_idx: usize,
+        edge_right: bool,
+        delta: i32,
+    ) -> Result<(), String> {
+        const MIN_CELL: i32 = 200; // resize_table_cells 와 같은 최소 크기
+        if delta == 0 {
+            return Ok(());
+        }
+        let t = self
+            .cells
+            .get(cell_idx)
+            .ok_or_else(|| "셀 인덱스가 유효하지 않습니다".to_string())?
+            .clone();
+
+        if edge_right {
+            // ── 오른쪽 경계 (열 방향) ──
+            let boundary = t.col + t.col_span;
+            if boundary >= self.col_count {
+                return Err("바깥 테두리는 어긋낼 수 없습니다".to_string());
+            }
+            let n_idx = self
+                .cell_index_at(t.row, boundary)
+                .ok_or_else(|| "오른쪽 이웃 셀을 찾지 못했습니다".to_string())?;
+            let n = self.cells[n_idx].clone();
+            if n.row != t.row || n.row_span != t.row_span {
+                return Err("위아래 높이가 다른 칸과는 경계를 어긋낼 수 없습니다".to_string());
+            }
+            if delta > 0 {
+                // 이웃 왼쪽 조각을 잘라 대상에 흡수
+                if n.col_span != 1 {
+                    return Err(
+                        "이미 어긋난 칸 쪽으로는 더 어긋낼 수 없습니다 — 되돌리려면 ⌘Z".to_string(),
+                    );
+                }
+                let d = delta.min(n.width as i32 - MIN_CELL);
+                if d <= 0 {
+                    return Err("이웃 칸에 남는 폭이 없습니다".to_string());
+                }
+                self.split_cell_into(n.row, n.col, 1, 2, true, false)?;
+                let left = self
+                    .cell_index_at(t.row, boundary)
+                    .ok_or("분할 조각(좌) 소실")?;
+                self.cells[left].width = d as HwpUnit;
+                let right = self
+                    .cell_index_at(t.row, boundary + 1)
+                    .ok_or("분할 조각(우) 소실")?;
+                self.cells[right].width = (n.width as i32 - d) as HwpUnit;
+                // split 은 내용을 첫 조각에 남긴다 — 흡수될 조각은 비우고 이웃 조각에 내용을 되돌린다
+                if left != right {
+                    let (a, b) = if left < right {
+                        let (x, y) = self.cells.split_at_mut(right);
+                        (&mut x[left].paragraphs, &mut y[0].paragraphs)
+                    } else {
+                        let (x, y) = self.cells.split_at_mut(left);
+                        (&mut y[0].paragraphs, &mut x[right].paragraphs)
+                    };
+                    std::mem::swap(a, b);
+                }
+                self.merge_cells(t.row, t.col, t.row + t.row_span - 1, boundary)?;
+                let merged = self.cell_index_at(t.row, t.col).ok_or("병합 결과 소실")?;
+                // merge 는 목격자 없는 열(raw 0)을 합산해 폭을 어림한다 — 정확값으로 못박는다
+                self.cells[merged].width = (t.width as i32 + d) as HwpUnit;
+            } else {
+                // 대상 오른쪽 조각을 잘라 이웃에 넘김
+                if t.col_span != 1 {
+                    return Err(
+                        "이미 어긋난 경계를 다시 정렬하는 건 ⌘Z 로 되돌려 주세요".to_string()
+                    );
+                }
+                let d = (-delta).min(t.width as i32 - MIN_CELL);
+                if d <= 0 {
+                    return Err("대상 칸에 남는 폭이 없습니다".to_string());
+                }
+                self.split_cell_into(t.row, t.col, 1, 2, true, false)?;
+                let left = self
+                    .cell_index_at(t.row, t.col)
+                    .ok_or("분할 조각(좌) 소실")?;
+                self.cells[left].width = (t.width as i32 - d) as HwpUnit;
+                let strip = self
+                    .cell_index_at(t.row, t.col + 1)
+                    .ok_or("분할 조각(우) 소실")?;
+                self.cells[strip].width = d as HwpUnit;
+                // 이웃은 새 열 삽입으로 한 칸 밀렸다: boundary+1 에서 시작, 스팬 유지
+                self.merge_cells(
+                    t.row,
+                    t.col + 1,
+                    t.row + t.row_span - 1,
+                    boundary + n.col_span,
+                )?;
+                let merged = self
+                    .cell_index_at(t.row, t.col + 1)
+                    .ok_or("병합 결과 소실")?;
+                self.cells[merged].width = (n.width as i32 + d) as HwpUnit;
+                // 빈 조각이 병합 기준(primary)이라 이웃 내용이 뒤로 밀린다 — 선두 빈 문단 제거
+                if self.cells[merged].paragraphs.len() > 1
+                    && self.cells[merged].paragraphs[0].text.is_empty()
+                {
+                    self.cells[merged].paragraphs.remove(0);
+                }
+            }
+        } else {
+            // ── 아래 경계 (행 방향) ── (열 코드와 대칭)
+            let boundary = t.row + t.row_span;
+            if boundary >= self.row_count {
+                return Err("바깥 테두리는 어긋낼 수 없습니다".to_string());
+            }
+            let n_idx = self
+                .cell_index_at(boundary, t.col)
+                .ok_or_else(|| "아래 이웃 셀을 찾지 못했습니다".to_string())?;
+            let n = self.cells[n_idx].clone();
+            if n.col != t.col || n.col_span != t.col_span {
+                return Err("좌우 폭이 다른 칸과는 경계를 어긋낼 수 없습니다".to_string());
+            }
+            if delta > 0 {
+                if n.row_span != 1 {
+                    return Err(
+                        "이미 어긋난 칸 쪽으로는 더 어긋낼 수 없습니다 — 되돌리려면 ⌘Z".to_string(),
+                    );
+                }
+                let d = delta.min(n.height as i32 - MIN_CELL);
+                if d <= 0 {
+                    return Err("이웃 칸에 남는 높이가 없습니다".to_string());
+                }
+                self.split_cell_into(n.row, n.col, 2, 1, true, false)?;
+                let top = self
+                    .cell_index_at(boundary, t.col)
+                    .ok_or("분할 조각(상) 소실")?;
+                self.cells[top].height = d as HwpUnit;
+                let bot = self
+                    .cell_index_at(boundary + 1, t.col)
+                    .ok_or("분할 조각(하) 소실")?;
+                self.cells[bot].height = (n.height as i32 - d) as HwpUnit;
+                // split 은 내용을 첫 조각에 남긴다 — 흡수될 조각은 비우고 이웃 조각에 내용을 되돌린다
+                if top != bot {
+                    let (a, b) = if top < bot {
+                        let (x, y) = self.cells.split_at_mut(bot);
+                        (&mut x[top].paragraphs, &mut y[0].paragraphs)
+                    } else {
+                        let (x, y) = self.cells.split_at_mut(top);
+                        (&mut y[0].paragraphs, &mut x[bot].paragraphs)
+                    };
+                    std::mem::swap(a, b);
+                }
+                self.merge_cells(t.row, t.col, boundary, t.col + t.col_span - 1)?;
+                let merged = self.cell_index_at(t.row, t.col).ok_or("병합 결과 소실")?;
+                self.cells[merged].height = (t.height as i32 + d) as HwpUnit;
+            } else {
+                if t.row_span != 1 {
+                    return Err(
+                        "이미 어긋난 경계를 다시 정렬하는 건 ⌘Z 로 되돌려 주세요".to_string()
+                    );
+                }
+                let d = (-delta).min(t.height as i32 - MIN_CELL);
+                if d <= 0 {
+                    return Err("대상 칸에 남는 높이가 없습니다".to_string());
+                }
+                self.split_cell_into(t.row, t.col, 2, 1, true, false)?;
+                let top = self
+                    .cell_index_at(t.row, t.col)
+                    .ok_or("분할 조각(상) 소실")?;
+                self.cells[top].height = (t.height as i32 - d) as HwpUnit;
+                let strip = self
+                    .cell_index_at(t.row + 1, t.col)
+                    .ok_or("분할 조각(하) 소실")?;
+                self.cells[strip].height = d as HwpUnit;
+                self.merge_cells(
+                    t.row + 1,
+                    t.col,
+                    boundary + n.row_span,
+                    t.col + t.col_span - 1,
+                )?;
+                let merged = self
+                    .cell_index_at(t.row + 1, t.col)
+                    .ok_or("병합 결과 소실")?;
+                self.cells[merged].height = (n.height as i32 + d) as HwpUnit;
+                // 빈 조각이 병합 기준(primary)이라 이웃 내용이 뒤로 밀린다 — 선두 빈 문단 제거
+                if self.cells[merged].paragraphs.len() > 1
+                    && self.cells[merged].paragraphs[0].text.is_empty()
+                {
+                    self.cells[merged].paragraphs.remove(0);
+                }
+            }
+        }
+        self.rebuild_grid();
+        Ok(())
+    }
+
+    /// [경계선 재설계 2026-08-04] 어긋낸 경계를 정렬로 복원(치유) — offset 의 역연산.
+    ///
+    /// 스냅 가이드가 원래 경계선 위치에 캐치했을 때 스튜디오가 호출한다. 대상 칸이
+    /// 어긋나며 흡수했던 조각을 병합 해제로 되찾아 이웃에 되돌리고, 크기는 같은 구간을
+    /// 공유하는 다른 열/행 셀(목격자)에서 복사한다. 그 결과 아무 셀 경계도 쓰지 않게 된
+    /// 격자 줄은 접어서 원래의 단순한 격자로 되돌린다.
+    pub fn restore_cell_boundary(
+        &mut self,
+        cell_idx: usize,
+        edge_right: bool,
+    ) -> Result<(), String> {
+        let t = self
+            .cells
+            .get(cell_idx)
+            .ok_or_else(|| "셀 인덱스가 유효하지 않습니다".to_string())?
+            .clone();
+
+        if edge_right {
+            if t.col_span < 2 {
+                return self.extend_cell_to_offset_line(cell_idx, true);
+            }
+            let boundary = t.col + t.col_span;
+            if boundary >= self.col_count {
+                return Err("바깥 테두리는 복원 대상이 아닙니다".to_string());
+            }
+            let n = self
+                .cell_at(t.row, boundary)
+                .ok_or_else(|| "오른쪽 이웃 셀을 찾지 못했습니다".to_string())?
+                .clone();
+            if n.row != t.row || n.row_span != t.row_span {
+                return Err("위아래 높이가 다른 칸과는 복원할 수 없습니다".to_string());
+            }
+            // 병합 해제 → 왼쪽 (span-1)개 재병합 → 마지막 조각을 이웃에 붙인다
+            self.split_cell(t.row, t.col)?;
+            if t.col_span > 2 {
+                self.merge_cells(t.row, t.col, t.row + t.row_span - 1, boundary - 2)?;
+            }
+            self.merge_cells(
+                t.row,
+                boundary - 1,
+                t.row + t.row_span - 1,
+                boundary + n.col_span - 1,
+            )?;
+            // 크기 목격자 복사: 같은 (col, col_span) 구간을 쓰는 다른 행의 셀
+            let copy_w = |cells: &[Cell], col: u16, span: u16, skip_row: u16| -> Option<HwpUnit> {
+                cells
+                    .iter()
+                    .find(|c| c.col == col && c.col_span == span && c.row != skip_row)
+                    .map(|c| c.width)
+            };
+            if let Some(w) = copy_w(&self.cells, t.col, t.col_span - 1, t.row) {
+                if let Some(i) = self.cell_index_at(t.row, t.col) {
+                    self.cells[i].width = w;
+                }
+            }
+            if let Some(w) = copy_w(&self.cells, boundary - 1, n.col_span + 1, t.row) {
+                if let Some(i) = self.cell_index_at(t.row, boundary - 1) {
+                    self.cells[i].width = w;
+                }
+            }
+            // 병합 결과 선두 빈 문단 정리(빈 조각이 primary)
+            if let Some(i) = self.cell_index_at(t.row, boundary - 1) {
+                if self.cells[i].paragraphs.len() > 1 && self.cells[i].paragraphs[0].text.is_empty()
+                {
+                    self.cells[i].paragraphs.remove(0);
+                }
+            }
+            self.collapse_unused_lines(true);
+        } else {
+            if t.row_span < 2 {
+                return self.extend_cell_to_offset_line(cell_idx, false);
+            }
+            let boundary = t.row + t.row_span;
+            if boundary >= self.row_count {
+                return Err("바깥 테두리는 복원 대상이 아닙니다".to_string());
+            }
+            let n = self
+                .cell_at(boundary, t.col)
+                .ok_or_else(|| "아래 이웃 셀을 찾지 못했습니다".to_string())?
+                .clone();
+            if n.col != t.col || n.col_span != t.col_span {
+                return Err("좌우 폭이 다른 칸과는 복원할 수 없습니다".to_string());
+            }
+            self.split_cell(t.row, t.col)?;
+            if t.row_span > 2 {
+                self.merge_cells(t.row, t.col, boundary - 2, t.col + t.col_span - 1)?;
+            }
+            self.merge_cells(
+                boundary - 1,
+                t.col,
+                boundary + n.row_span - 1,
+                t.col + t.col_span - 1,
+            )?;
+            let copy_h = |cells: &[Cell], row: u16, span: u16, skip_col: u16| -> Option<HwpUnit> {
+                cells
+                    .iter()
+                    .find(|c| c.row == row && c.row_span == span && c.col != skip_col)
+                    .map(|c| c.height)
+            };
+            if let Some(h) = copy_h(&self.cells, t.row, t.row_span - 1, t.col) {
+                if let Some(i) = self.cell_index_at(t.row, t.col) {
+                    self.cells[i].height = h;
+                }
+            }
+            if let Some(h) = copy_h(&self.cells, boundary - 1, n.row_span + 1, t.col) {
+                if let Some(i) = self.cell_index_at(boundary - 1, t.col) {
+                    self.cells[i].height = h;
+                }
+            }
+            if let Some(i) = self.cell_index_at(boundary - 1, t.col) {
+                if self.cells[i].paragraphs.len() > 1 && self.cells[i].paragraphs[0].text.is_empty()
+                {
+                    self.cells[i].paragraphs.remove(0);
+                }
+            }
+            self.collapse_unused_lines(false);
+        }
+        self.rebuild_grid();
+        Ok(())
+    }
+
+    /// 치유 반대 방향: 정렬된 칸의 경계를 **어긋난 선 쪽으로** 끌어 맞춘다.
+    /// 이웃이 어긋나(스팬≥2) 있을 때, 이웃의 첫 조각을 대상이 흡수해 전 열/행이
+    /// 어긋난 선 위치로 정렬되고, 못 쓰게 된 원래 격자 줄은 접힌다.
+    fn extend_cell_to_offset_line(
+        &mut self,
+        cell_idx: usize,
+        edge_right: bool,
+    ) -> Result<(), String> {
+        let t = self
+            .cells
+            .get(cell_idx)
+            .ok_or_else(|| "셀 인덱스가 유효하지 않습니다".to_string())?
+            .clone();
+
+        if edge_right {
+            let boundary = t.col + t.col_span;
+            if boundary >= self.col_count {
+                return Err("바깥 테두리는 정렬 대상이 아닙니다".to_string());
+            }
+            let n = self
+                .cell_at(t.row, boundary)
+                .ok_or_else(|| "오른쪽 이웃 셀을 찾지 못했습니다".to_string())?
+                .clone();
+            if n.col_span < 2 {
+                return Err("어긋난 경계가 아닙니다".to_string());
+            }
+            if n.row != t.row || n.row_span != t.row_span {
+                return Err("위아래 높이가 다른 칸과는 정렬할 수 없습니다".to_string());
+            }
+            self.split_cell(n.row, n.col)?;
+            // split 은 내용을 첫 조각에 남긴다 — 흡수될 조각은 비우고 남는 이웃 조각에 되돌린다
+            if let (Some(a), Some(b)) = (
+                self.cell_index_at(t.row, boundary),
+                self.cell_index_at(t.row, boundary + 1),
+            ) {
+                if a != b {
+                    let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+                    let (x, y) = self.cells.split_at_mut(hi);
+                    std::mem::swap(&mut x[lo].paragraphs, &mut y[0].paragraphs);
+                }
+            }
+            self.merge_cells(t.row, t.col, t.row + t.row_span - 1, boundary)?;
+            if n.col_span > 2 {
+                self.merge_cells(
+                    t.row,
+                    boundary + 1,
+                    t.row + t.row_span - 1,
+                    boundary + n.col_span - 1,
+                )?;
+            }
+            let copy_w = |cells: &[Cell], col: u16, span: u16, skip_row: u16| -> Option<HwpUnit> {
+                cells
+                    .iter()
+                    .find(|c| c.col == col && c.col_span == span && c.row != skip_row)
+                    .map(|c| c.width)
+            };
+            if let Some(w) = copy_w(&self.cells, t.col, t.col_span + 1, t.row) {
+                if let Some(i) = self.cell_index_at(t.row, t.col) {
+                    self.cells[i].width = w;
+                }
+            }
+            if let Some(w) = copy_w(&self.cells, boundary + 1, n.col_span - 1, t.row) {
+                if let Some(i) = self.cell_index_at(t.row, boundary + 1) {
+                    self.cells[i].width = w;
+                }
+            }
+            self.collapse_unused_lines(true);
+        } else {
+            let boundary = t.row + t.row_span;
+            if boundary >= self.row_count {
+                return Err("바깥 테두리는 정렬 대상이 아닙니다".to_string());
+            }
+            let n = self
+                .cell_at(boundary, t.col)
+                .ok_or_else(|| "아래 이웃 셀을 찾지 못했습니다".to_string())?
+                .clone();
+            if n.row_span < 2 {
+                return Err("어긋난 경계가 아닙니다".to_string());
+            }
+            if n.col != t.col || n.col_span != t.col_span {
+                return Err("좌우 폭이 다른 칸과는 정렬할 수 없습니다".to_string());
+            }
+            self.split_cell(n.row, n.col)?;
+            // split 은 내용을 첫 조각에 남긴다 — 흡수될 조각은 비우고 남는 이웃 조각에 되돌린다
+            if let (Some(a), Some(b)) = (
+                self.cell_index_at(boundary, t.col),
+                self.cell_index_at(boundary + 1, t.col),
+            ) {
+                if a != b {
+                    let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+                    let (x, y) = self.cells.split_at_mut(hi);
+                    std::mem::swap(&mut x[lo].paragraphs, &mut y[0].paragraphs);
+                }
+            }
+            self.merge_cells(t.row, t.col, boundary, t.col + t.col_span - 1)?;
+            if n.row_span > 2 {
+                self.merge_cells(
+                    boundary + 1,
+                    t.col,
+                    boundary + n.row_span - 1,
+                    t.col + t.col_span - 1,
+                )?;
+            }
+            let copy_h = |cells: &[Cell], row: u16, span: u16, skip_col: u16| -> Option<HwpUnit> {
+                cells
+                    .iter()
+                    .find(|c| c.row == row && c.row_span == span && c.col != skip_col)
+                    .map(|c| c.height)
+            };
+            if let Some(h) = copy_h(&self.cells, t.row, t.row_span + 1, t.col) {
+                if let Some(i) = self.cell_index_at(t.row, t.col) {
+                    self.cells[i].height = h;
+                }
+            }
+            if let Some(h) = copy_h(&self.cells, boundary + 1, n.row_span - 1, t.col) {
+                if let Some(i) = self.cell_index_at(boundary + 1, t.col) {
+                    self.cells[i].height = h;
+                }
+            }
+            self.collapse_unused_lines(false);
+        }
+        self.rebuild_grid();
+        Ok(())
+    }
+
+    /// 아무 셀 경계도 쓰지 않는 격자 줄(경계선)을 접는다 — 복원(치유) 뒷정리.
+    /// edge_right=false 면 행, true 면 열. 접을 수 있는 줄이 없어질 때까지 반복.
+    fn collapse_unused_lines(&mut self, cols: bool) {
+        loop {
+            let count = if cols { self.col_count } else { self.row_count };
+            let mut target: Option<u16> = None;
+            for line in 1..count {
+                let used = self.cells.iter().any(|c| {
+                    let (start, span) = if cols {
+                        (c.col, c.col_span)
+                    } else {
+                        (c.row, c.row_span)
+                    };
+                    start == line || start + span == line
+                });
+                if !used {
+                    target = Some(line);
+                    break;
+                }
+            }
+            let Some(line) = target else { break };
+            // 줄 `line` 과 `line-1` 사이 경계선이 미사용 → 줄 line 을 접는다
+            for c in self.cells.iter_mut() {
+                let (start, span) = if cols {
+                    (&mut c.col, &mut c.col_span)
+                } else {
+                    (&mut c.row, &mut c.row_span)
+                };
+                if *start >= line {
+                    *start -= 1;
+                } else if *start + *span > line {
+                    *span -= 1;
+                }
+            }
+            if cols {
+                self.col_count -= 1;
+            } else {
+                self.row_count -= 1;
+            }
+            self.rebuild_row_sizes();
+            self.rebuild_grid();
+        }
+    }
+
     pub fn split_cells_in_range(
         &mut self,
         start_row: u16,

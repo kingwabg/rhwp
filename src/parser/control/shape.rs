@@ -390,12 +390,15 @@ pub(crate) fn parse_common_obj_attr(ctrl_data: &[u8]) -> CommonObjAttr {
         1 => crate::model::shape::SizeCriterion::Page,
         _ => crate::model::shape::SizeCriterion::Absolute,
     };
-    // hwplib 기준 TextFlowMethod: 0=어울림, 1=자리차지, 2=글뒤로, 3=글앞으로
+    // [image-shape/textWrap] 내부 배치 코드(common_obj_attr_writer::text_wrap_to_bits 와 짝):
+    // 0=어울림, 1=자리차지, 2=글뒤로, 3=글앞으로. 코드 4/5 는 왕복 보존용 Tight/Through 슬롯.
     common.text_wrap = match (attr >> 21) & 0x07 {
         0 => TextWrap::Square,        // 어울림 (FitWithText)
         1 => TextWrap::TopAndBottom,  // 자리차지 (TakePlace)
         2 => TextWrap::BehindText,    // 글 뒤로
         3 => TextWrap::InFrontOfText, // 글 앞으로
+        4 => TextWrap::Tight,         // 어울림(빈 공간 채움) — 저장 왕복 보존 슬롯
+        5 => TextWrap::Through,       // 어울림(통과) — 저장 왕복 보존 슬롯
         _ => TextWrap::Square,
     };
     // bit 24-25: TextFlowSide (텍스트 흐르는 방향)

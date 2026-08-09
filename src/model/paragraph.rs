@@ -24,8 +24,15 @@ pub struct Paragraph {
     pub char_offsets: Vec<u32>,
     /// 글자 모양 변경 위치 목록
     pub char_shapes: Vec<CharShapeRef>,
+    /// 변경 추적 마크 (utf16 범위 → 변경 id). 비어 있으면 추적 없음.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub track_marks: Vec<TrackMark>,
     /// 줄 레이아웃 정보
     pub line_segs: Vec<LineSeg>,
+    /// [양쪽 흐름] reflow 가 계산한 세그 계획 (cs_px, w_px, 같은줄 연속 여부) —
+    /// line_segs 기록 직후 소비되고 비워진다. 직렬화 대상 아님(런타임 스크래치).
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub reflow_seg_plan: Vec<(f64, f64, bool)>,
     /// 영역 태그 정보
     pub range_tags: Vec<RangeTag>,
     /// 필드 텍스트 범위 (0x03~0x04 사이 텍스트 인덱스 + 컨트롤 인덱스)
@@ -129,6 +136,18 @@ pub struct CharShapeRef {
     pub start_pos: u32,
     /// 글자 모양 ID
     pub char_shape_id: u32,
+}
+
+/// 변경 추적 마크 — 문단 안의 utf16 범위 하나가 어느 변경(tc_id)에 속하는지.
+/// 위치 이동 규칙은 CharShapeRef.start_pos 와 동일한 세 지점(insert/delete/split)에서 미러.
+#[derive(Debug, Clone, Default)]
+pub struct TrackMark {
+    /// 시작 위치 (utf16 코드 유닛)
+    pub start_pos: u32,
+    /// 끝 위치 (utf16, exclusive)
+    pub end_pos: u32,
+    /// Document.track_changes 의 id
+    pub tc_id: u32,
 }
 
 /// 줄 레이아웃 정보 (HWPTAG_PARA_LINE_SEG)
@@ -378,6 +397,22 @@ impl Paragraph {
         positions
     }
 
+    /// 논리 오프셋(인라인 컨트롤 포함) → 텍스트 문자 인덱스 (track 등 외부용)
+    pub fn logical_to_text_pos(&self, logical: usize) -> usize {
+        let control_positions = self.split_logical_control_positions();
+        self.split_text_pos_for_logical_offset(logical, &control_positions)
+    }
+
+    /// 텍스트 문자 인덱스 → 논리 오프셋 (역방향). 컨트롤 논리 위치의 고정점 계산.
+    pub fn text_to_logical_pos(&self, text_pos: usize) -> usize {
+        let control_positions = self.split_logical_control_positions();
+        let mut k = 0usize;
+        while k < control_positions.len() && control_positions[k] <= text_pos + k {
+            k += 1;
+        }
+        text_pos + k
+    }
+
     fn split_text_pos_for_logical_offset(
         &self,
         logical_offset: usize,
@@ -420,6 +455,7 @@ impl Paragraph {
                 tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
                 ..Default::default()
             }],
+            reflow_seg_plan: Vec::new(),
             ..Default::default()
         }
     }
@@ -566,6 +602,19 @@ impl Paragraph {
                 cs.start_pos += utf16_delta;
             }
         }
+        // track_marks 이동 규칙 (end 는 exclusive):
+        //  - 마크 앞/시작점 삽입(start>=pos) → 통째로 오른쪽 이동
+        //  - 마크 내부 삽입(start<pos<end) → end 만 이동(마크가 늘어남)
+        //  - 마크 끝점 삽입(pos==end) → 불변 — 이어치기 확장은 추적 훅의 결정 사항이다
+        //    (여기서도 늘리면 훅의 인접 확장과 겹쳐 변경이 이중 기록된다. 실측 2026-07-30)
+        for tm in &mut self.track_marks {
+            if tm.start_pos >= utf16_insert_pos {
+                tm.start_pos += utf16_delta;
+            }
+            if tm.end_pos > utf16_insert_pos {
+                tm.end_pos += utf16_delta;
+            }
+        }
 
         // 4. line_segs: 삽입 지점 이후의 text_start를 시프트
         for ls in &mut self.line_segs {
@@ -599,6 +648,73 @@ impl Paragraph {
 
         // 6. char_count 갱신
         self.char_count += new_chars.len() as u32;
+    }
+
+    /// 인라인 컨트롤 하나를 제거하고 char_offsets 의 8-unit 갭을 회수한다.
+    ///
+    /// [범위 삭제 2026-07-30] 종전엔 이 로직이 delete_table_control_native 안에만 있어
+    /// 표 걸친 선택 삭제(delete_range)가 텍스트만 지우고 컨트롤을 남겼다(한컴은 함께 지운다
+    /// — 부록2 O8). 컨트롤 종류를 가리지 않으므로 그림·수식도 같은 경로를 쓴다.
+    /// 반환값: 제거 성공 여부.
+    pub fn remove_inline_control_at(&mut self, control_idx: usize) -> bool {
+        if control_idx >= self.controls.len() {
+            return false;
+        }
+        // 컨트롤이 차지하는 갭의 시작 위치(utf16)를 찾는다 — serialize_para_text 와 같은 어법.
+        let text_chars: Vec<char> = self.text.chars().collect();
+        let mut ci = 0usize;
+        let mut prev_end: u32 = 0;
+        let mut gap_start: Option<u32> = None;
+        'outer: for i in 0..text_chars.len() {
+            let offset = if i < self.char_offsets.len() {
+                self.char_offsets[i]
+            } else {
+                prev_end
+            };
+            while prev_end + 8 <= offset && ci < self.controls.len() {
+                if ci == control_idx {
+                    gap_start = Some(prev_end);
+                    break 'outer;
+                }
+                ci += 1;
+                prev_end += 8;
+            }
+            let char_size: u32 = if text_chars[i] == '\t' {
+                8
+            } else if text_chars[i].len_utf16() == 2 {
+                2
+            } else {
+                1
+            };
+            prev_end = offset + char_size;
+        }
+        if gap_start.is_none() {
+            // 텍스트 뒤에 배치된 후행 컨트롤
+            while ci < self.controls.len() {
+                if ci == control_idx {
+                    gap_start = Some(prev_end);
+                    break;
+                }
+                ci += 1;
+                prev_end += 8;
+            }
+        }
+        if let Some(gs) = gap_start {
+            let threshold = gs + 8;
+            for offset in self.char_offsets.iter_mut() {
+                if *offset >= threshold {
+                    *offset -= 8;
+                }
+            }
+        }
+        self.controls.remove(control_idx);
+        if control_idx < self.ctrl_data_records.len() {
+            self.ctrl_data_records.remove(control_idx);
+        }
+        if self.char_count >= 8 {
+            self.char_count -= 8;
+        }
+        true
     }
 
     /// char_offset 위치에서 count개의 문자를 삭제한다.
@@ -659,6 +775,18 @@ impl Paragraph {
                 cs.start_pos = utf16_start;
             }
         }
+        // track_marks 도 같은 규칙 — 겹친 범위는 잘리고, 전부 삭제되면 빈 마크(start==end)
+        // 가 되며 호출부(track 훅)가 정리한다.
+        for tm in &mut self.track_marks {
+            for pos in [&mut tm.start_pos, &mut tm.end_pos] {
+                if *pos >= utf16_end {
+                    *pos -= utf16_delta;
+                } else if *pos > utf16_start {
+                    *pos = utf16_start;
+                }
+            }
+        }
+        self.track_marks.retain(|tm| tm.end_pos > tm.start_pos);
 
         // 4. line_segs: 삭제 범위 이후 → utf16_delta만큼 감소
         for ls in &mut self.line_segs {
@@ -741,6 +869,35 @@ impl Paragraph {
         self.char_offsets.truncate(split_pos);
 
         // 3. char_shapes 분할
+        // track_marks 분할 — 경계에 걸친 마크는 두 조각으로(같은 tc_id 유지)
+        let mut new_track_marks: Vec<TrackMark> = Vec::new();
+        {
+            let mut kept: Vec<TrackMark> = Vec::new();
+            for tm in self.track_marks.drain(..) {
+                if tm.end_pos <= utf16_split {
+                    kept.push(tm);
+                } else if tm.start_pos >= utf16_split {
+                    new_track_marks.push(TrackMark {
+                        start_pos: tm.start_pos - utf16_split,
+                        end_pos: tm.end_pos - utf16_split,
+                        tc_id: tm.tc_id,
+                    });
+                } else {
+                    kept.push(TrackMark {
+                        start_pos: tm.start_pos,
+                        end_pos: utf16_split,
+                        tc_id: tm.tc_id,
+                    });
+                    new_track_marks.push(TrackMark {
+                        start_pos: 0,
+                        end_pos: tm.end_pos - utf16_split,
+                        tc_id: tm.tc_id,
+                    });
+                }
+            }
+            self.track_marks = kept;
+        }
+
         let mut new_char_shapes: Vec<CharShapeRef> = Vec::new();
         // 분할 지점에서의 활성 스타일 찾기
         let mut active_style_id: u32 = self
@@ -902,7 +1059,9 @@ impl Paragraph {
             text: new_text,
             char_offsets: new_char_offsets,
             char_shapes: new_char_shapes,
+            track_marks: new_track_marks,
             line_segs: new_line_segs,
+            reflow_seg_plan: Vec::new(),
             range_tags: new_range_tags,
             field_ranges: Vec::new(), // controls가 이동하지 않으므로 새 문단에는 필드 없음
             orphan_field_ends: Vec::new(),
@@ -1201,6 +1360,24 @@ impl Paragraph {
         let _ = already_filled; // 향후 디버그용 (현재 미사용)
 
         positions
+    }
+
+    /// `controls[ctrl_idx]` 의 텍스트 위치 앞 구간이 전부 비가시 문자
+    /// (공백 · 제어문자 `c <= U+001F` · 개체 marker `U+FFFC`)인지 판정한다.
+    ///
+    /// "앵커선행 host"(컨트롤 앞은 공백뿐, 뒤에 본문 텍스트) 판정의 단일 진실 —
+    /// layout(옆 흐름 게이트)·table_ops(어울림 훅 host 자격)·typeset(회계)이 공유한다.
+    /// 문자 필터 기준은 layout `para_has_visible_text` 와 동일 (`> U+001F`, `!= U+FFFC`).
+    /// 위치 분배(char_offsets 갭 해석)는 `control_text_positions` 가 전담한다.
+    pub fn text_is_blank_before_control(&self, ctrl_idx: usize) -> bool {
+        let Some(&pos) = self.control_text_positions().get(ctrl_idx) else {
+            return false;
+        };
+        !self
+            .text
+            .chars()
+            .take(pos)
+            .any(|c| c > '\u{001F}' && c != '\u{FFFC}' && !c.is_whitespace())
     }
 
     /// `char_offsets` 중 UTF-16 위치 `utf16_pos` 이상인 첫 번째 codepoint 의

@@ -131,6 +131,15 @@ impl DocumentCore {
                     .insert(insert_idx, right_half);
                 last_para_idx = insert_idx;
                 merge_point = 0;
+            } else if !right_half.controls.is_empty() {
+                // [paste-import/중복삽입] 오른쪽 반이 텍스트 없이 컨트롤(표 등)만 가지는
+                // 경우 — 표만 든 빈 캐럿 문단에 split_at(0) 하면 여기로 온다. 예전엔 아래
+                // else 로 떨어져 오른쪽 반이 통째로 버려져(먼저 붙인 표가 사라짐) 데이터가
+                // 유실됐다. 마지막 삽입 문단에 컨트롤을 병합해 두 표를 같은 문단의 두
+                // 컨트롤로 보존한다(merge_from 이 control_mask·char_count·ctrl_data 정합).
+                last_para_idx = insert_idx - 1;
+                merge_point = self.document.sections[section_idx].paragraphs[last_para_idx]
+                    .merge_from(&right_half);
             } else {
                 last_para_idx = insert_idx - 1;
                 // 마지막 문단이 컨트롤 문단이면 그 뒤 위치
@@ -155,9 +164,12 @@ impl DocumentCore {
                 self.document.is_hwp3_variant,
             );
 
-            // 선택적 재구성: 원본 문단 재구성 + 삽입 문단 composed 추가
+            // 선택적 재구성: 원본 문단 재구성 + 삽입 문단 composed 추가.
+            // 정순으로 삽입해야 한다 — composed가 삽입마다 자라 인덱스가 항상 len 이하가 되어
+            // insert(idx, ..) panic을 막는다. 역순(.rev())이면 표+문단 3개↑ 입력에서 idx>len으로
+            // panic했다(실측: insertion index 2 <= 1). 아래 텍스트-only 분기와 같은 정순.
             self.recompose_paragraph(section_idx, para_idx);
-            for i in (para_idx + 1..=last_para_idx).rev() {
+            for i in para_idx + 1..=last_para_idx {
                 self.insert_composed_paragraph(section_idx, i);
             }
             self.paginate_if_needed();
@@ -176,6 +188,17 @@ impl DocumentCore {
         let right_half =
             self.document.sections[section_idx].paragraphs[para_idx].split_at(char_offset);
 
+        // [paste-import/첫문단서식] 첫 문단은 캐럿 문단에 병합되는데, merge_from은 텍스트·
+        // 글자서식만 옮기고 문단 서식(정렬 등 para_shape_id)은 캐럿 것(기본 justify)을
+        // 유지해 첫 문단의 정렬이 유실됐다(둘째부터는 새 문단이라 정상). 캐럿 문단이
+        // 비어 있으면 첫 파싱 문단의 문단 서식을 물려받아 정렬을 보존한다.
+        if self.document.sections[section_idx].paragraphs[para_idx]
+            .text
+            .is_empty()
+        {
+            self.document.sections[section_idx].paragraphs[para_idx].para_shape_id =
+                parsed_paras[0].para_shape_id;
+        }
         self.document.sections[section_idx].paragraphs[para_idx].merge_from(&parsed_paras[0]);
 
         let mut insert_idx = para_idx + 1;
@@ -461,6 +484,10 @@ impl DocumentCore {
             }
         };
 
+        // [paste-import/script·style] script/style 블록을 파싱 전에 통째로 제거한다 —
+        // 그 안의 JS/CSS 소스가 셀·본문 텍스트로 새는 것을 막는다.
+        let content = strip_script_style(content);
+
         // 최상위 태그 파싱
         let mut pos = 0;
         let chars: Vec<char> = content.chars().collect();
@@ -500,6 +527,107 @@ impl DocumentCore {
 
                     self.parse_img_html(&mut paragraphs, &tag_str);
                     pos = tag_end + 1;
+                    continue;
+                } else if tag_lower.starts_with("<pre") {
+                    // [paste-import/pre] <pre>의 개행을 문단 분리로 바꾼다.
+                    // 예전엔 "<p" 접두 분기가 <pre>를 삼켜 raw LF(U+000A)가 한 문단
+                    // 텍스트에 그대로 박혔다(저장 왕복 후에도 잔존). flush_text_to_paragraphs
+                    // 가 '\n' 기준으로 문단을 가르므로 태그만 제거해 넘긴다.
+                    if !pending_text.trim().is_empty() {
+                        self.flush_text_to_paragraphs(&mut paragraphs, &pending_text);
+                    }
+                    pending_text.clear();
+
+                    let inner_start = tag_end + 1;
+                    let pre_end = find_closing_tag_chars(&chars, pos, "pre");
+                    let inner: String = chars[inner_start..pre_end.min(len)].iter().collect();
+                    let inner = if let Some(idx) = inner.rfind("</pre>") {
+                        &inner[..idx]
+                    } else {
+                        &inner
+                    };
+                    let text = html_strip_tags(inner);
+                    self.flush_text_to_paragraphs(&mut paragraphs, &text);
+                    pos = pre_end;
+                    continue;
+                } else if tag_lower.starts_with("<ul")
+                    || tag_lower.starts_with("<ol")
+                    || tag_lower.starts_with("<blockquote")
+                {
+                    // [paste-import/블록요소] 리스트/인용 컨테이너 → 내부(<li> 등)를 재귀
+                    // 파싱해 각 항목을 독립 문단으로 만든다. 예전엔 무시 태그라 항목들이
+                    // 한 문단에 '하나둘'처럼 붙었다.
+                    if !pending_text.trim().is_empty() {
+                        self.flush_text_to_paragraphs(&mut paragraphs, &pending_text);
+                    }
+                    pending_text.clear();
+
+                    let name = if tag_lower.starts_with("<ul") {
+                        "ul"
+                    } else if tag_lower.starts_with("<ol") {
+                        "ol"
+                    } else {
+                        "blockquote"
+                    };
+                    let inner_start = tag_end + 1;
+                    let block_end = find_closing_tag_chars(&chars, pos, name);
+                    let inner: String = chars[inner_start..block_end.min(len)].iter().collect();
+                    let close = format!("</{}>", name);
+                    let inner = if let Some(idx) = inner.rfind(&close) {
+                        &inner[..idx]
+                    } else {
+                        &inner
+                    };
+                    let sub_paras = self.parse_html_to_paragraphs(inner);
+                    paragraphs.extend(sub_paras);
+                    pos = block_end;
+                    continue;
+                } else if tag_lower.starts_with("<li")
+                    || tag_lower.starts_with("<h1")
+                    || tag_lower.starts_with("<h2")
+                    || tag_lower.starts_with("<h3")
+                    || tag_lower.starts_with("<h4")
+                    || tag_lower.starts_with("<h5")
+                    || tag_lower.starts_with("<h6")
+                {
+                    // [paste-import/블록요소] li·제목(h1~h6)은 문단 경계를 만드는 리프 블록 →
+                    // 하나의 독립 문단으로. 인라인 서식은 parse_inline_content로 보존한다.
+                    if !pending_text.trim().is_empty() {
+                        self.flush_text_to_paragraphs(&mut paragraphs, &pending_text);
+                    }
+                    pending_text.clear();
+
+                    let name: String = tag_str
+                        .chars()
+                        .skip(1)
+                        .take_while(|c| c.is_ascii_alphanumeric())
+                        .collect::<String>()
+                        .to_lowercase();
+                    let inner_start = tag_end + 1;
+                    let block_end = find_closing_tag_chars(&chars, pos, &name);
+                    let inner: String = chars[inner_start..block_end.min(len)].iter().collect();
+                    let close = format!("</{}>", name);
+                    let inner = if let Some(idx) = inner.rfind(&close) {
+                        &inner[..idx]
+                    } else {
+                        &inner
+                    };
+
+                    // <li> 내부에 <table>이 있으면 재귀 처리 (컨트롤 문단 보존)
+                    if inner.to_lowercase().contains("<table") {
+                        let sub_paras = self.parse_html_to_paragraphs(inner);
+                        paragraphs.extend(sub_paras);
+                    } else {
+                        let para_style = parse_inline_style(&tag_str);
+                        let para_shape_id = self.css_to_para_shape_id(&para_style);
+                        let mut para = Paragraph::default();
+                        para.para_shape_id = para_shape_id;
+                        self.parse_inline_content(&mut para, inner);
+                        if !para.text.trim().is_empty() {
+                            paragraphs.push(para);
+                        }
+                    }
+                    pos = block_end;
                     continue;
                 } else if tag_lower.starts_with("<p") {
                     // 보류 중인 텍스트 처리
@@ -565,28 +693,37 @@ impl DocumentCore {
                     pos = tag_end + 1;
                     continue;
                 } else if tag_lower.starts_with("</") {
-                    // 닫는 태그 무시
+                    // 닫는 태그 무시 — 단 인라인 서식 닫기(b/i/u/span)는 보존해야
+                    // flush 의 parse_inline_content 가 run 경계를 닫을 수 있다
+                    // (아래 inline_fmt 보존과 한 쌍 — 이 분기가 먼저 매칭된다).
+                    if tag_lower.starts_with("</b>")
+                        || tag_lower.starts_with("</strong")
+                        || tag_lower.starts_with("</i>")
+                        || tag_lower.starts_with("</em")
+                        || tag_lower.starts_with("</u>")
+                        || tag_lower.starts_with("</span")
+                    {
+                        pending_text.push_str(&tag_str);
+                    }
                     pos = tag_end + 1;
                     continue;
                 } else {
-                    // 기타 태그 무시 (span 등 인라인은 <p> 밖에서 직접 올 수 있음)
-                    if tag_lower.starts_with("<span") {
-                        // <span>...</span> 인라인 콘텐츠
-                        let span_end = find_closing_tag_chars(&chars, pos, "span");
-                        let span_full: String =
-                            chars[tag_start..span_end.min(len)].iter().collect();
-                        let span_full = if let Some(idx) = span_full.rfind("</span>") {
-                            &span_full[..idx]
-                        } else {
-                            &span_full
-                        };
-                        // span 태그 내부 텍스트 추출
-                        if let Some(gt_pos) = span_full.find('>') {
-                            pending_text.push_str(&span_full[gt_pos + 1..]);
-                        }
-                        pos = span_end;
-                        continue;
+                    // [paste-import/셀글자서식] 인라인 서식 태그(b/i/u/span…)는 버리지
+                    // 않고 원문을 pending_text 에 보존한다 — flush 가 parse_inline_content
+                    // 로 넘겨 스타일 run 을 실체화한다. 종전엔 여기서 태그를 삼켜(span 은
+                    // 내부 텍스트만 추출) 표 셀의 <b>·<span style> 서식이 소실됐다(QA 결함).
+                    // 판별 prefix 는 parse_inline_content 의 것과 동일하게 유지한다.
+                    // (닫는 태그는 위 "</" 분기가 먼저 잡아 보존한다)
+                    let inline_fmt = tag_lower.starts_with("<span")
+                        || tag_lower.starts_with("<b>")
+                        || tag_lower.starts_with("<strong")
+                        || tag_lower.starts_with("<i>")
+                        || tag_lower.starts_with("<em")
+                        || tag_lower.starts_with("<u>");
+                    if inline_fmt {
+                        pending_text.push_str(&tag_str);
                     }
+                    // 그 외 태그는 종전대로 무시
                     pos = tag_end + 1;
                     continue;
                 }
@@ -626,7 +763,25 @@ impl DocumentCore {
     }
 
     /// 텍스트를 문단으로 변환하여 추가한다 (줄바꿈 기준 분리).
-    pub(crate) fn flush_text_to_paragraphs(&self, paragraphs: &mut Vec<Paragraph>, text: &str) {
+    pub(crate) fn flush_text_to_paragraphs(&mut self, paragraphs: &mut Vec<Paragraph>, text: &str) {
+        // [paste-import/셀글자서식] 인라인 태그가 남은 줄은 parse_inline_content 로 —
+        // run(굵기·색·크기)이 실체화된다. 태그 없는 입력은 종전 경로 그대로이며,
+        // 종전엔 디스패처가 태그를 전부 삼켜 이 함수에 '<' 가 도달할 수 없었으므로
+        // 기존 입력의 동작은 변하지 않는다.
+        if text.contains('<') {
+            for line in text.split('\n') {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let mut para = Paragraph::default();
+                self.parse_inline_content(&mut para, line.trim());
+                if para.text.trim().is_empty() {
+                    continue;
+                }
+                paragraphs.push(para);
+            }
+            return;
+        }
         let decoded = decode_html_entities(text);
         for line in decoded.split('\n') {
             let trimmed = line.trim();
@@ -739,6 +894,13 @@ impl DocumentCore {
                     full_text.push('\n');
                     pos = tag_end + 1;
                     continue;
+                } else if tag_lower.starts_with("<img") {
+                    // [paste-import/img] <p>/<li> 안의 <img>는 조용히 버려져 호출부가
+                    // 그림 손실을 알 수 없었다. 자리표시 텍스트를 넣어 유실을 드러낸다
+                    // (외부 URL 이미지 처리와 동일한 "[이미지]" 표기).
+                    full_text.push_str("[이미지]");
+                    pos = tag_end + 1;
+                    continue;
                 } else {
                     // 기타 태그 무시
                     pos = tag_end + 1;
@@ -801,20 +963,31 @@ impl DocumentCore {
             })
             .collect();
 
-        // 스타일 범위를 CharShapeRef로 변환
-        for (start, _end, char_shape_id) in &style_runs {
-            // char index → UTF-16 위치
-            let utf16_pos: u32 = para
-                .text
+        // 스타일 범위를 CharShapeRef로 변환. HWP 의 CharShapeRef 는 시작 위치만 갖고
+        // 다음 ref 까지 이어지므로, run 끝(_end)에서 기본 서식으로 되돌리는 리셋 ref 를
+        // 함께 넣는다 — 종전엔 시작만 push 해 "가<b>나</b>다" 의 '다' 까지 굵어졌다.
+        let total_chars = para.text.chars().count();
+        let utf16_at = |char_idx: usize| -> u32 {
+            para.text
                 .chars()
-                .take(*start)
+                .take(char_idx)
                 .map(|c| c.len_utf16() as u32)
-                .sum();
+                .sum()
+        };
+        for (i, (start, end, char_shape_id)) in style_runs.iter().enumerate() {
             para.char_shapes
                 .push(crate::model::paragraph::CharShapeRef {
-                    start_pos: utf16_pos,
+                    start_pos: utf16_at(*start),
                     char_shape_id: *char_shape_id,
                 });
+            let next_starts_here = style_runs.get(i + 1).is_some_and(|(ns, _, _)| ns == end);
+            if *end < total_chars && !next_starts_here {
+                para.char_shapes
+                    .push(crate::model::paragraph::CharShapeRef {
+                        start_pos: utf16_at(*end),
+                        char_shape_id: 0,
+                    });
+            }
         }
     }
 
@@ -839,6 +1012,9 @@ impl DocumentCore {
             0
         };
         let mut cs = self.document.doc_info.char_shapes[base_id as usize].clone();
+        // 변형본은 원본 raw 바이트를 이어받으면 안 된다 — 직렬화기의 raw_data 승자
+        // 규칙(serializer/doc_info.rs)이 수정(bold 등)을 삼켜 저장→재열기에서 증발한다.
+        cs.raw_data = None;
 
         // CSS 속성 파싱 및 적용
         let css_lower = css.to_lowercase();

@@ -6,6 +6,7 @@
 mod common;
 mod connector;
 mod equation;
+mod form;
 mod note;
 mod picture;
 mod shape;

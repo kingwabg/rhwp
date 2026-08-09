@@ -458,6 +458,25 @@ impl DocumentCore {
         control_idx: usize,
         props_json: &str,
     ) -> Result<String, HwpError> {
+        // 입력 방어: 깨진/비객체 JSON은 삼키지 않고 거부한다.
+        if serde_json::from_str::<serde_json::Value>(props_json)
+            .map(|v| !v.is_object())
+            .unwrap_or(true)
+        {
+            return Err(HwpError::InvalidField(
+                "그림 속성 props가 유효한 JSON 객체가 아닙니다".into(),
+            ));
+        }
+        // [개선 트랙1] 기준계/정렬 전환 rebase — mutation 전에 실측 프로브.
+        // tac 토글은 plan 이 None 이라 아래 migration 계약과 간섭하지 않는다.
+        let dpi = self.dpi;
+        let rebase_plan = self
+            .resolve_picture_control_ref(section_idx, parent_para_idx, control_idx)
+            .ok()
+            .map(|p| p.common.clone())
+            .and_then(|old| {
+                self.plan_object_rebase(section_idx, parent_para_idx, control_idx, props_json, &old)
+            });
         // JSON 파싱 (serde_json 사용 대신 수동 파싱 — 기존 패턴)
         // [Task #825] 픽쳐 속성 mutation 은 helper 로 분리 (머리말/꼬리말 path 와 공유).
         let (
@@ -480,6 +499,18 @@ impl DocumentCore {
                 was_tac && !now_tac,
             )
         };
+
+        if let Some(plan) = rebase_plan {
+            let pic =
+                self.resolve_picture_control_mut(section_idx, parent_para_idx, control_idx)?;
+            let (h, v) = Self::rebased_offsets(&plan, &pic.common, dpi);
+            if let Some(h) = h {
+                pic.common.horizontal_offset = h as u32;
+            }
+            if let Some(v) = v {
+                pic.common.vertical_offset = v as u32;
+            }
+        }
 
         // [Task #1151 v2] floating → inline migration (H1 정합, samples/tac-verify/).
         // 한컴 산출물 Scenario A~D 분석: tac false→true 시 picture 의 control 위치는
@@ -701,22 +732,33 @@ impl DocumentCore {
         line_segs: &mut Vec<crate::model::paragraph::LineSeg>,
         pic: &mut crate::model::image::Picture,
     ) {
+        let height_hu = pic.common.height as i32;
+        Self::migrate_float_common_to_inline(line_segs, &mut pic.common, height_hu);
+    }
+    /// [트랙3] floating → inline 마이그레이션의 개체 일반화 본체 — 위 그림 계약
+    /// (rel_to=Para · offset=0 · line_segs[0] 높이 · baseline 0.85)의 4 필드는
+    /// 도형·글상자에도 동일하다. 높이만 개체별로 다르다 (그림 = common.height,
+    /// 도형 = max(common.height, shape_attr.current_height)) — 호출자가 넘긴다.
+    pub(crate) fn migrate_float_common_to_inline(
+        line_segs: &mut Vec<crate::model::paragraph::LineSeg>,
+        common: &mut crate::model::shape::CommonObjAttr,
+        height_hu: i32,
+    ) {
         use crate::model::shape::{HorzRelTo, VertRelTo};
-        pic.common.horz_rel_to = HorzRelTo::Para;
-        pic.common.vert_rel_to = VertRelTo::Para;
-        pic.common.horizontal_offset = 0;
-        pic.common.vertical_offset = 0;
+        common.horz_rel_to = HorzRelTo::Para;
+        common.vert_rel_to = VertRelTo::Para;
+        common.horizontal_offset = 0;
+        common.vertical_offset = 0;
 
-        let picture_height_hu = pic.common.height as i32;
-        let baseline = (picture_height_hu as f64 * 0.85).round() as i32;
+        let baseline = (height_hu as f64 * 0.85).round() as i32;
         if let Some(seg) = line_segs.first_mut() {
-            seg.line_height = picture_height_hu;
-            seg.text_height = picture_height_hu;
+            seg.line_height = height_hu;
+            seg.text_height = height_hu;
             seg.baseline_distance = baseline;
         } else {
             line_segs.push(crate::model::paragraph::LineSeg {
-                line_height: picture_height_hu,
-                text_height: picture_height_hu,
+                line_height: height_hu,
+                text_height: height_hu,
                 baseline_distance: baseline,
                 line_spacing: 600,
                 ..Default::default()
@@ -944,12 +986,14 @@ impl DocumentCore {
                 _ => pic.common.text_wrap,
             };
         }
+        // [image-shape/restrictInPage+allowOverlap 독립] 쪽 영역 제한(flow_with_text, bit13)과
+        // 겹침 허용(allow_overlap, bit14)은 한컴에서 서로 독립 플래그다. 예전엔 restrictInPage=true
+        // 가 allow_overlap 을 강제로 끄고, 아래쪽 post-hoc 블록이 flow_with_text 면 다시 꺼버려서
+        // 같은 set 호출로 allowOverlap:true 를 줘도 조용히 false 가 됐다. 각 키를 독립 반영한다.
         if let Some(v) = json_bool(props_json, "restrictInPage") {
             pic.common.flow_with_text = v;
             if v {
                 pic.common.attr |= 1 << 13;
-                pic.common.allow_overlap = false;
-                pic.common.attr &= !(1 << 14);
             } else {
                 pic.common.attr &= !(1 << 13);
             }
@@ -969,10 +1013,6 @@ impl DocumentCore {
             } else {
                 pic.common.attr &= !(1 << 20);
             }
-        }
-        if pic.common.flow_with_text {
-            pic.common.allow_overlap = false;
-            pic.common.attr &= !(1 << 14);
         }
         if let Some(v) = json_i32(props_json, "vertOffset") {
             pic.common.vertical_offset = v as u32;
@@ -1446,6 +1486,23 @@ impl DocumentCore {
             return Err(HwpError::RenderError(
                 "이미지 데이터가 비어 있습니다".to_string(),
             ));
+        }
+        // [image-shape/쓰레기 바이트] 이미지가 아닌 바이트를 그대로 embed 하면
+        // getControlImageMime 이 application/octet-stream 을 돌려주고 렌더러가 브라우저가
+        // 못 그리는 data URI 를 뱉는다. 매직 바이트로 형식을 검증해 삽입 단계에서 거부한다.
+        if !crate::renderer::image_resolver::is_supported_image_format(image_data) {
+            return Err(HwpError::InvalidField(
+                "이미지 형식을 인식할 수 없습니다 (PNG/JPG/GIF/BMP/TIFF/PCX/WMF/EMF/SVG 아님)"
+                    .to_string(),
+            ));
+        }
+        // 입력 방어: 음수(u32 래핑)·과대 크기를 뒤집힘으로 삼키지 않고 거부한다(0은 한컴 호환 유지).
+        const MAX_PIC_HU: u32 = 4_000_000; // ≈140cm
+        if width > MAX_PIC_HU || height > MAX_PIC_HU {
+            return Err(HwpError::InvalidField(format!(
+                "그림 크기 범위 밖: {}x{}",
+                width, height
+            )));
         }
         // cell_path 가 있으면 경로가 유효한지 사전 검증한다.
         //

@@ -307,6 +307,8 @@ fn replay_plane_for_wrap(target: crate::model::shape::TextWrap) -> PaintReplayPl
 /// WASM 환경에서만 컴파일된다.
 #[cfg(target_arch = "wasm32")]
 pub struct WebCanvasRenderer {
+    /// 본문 clip 사각형의 윗변 — 강조점이 이 위로 올라가면 화면에서 잘린다.
+    body_clip_top: Option<f64>,
     /// Canvas 2D 컨텍스트
     ctx: CanvasRenderingContext2d,
     /// 페이지 폭 (px)
@@ -340,6 +342,7 @@ impl WebCanvasRenderer {
             .dyn_into::<CanvasRenderingContext2d>()?;
 
         Ok(Self {
+            body_clip_top: None,
             ctx,
             width: canvas.width() as f64,
             height: canvas.height() as f64,
@@ -1191,6 +1194,8 @@ impl WebCanvasRenderer {
                 clip_kind,
             } => match clip_kind {
                 ClipKind::Body => {
+                    // 강조점이 이 윗변을 넘지 않게 기억해 둔다(넘으면 잘려 안 보인다).
+                    let prev_body_top = self.body_clip_top.replace(clip.y);
                     self.ctx.save();
                     self.ctx.begin_path();
                     let right_pad = if self.show_paragraph_marks || self.show_control_codes {
@@ -1203,6 +1208,7 @@ impl WebCanvasRenderer {
                     self.ctx.clip();
                     self.render_layer_node(child, active_layer);
                     self.ctx.restore();
+                    self.body_clip_top = prev_body_top;
 
                     let body_left = clip.x;
                     let body_right = clip.x + clip.width;
@@ -2116,6 +2122,8 @@ impl Renderer for WebCanvasRenderer {
     }
 
     fn draw_text(&mut self, text: &str, x: f64, y: f64, style: &TextStyle) {
+        // 강조점이 본문 clip 밖으로 나가지 않게 쓰는 천장(없으면 제한 없음).
+        let line_top = self.body_clip_top.unwrap_or(f64::NEG_INFINITY);
         // [Task #1067] inline 컨트롤 placeholder (U+FFFC OBJECT REPLACEMENT CHARACTER) skip.
         // svg.rs::draw_text 와 동일 정합.
         let text: String = text.chars().filter(|&c| c != '\u{FFFC}').collect();
@@ -2309,6 +2317,36 @@ impl Renderer for WebCanvasRenderer {
                     continue;
                 }
 
+                // 컬러 이모지: 시스템 이모지 글꼴이 그리는데 그 글리프가 본문 글자보다
+                // 1.6배 크고 baseline 아래로 2.5배 깊어(잉크 20px vs 한글 12.53px) 줄
+                // 아래로 처져 보였다(2026-08-02 사용자 지적). 글자 높이에 맞춰 줄이고
+                // 바닥을 한글 descent 에 맞춰 들어올린다 — 진행폭(1em) 안에서 가운데.
+                if crate::renderer::layout::text_measurement::is_emoji_presentation(ch) {
+                    use crate::renderer::layout::text_measurement::{
+                        emoji_draw_offsets, EMOJI_GLYPH_SCALE,
+                    };
+                    let advance = {
+                        let end = *char_idx + cluster_str.chars().count();
+                        if end < char_positions.len() {
+                            char_positions[end] - char_positions[*char_idx]
+                        } else {
+                            font_size
+                        }
+                    };
+                    let scaled = font_size * EMOJI_GLYPH_SCALE;
+                    let (dx, lift) = emoji_draw_offsets(font_size, advance);
+                    self.ctx.save();
+                    let emoji_font = format!(
+                        "{}{}{:.3}px {}",
+                        font_style, font_weight, scaled, font_family
+                    );
+                    self.ctx.set_font(&emoji_font);
+                    let _ = self.ctx.fill_text(cluster_str, char_x + dx, y - lift);
+                    self.ctx.restore();
+                    self.ctx.set_font(&font);
+                    continue;
+                }
+
                 // 반각 강제 구두점: 폰트 글리프가 전각이지만 반각 공간에 배치
                 let needs_halfwidth_scale = (matches!(ch, '\u{2018}'..='\u{2027}' | '\u{00B7}')
                     || is_halfwidth_cjk_quote(ch))
@@ -2404,30 +2442,54 @@ impl Renderer for WebCanvasRenderer {
             );
         }
 
-        // 강조점 처리
+        // 강조점 처리 — 모양은 renderer::emphasis 한 곳에서 정한다(svg 와 같은 도형).
         if style.emphasis_dot > 0 {
-            let dot_char = match style.emphasis_dot {
-                1 => "●",
-                2 => "○",
-                3 => "ˇ",
-                4 => "˜",
-                5 => "･",
-                6 => "˸",
-                _ => "",
-            };
-            if !dot_char.is_empty() {
-                let dot_size = font_size * 0.3;
-                let dot_y = y - font_size * 1.05;
-                self.ctx.save();
-                self.ctx.set_font(&format!("{}px sans-serif", dot_size));
-                self.ctx.set_text_align("center");
-                self.ctx.set_fill_style_str(&color_to_css(style.color));
-                for &cx in &char_positions[..char_positions.len().saturating_sub(1)] {
-                    let dot_x = x + cx + (font_size * style.ratio * 0.5);
-                    self.ctx.fill_text(dot_char, dot_x, dot_y).ok();
+            use crate::renderer::emphasis::{emphasis_mark, EmphasisPrim};
+            let color = color_to_css(style.color);
+            self.ctx.save();
+            self.ctx.set_fill_style_str(&color);
+            self.ctx.set_stroke_style_str(&color);
+            let _ = self.ctx.set_line_dash(&js_sys::Array::new());
+            self.ctx.set_line_cap("round");
+            self.ctx.set_line_join("round");
+            for &cx in &char_positions[..char_positions.len().saturating_sub(1)] {
+                let center_x = x + cx + (font_size * style.ratio * 0.5);
+                for prim in emphasis_mark(style.emphasis_dot, center_x, y, font_size, line_top) {
+                    match prim {
+                        EmphasisPrim::Circle {
+                            cx,
+                            cy,
+                            r,
+                            filled,
+                            stroke_width,
+                        } => {
+                            self.ctx.begin_path();
+                            let _ =
+                                self.ctx
+                                    .arc(cx, cy, r.max(0.1), 0.0, std::f64::consts::PI * 2.0);
+                            if filled {
+                                self.ctx.fill();
+                            } else {
+                                self.ctx.set_line_width(stroke_width);
+                                self.ctx.stroke();
+                            }
+                        }
+                        EmphasisPrim::Polyline { points, width } => {
+                            self.ctx.set_line_width(width);
+                            self.ctx.begin_path();
+                            for (i, (px, py)) in points.iter().enumerate() {
+                                if i == 0 {
+                                    self.ctx.move_to(*px, *py);
+                                } else {
+                                    self.ctx.line_to(*px, *py);
+                                }
+                            }
+                            self.ctx.stroke();
+                        }
+                    }
                 }
-                self.ctx.restore();
             }
+            self.ctx.restore();
         }
 
         // 탭 리더(채울 모양) 렌더링 — 12종

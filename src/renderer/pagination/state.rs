@@ -87,6 +87,7 @@ impl PaginationState {
             return;
         }
         let col_content = ColumnContent {
+            topbottom_bands: Vec::new(),
             column_index: self.current_column,
             start_height: 0.0,
             endnote_flow: false,
@@ -107,6 +108,7 @@ impl PaginationState {
     /// 현재 항목을 ColumnContent로 만들어 (비어있어도) 마지막 페이지에 push
     pub fn flush_column_always(&mut self) {
         let col_content = ColumnContent {
+            topbottom_bands: Vec::new(),
             column_index: self.current_column,
             start_height: 0.0,
             endnote_flow: false,

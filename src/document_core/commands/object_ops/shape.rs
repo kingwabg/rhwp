@@ -389,17 +389,39 @@ impl DocumentCore {
     ) -> Result<String, HwpError> {
         use crate::document_core::helpers::{json_bool, json_i32, json_str};
 
+        // [개선 트랙1] 기준계/정렬 전환 rebase — mutation 전에 실측 프로브.
+        let dpi = self.dpi;
+        let rebase_plan = self
+            .resolve_shape_control_ref(section_idx, parent_para_idx, control_idx)
+            .ok()
+            .map(|s| s.common().clone())
+            .and_then(|old| {
+                self.plan_object_rebase(section_idx, parent_para_idx, control_idx, props_json, &old)
+            });
+
         let shape = self.resolve_shape_control_mut(section_idx, parent_para_idx, control_idx)?;
 
         // CommonObjAttr 업데이트
         // 리사이즈 핸들을 반대편으로 끌어당길 때 studio가 width/height=0 을 보내
         // 도형이 렌더러상 사라지는 버그 방어: 최소 크기 clamp.
         let c = shape.common_mut();
+        // [트랙3] 그림(set_picture_properties)과 같은 TAC 토글 마이그레이션 검출 스냅샷.
+        let was_tac = c.treat_as_char;
         let new_w = crate::document_core::helpers::json_u32(props_json, "width")
             .map(|w| w.max(MIN_SHAPE_SIZE));
         let new_h = crate::document_core::helpers::json_u32(props_json, "height")
             .map(|h| h.max(MIN_SHAPE_SIZE));
         Self::apply_common_obj_attr_from_json(c, props_json);
+        let now_tac = c.treat_as_char;
+        if let Some(plan) = rebase_plan.as_ref() {
+            let (h, v) = Self::rebased_offsets(plan, c, dpi);
+            if let Some(h) = h {
+                c.horizontal_offset = h as u32;
+            }
+            if let Some(v) = v {
+                c.vertical_offset = v as u32;
+            }
+        }
 
         // Polygon/Curve: original_width/height는 생성 시 값으로 유지해야 렌더러의
         // 스케일 팩터(sx = current/original)가 올바르게 동작한다.
@@ -631,8 +653,87 @@ impl DocumentCore {
             group.shape_attr.raw_rendering = Vec::new();
         }
 
+        // [트랙3] TAC 마이그레이션용 높이 — 그림과의 차이: drawing 있는 도형은
+        // max(common.height, shape_attr.current_height) (한컴 저장본 계약,
+        // tac_control_height_for_empty_picture_para 와 동일 산식). 글상자 내부
+        // 콘텐츠는 상자 크기를 바꾸지 않으므로 상자 높이만으로 충분(자동 크기 v2).
+        let mig_height_hu = {
+            let common_h = shape.common().height as i32;
+            let current_h = shape.shape_attr().current_height as i32;
+            common_h.max(current_h)
+        };
+
         if caption_changed {
             crate::parser::assign_auto_numbers(&mut self.document);
+        }
+
+        // [트랙3] 도형·글상자 TAC 토글 마이그레이션 — 그림(set_picture_properties)
+        // 미러. false→true: rel_to=Para·offset=0·host line_segs[0] 갱신(공용 헬퍼).
+        // true→false: 빈 문단은 line_segs 재구성(기존 헬퍼가 Shape 대응),
+        // 텍스트 문단은 reflow + vpos 재계산.
+        let should_migrate_to_inline = !was_tac && now_tac;
+        let should_migrate_to_floating = was_tac && !now_tac;
+        let mut reflow_text_para_after_floating = false;
+        if should_migrate_to_inline || should_migrate_to_floating {
+            let section = self.document.sections.get_mut(section_idx).ok_or_else(|| {
+                HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
+            })?;
+            let body_len = section.paragraphs.len();
+            let para = if parent_para_idx < body_len {
+                section.paragraphs.get_mut(parent_para_idx).ok_or_else(|| {
+                    HwpError::RenderError(format!("문단 인덱스 {} 범위 초과", parent_para_idx))
+                })?
+            } else {
+                let mut virtual_idx = parent_para_idx - body_len;
+                let mut found = None;
+                'outer: for body_para in &mut section.paragraphs {
+                    for ctrl in &mut body_para.controls {
+                        if let Control::Endnote(en) = ctrl {
+                            if virtual_idx < en.paragraphs.len() {
+                                found = en.paragraphs.get_mut(virtual_idx);
+                                break 'outer;
+                            }
+                            virtual_idx -= en.paragraphs.len();
+                        }
+                    }
+                }
+                found.ok_or_else(|| {
+                    HwpError::RenderError(format!("문단 인덱스 {} 범위 초과", parent_para_idx))
+                })?
+            };
+            if should_migrate_to_inline {
+                let crate::model::paragraph::Paragraph {
+                    line_segs,
+                    controls,
+                    ..
+                } = &mut *para;
+                if let Some(Control::Shape(shape)) = controls.get_mut(control_idx) {
+                    Self::migrate_float_common_to_inline(
+                        line_segs,
+                        shape.common_mut(),
+                        mig_height_hu,
+                    );
+                }
+            } else if para.text.is_empty() && para.char_offsets.is_empty() {
+                Self::migrate_empty_picture_para_inline_to_floating(para);
+            } else if !para.text.is_empty() && parent_para_idx < body_len {
+                reflow_text_para_after_floating = true;
+            }
+        }
+        if reflow_text_para_after_floating {
+            let stored_end_for_reset = crate::renderer::composer::paragraph_flow_end(
+                &self.document.sections[section_idx].paragraphs[parent_para_idx],
+            );
+            self.reflow_paragraph(section_idx, parent_para_idx);
+            crate::renderer::composer::recalculate_section_vpos(
+                &mut self.document.sections[section_idx].paragraphs,
+                parent_para_idx,
+                None,
+                stored_end_for_reset,
+                &self.styles,
+                self.dpi,
+                self.document.is_hwp3_variant,
+            );
         }
 
         // 리플로우 + 렌더 트리 캐시 무효화
@@ -1162,6 +1263,20 @@ impl DocumentCore {
         if treat_as_char {
             attr |= 0x01;
         }
+        // [officex] 호출자가 준 배치를 attr bits21-23 에 실는다. 종전엔 리터럴만 쓰고
+        // text_wrap_str 을 attr 에 반영하지 않아, serializer(control.rs: common.attr!=0 이면
+        // attr 우선)가 지정값을 버렸다 — 6종 어느 것을 줘도 재열기하면 InFrontOfText 였다.
+        // 코드는 parser/control/shape.rs:395-403 과 짝인 **엔진 내부 배치 코드**다(명세 값 번호와 다름).
+        let wrap_bits: u32 = match text_wrap_str {
+            "Square" => 0,
+            "TopAndBottom" => 1,
+            "BehindText" => 2,
+            "InFrontOfText" => 3,
+            "Tight" => 4,
+            "Through" => 5,
+            _ => (attr >> 21) & 0x07, // 모르는 문자열이면 리터럴 기본값을 유지한다
+        };
+        attr = (attr & !(0x07 << 21)) | (wrap_bits << 21);
 
         // --- 빈 문단 (글상자 내부용) ---
         let tb_inner_width = width.saturating_sub(1020); // 양쪽 여백 510+510
@@ -1275,6 +1390,11 @@ impl DocumentCore {
             },
             horz_align: HorzAlign::Left,
             text_wrap,
+            // [officex] attr 리터럴의 bit14(겹침 허용)와 메모리 enum 을 일치시킨다.
+            // 종전엔 이 필드를 안 채워 Default(false)였는데 attr 은 floating 에서 bit14=1 이라,
+            // 생성 직후 조회는 false·재열기 후에는 true 로 갈렸다(태생 불일치).
+            // 저장 바이트는 그대로 두고 메모리를 attr 에 맞춘다 — 왕복 일관성만 회복한다.
+            allow_overlap: !inline_textbox,
             description: match shape_type {
                 "line" => "선입니다.".to_string(),
                 "ellipse" => "타원입니다.".to_string(),
@@ -1496,19 +1616,15 @@ impl DocumentCore {
         {
             let paragraph = &mut self.document.sections[section_idx].paragraphs[para_idx];
 
-            // 컨트롤 삽입 위치 결정 (char_offset 기준)
-            let insert_idx = {
-                let positions =
-                    crate::document_core::helpers::find_control_text_positions(paragraph);
-                let mut idx = paragraph.controls.len();
-                for (i, &pos) in positions.iter().enumerate() {
-                    if pos > char_offset {
-                        idx = i;
-                        break;
-                    }
-                }
-                idx
-            };
+            // [image-shape/도형 핸들 안정화] 새 도형은 문단 컨트롤 배열의 맨 뒤에 붙인다
+            // (그림 insert_picture_native 와 동일 정책 — controls.push).
+            //
+            // 예전엔 char_offset 을 find_control_text_positions 의 "text 위치"와 비교해
+            // 삽입 지점을 정했는데, 이미 삽입된 floating 도형들은 이 위치 공간에서 0,1,2… 순번을
+            // 갖는다. 그래서 char_offset=0 으로 셋째 도형을 넣으면 "pos>0 인 첫 컨트롤"=둘째 도형
+            // 앞에 끼어들어, 앞서 반환했던 둘째 도형의 controlIdx 가 셋째를 가리키게 뒤틀렸다.
+            // 항상 뒤에 붙이면 앞서 넘긴 인덱스가 절대 밀리지 않는다.
+            let insert_idx = paragraph.controls.len();
 
             // 컨트롤 추가
             paragraph

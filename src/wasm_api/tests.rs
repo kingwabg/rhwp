@@ -251,6 +251,71 @@ fn issue_1470_style_update_reflows_and_keeps_margin_unit() {
     );
 }
 
+/// [스타일 패리티 2026-07-30] 한컴 「본문을 [X] 스타일 모양으로 덮어 쓸까요?」의 두 갈래.
+/// '아니오'(=overwrite false)는 직접 문단서식을 보존, '예'(=true)는 스타일 모양으로 덮는다.
+/// 예전엔 '예' 경로가 없어 직접 서식이 있는 문단에 스타일을 적용하면 문단 모양이 무시됐다.
+#[test]
+fn style_apply_overwrite_flag_controls_para_shape() {
+    use crate::model::style::{CharShape, ParaShape, Style};
+
+    let mut mk = || {
+        let mut doc = HwpDocument::create_empty();
+        doc.document.doc_info.char_shapes = vec![CharShape::default(), CharShape::default()];
+        doc.document.doc_info.para_shapes = vec![
+            ParaShape::default(),
+            ParaShape {
+                margin_left: 1000,
+                ..Default::default()
+            },
+            ParaShape {
+                margin_left: 7777,
+                ..Default::default()
+            }, // 직접 서식
+        ];
+        doc.document.doc_info.styles = vec![
+            Style {
+                para_shape_id: 0,
+                char_shape_id: 0,
+                ..Default::default()
+            },
+            Style {
+                para_shape_id: 1,
+                char_shape_id: 1,
+                ..Default::default()
+            },
+        ];
+        doc.insert_text_native(0, 0, 0, "가나다").expect("텍스트");
+        // 직접 문단서식: 스타일 0 의 psid(0) 과 다른 2 번을 물려 둔다
+        let para = &mut doc.document.sections[0].paragraphs[0];
+        para.style_id = 0;
+        para.para_shape_id = 2;
+        doc
+    };
+
+    // '아니오' — 직접 서식 보존(종전 동작)
+    let mut keep = mk();
+    keep.apply_style_native(0, 0, 1).expect("스타일 적용(보존)");
+    assert_eq!(
+        keep.document.sections[0].paragraphs[0].style_id, 1,
+        "스타일 id 는 바뀐다"
+    );
+    assert_eq!(
+        keep.document.sections[0].paragraphs[0].para_shape_id, 2,
+        "'아니오' 는 직접 문단서식을 보존한다"
+    );
+
+    // '예' — 스타일 문단모양으로 덮어쓰기
+    let mut over = mk();
+    over.apply_style_native_ex(0, 0, 1, true)
+        .expect("스타일 적용(덮어쓰기)");
+    let psid = over.document.sections[0].paragraphs[0].para_shape_id;
+    assert_ne!(psid, 2, "'예' 는 직접 문단서식을 버린다");
+    assert_eq!(
+        over.document.doc_info.para_shapes[psid as usize].margin_left, 1000,
+        "'예' 는 스타일의 문단모양(margin_left 1000)을 따른다"
+    );
+}
+
 #[test]
 fn issue_1470_style_apply_preserves_direct_char_shape() {
     use crate::model::paragraph::CharShapeRef;
@@ -798,9 +863,11 @@ fn issue_1481_insert_column_keeps_create_table_height() {
     let raw_common = parse_common_obj_attr(&table.raw_ctrl_data);
 
     assert_eq!(table.col_count, 6);
-    assert!(
-        table.common.width > original_width,
-        "열 추가 후 표 폭은 기준 열 폭만큼 증가해야 한다"
+    // [officex] 계약 변경: 열 추가는 표 전체 폭을 보존한다(한컴 동작 — 기존 열에서 폭을 나눠 온다).
+    // 옛 단언은 "기준 열 폭만큼 증가"로 현 결함을 박제하고 있었다. 이 테스트의 본래 초점은 height다.
+    assert_eq!(
+        table.common.width, original_width,
+        "열 추가는 표 전체 폭을 보존해야 한다"
     );
     assert_eq!(
         table.common.height, original_height,
@@ -1969,6 +2036,97 @@ fn issue2214_deferred_table_caption_reports_flow_change() {
     assert!(
         saw_boundary,
         "caption deferred input must report a wrapping flow boundary"
+    );
+}
+
+// ── [officex] 도형 배치(textWrap) 저장 왕복 계약 ────────────────────────────
+// 왜 있나: createShapeControl 의 textWrap 이 attr 에 반영되지 않아, 6종 어느 것을 줘도
+// 재열기하면 InFrontOfText 로 뒤집혔다(attr 리터럴 0x046A4000 = bits21-23=3 이 enum 을 이겼다).
+// 이 테스트가 없어서 게이트가 회귀를 못 잡았다 — tests/ 전체에 create_shape_control 호출이
+// 검증 목적으로는 0건이었다.
+fn officex_make_shape(doc: &mut HwpDocument, wrap: &str, tac: bool, kind: &str) -> (usize, usize) {
+    let made = doc
+        .create_shape_control_native(
+            0,
+            0,
+            0,
+            21_600,
+            7_200,
+            0,
+            0,
+            tac,
+            wrap,
+            kind,
+            false,
+            false,
+            &[],
+        )
+        .expect("도형 생성");
+    // 반환은 JSON 문자열 — paraIdx/controlIdx 를 뽑는다(다른 테스트와 같은 방식).
+    let grab = |key: &str| -> usize {
+        made.split(&format!("\"{key}\":"))
+            .nth(1)
+            .and_then(|rest| {
+                rest.split(|c: char| !c.is_ascii_digit())
+                    .find(|t| !t.is_empty())
+            })
+            .and_then(|num| num.parse().ok())
+            .unwrap_or_else(|| panic!("{key} 를 못 찾음: {made}"))
+    };
+    (grab("paraIdx"), grab("controlIdx"))
+}
+
+#[test]
+fn officex_shape_textwrap_survives_save_roundtrip() {
+    // 6종 전부: 지정한 배치가 저장 왕복 뒤에도 그대로여야 한다.
+    for wrap in [
+        "Square",
+        "Tight",
+        "Through",
+        "TopAndBottom",
+        "BehindText",
+        "InFrontOfText",
+    ] {
+        let mut doc = HwpDocument::create_empty();
+        doc.create_blank_document();
+        let (para, ctrl) = officex_make_shape(&mut doc, wrap, false, "rectangle");
+        let before = doc
+            .get_shape_properties_native(0, para, ctrl)
+            .expect("생성 직후 조회");
+        assert!(
+            before.contains(wrap),
+            "메모리 단계부터 어긋난다(wrap={wrap}): {before}"
+        );
+        let bytes = doc.export_hwp().expect("저장");
+        let reopened = HwpDocument::from_bytes(&bytes).expect("재열기");
+        let after = reopened
+            .get_shape_properties_native(0, para, ctrl)
+            .expect("재열기 후 조회");
+        assert!(
+            after.contains(wrap),
+            "저장 왕복에서 배치가 유실됐다(wrap={wrap}): {after}"
+        );
+    }
+}
+
+#[test]
+fn officex_shape_textwrap_default_is_unchanged() {
+    // 미지정 호출의 기본값 계약(Task #1280 v2): floating 도형 = InFrontOfText,
+    // inline 글상자 = Square. 이 값이 바뀌면 권위 샘플(textbox-under-image.hwp)과 어긋난다.
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document();
+    let (p1, c1) = officex_make_shape(&mut doc, "InFrontOfText", false, "rectangle");
+    let floating = doc.get_shape_properties_native(0, p1, c1).expect("조회");
+    assert!(
+        floating.contains("InFrontOfText"),
+        "floating 기본 배치가 바뀌었다: {floating}"
+    );
+
+    let (p2, c2) = officex_make_shape(&mut doc, "Square", true, "textbox");
+    let inline = doc.get_shape_properties_native(0, p2, c2).expect("조회");
+    assert!(
+        inline.contains("Square"),
+        "inline 글상자 기본 배치가 바뀌었다: {inline}"
     );
 }
 
@@ -4251,6 +4409,32 @@ fn test_export_selection_html_partial() {
     assert!(html.contains(">BCD<"));
 }
 
+/// [2026-07-30 한컴 상호운용 실측 회귀] 범위 HTML 내보내기가 범위 안 표 컨트롤을
+/// 포함해야 한다 — 빠지면 전체선택 복사가 첫 문단 텍스트만 싣는다(실사고).
+#[test]
+fn test_export_selection_html_includes_table_in_range() {
+    let mut doc = HwpDocument::create_empty();
+    doc.insert_text(0, 0, 0, "본문앞").unwrap();
+    let r = doc.create_table_native(0, 0, 3, 2, 2).unwrap();
+    let host: usize = {
+        let s = r.split("\"paraIdx\":").nth(1).unwrap();
+        s[..s.find([',', '}']).unwrap()].parse().unwrap()
+    };
+    // 셀에 내용을 넣어 셀 텍스트 직렬화까지 확인
+    doc.insert_text_in_cell_native(0, host, 0, 0, 0, 0, "셀본문")
+        .unwrap();
+
+    let last = doc.document().sections[0].paragraphs.len() - 1;
+    let html = doc
+        .export_selection_html_native(0, 0, 0, last, 100)
+        .unwrap();
+    assert!(html.contains("<table"), "범위 복사에 표 포함: {html}");
+    assert!(html.contains("셀본문"), "셀 텍스트 포함: {html}");
+    assert!(html.contains("본문앞"), "본문 텍스트 포함: {html}");
+    // border_fill_id 1-기반 off-by-one 회귀 — 기본 새 표는 실선 테두리가 CSS 로 나가야 한다
+    assert!(html.contains("border-top:"), "셀 테두리 CSS 포함: {html}");
+}
+
 #[test]
 fn test_export_control_html_table() {
     let mut doc = create_doc_with_table();
@@ -4493,7 +4677,14 @@ fn test_paste_html_table_as_control() {
         assert!(cell_texts.iter().any(|t| t.contains("셀4")), "셀4 포함");
 
         // 정상 파일 패턴과 일치하는 속성값 검증
-        assert_eq!(tbl.attr, 0x082A2311, "table.attr = 0x082A2311");
+        // [pagination-overflow/paste-import #2] table.attr(=CommonObjAttr)에서 bit0(글자처럼
+        // 취급)·bit13(쪽영역제한)을 껐다(0x082A2311 & !0x2001 = 0x082A0310). 종전값은 조판기
+        // is_effective_tac_table 을 발동시켜 쪽 넘는 표가 안 갈라지게 만들었다. 비-TAC 블록 표로
+        // 잡혀 행 단위 분할된다. attr==common.attr 정합은 아래 4540 단언이 계속 지킨다.
+        assert_eq!(
+            tbl.attr, 0x082A0310,
+            "table.attr = 비-TAC 블록 표(bit0·bit13 off)"
+        );
         assert_eq!(
             tbl.raw_table_record_attr, 0x04000006,
             "raw_table_record_attr (DIFF-5: 셀분리금지 항상 설정)"
@@ -4569,6 +4760,37 @@ fn test_paste_html_table_as_control() {
     } else {
         panic!("첫 번째 컨트롤이 Table이어야 함");
     }
+}
+
+/// [pagination-overflow/paste-import #2] pasteHtml 로 붙인, 한 쪽을 넘는 표(200행)는
+/// 행 단위로 페이지 분할되어야 한다. 종전엔 종이 절대배치(vert=Paper)+글자처럼취급 오판으로
+/// 200행이 한 쪽에 겹쳐 쌓여 pageCount=1 이었다(createTableEx 는 정상 분할). 저장·재로드
+/// 왕복 후에도 분할이 보존되는지(attr==common.attr 정합)까지 확인한다.
+#[test]
+fn paste_html_tall_table_paginates_across_pages() {
+    let mut doc = HwpDocument::create_empty();
+    let mut html = String::from("<table>");
+    for r in 0..200 {
+        html.push_str("<tr><td>r");
+        html.push_str(&r.to_string());
+        html.push_str("</td><td>x</td></tr>");
+    }
+    html.push_str("</table>");
+    doc.paste_html(0, 0, 0, &html).expect("paste ok");
+    let pages = doc.page_count();
+    assert!(
+        pages > 1,
+        "쪽 넘는 붙여넣기 표는 갈라져야 한다 — pageCount={pages}"
+    );
+
+    // 저장→재로드 왕복 후에도 분할 보존
+    let bytes = doc.export_hwp().expect("export ok");
+    let reopened = HwpDocument::from_bytes(&bytes).expect("open ok");
+    let pages2 = reopened.page_count();
+    assert!(
+        pages2 > 1,
+        "저장·재로드 뒤에도 분할이 유지돼야 한다 — pageCount={pages2}"
+    );
 }
 
 /// DIFF-1 검증: &nbsp; 만 있는 빈 셀이 char_count=1, has_para_text=false 인지 확인
@@ -4873,7 +5095,15 @@ fn test_table_utility_functions() {
 fn test_html_utility_functions() {
     // decode_html_entities
     assert_eq!(super::decode_html_entities("&amp;&lt;&gt;"), "&<>");
-    assert_eq!(super::decode_html_entities("&nbsp;"), " ");
+    // [paste-import/nbsp] &nbsp;는 고정폭 공백(U+00A0) — 일반 공백(U+0020) 아님
+    assert_eq!(super::decode_html_entities("&nbsp;"), "\u{00A0}");
+    // [paste-import/엔티티] 숫자/16진 문자참조 + 이름 있는 엔티티 전반 디코딩
+    assert_eq!(
+        super::decode_html_entities("&#039;&copy;&#x2014;"),
+        "'\u{00A9}\u{2014}"
+    );
+    // 알 수 없는 엔티티는 '&' 그대로 보존
+    assert_eq!(super::decode_html_entities("a & b"), "a & b");
 
     // html_strip_tags
     assert_eq!(super::html_strip_tags("<b>bold</b>"), "bold");
@@ -17528,9 +17758,13 @@ fn test_parse_table_html_save() {
         table_para.line_segs[0].line_height > 0,
         "DIFF-8: line_height > 0"
     );
-    assert!(
-        table_para.line_segs[0].segment_width > 0,
-        "DIFF-8: seg_width > 0"
+    // [pagination-overflow/paste-import #2] 표 host 문단 LINE_SEG 의 segment_width 는
+    // 한컴 표준대로 0 이어야 한다(createTableEx 동일). 종전엔 표 전체 폭을 실어(seg_w>0)
+    // 표가 "쪼갤 수 없는 한 줄"로 굳어 쪽 분할이 막혔다 — 이 단언이 그 버그를 고정하고
+    // 있었으므로 표준값(0)으로 갱신한다.
+    assert_eq!(
+        table_para.line_segs[0].segment_width, 0,
+        "DIFF-8: seg_width == 0 (한컴 표준 표 문단)"
     );
     assert_eq!(
         table_para.line_segs[0].tag,
@@ -23589,9 +23823,11 @@ fn test_create_inline_tac_table() {
         result
     );
 
-    // 5. 표 뒤에 "4 tacglkj 표 다음" 텍스트 추가
+    // 5. 표 뒤에 "4 tacglkj 표 다음" 텍스트 추가.
+    // 후행 컨트롤 뒤 삽입은 하이브리드 확장 오프셋(text_len + 컨트롤 수) — 텍스트
+    // 오프셋 text_len 은 "표 앞"이라 스트림상 표가 끝으로 밀려 end-anchor 가 된다.
     let para = &doc.document.sections[0].paragraphs[1];
-    let new_text_offset = para.text.chars().count();
+    let new_text_offset = para.text.chars().count() + 1;
     doc.insert_text_native(0, 1, new_text_offset, "4 tacglkj 표 다음")
         .unwrap();
 
@@ -24784,4 +25020,95 @@ fn issue2214_scoped_cache_coherence_preserves_transient_pagination() {
         );
         assert_eq!(doc.page_count(), 115, "{label}: page count");
     }
+}
+
+/// [TAC 삽입 정합 2026-07-30] 표 뒤(논리 끝) insertTextLogical 이 컨트롤을 밀지 않는다.
+/// 실측 결함: '가나[표]' 논리 3에 X 삽입 시 컨트롤 앞 규약에 걸려 '가나X[표]'가 됐다.
+#[test]
+fn insert_text_logical_after_trailing_tac_table_keeps_control_position() {
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document().unwrap();
+    doc.insert_text_native(0, 0, 0, "가나").unwrap();
+    doc.create_table_ex_native(0, 0, 2, 1, 1, true, Some(&[3000]), None)
+        .unwrap();
+
+    let para = &doc.document.sections[0].paragraphs[0];
+    assert_eq!(
+        crate::document_core::helpers::logical_paragraph_length(para),
+        3,
+        "텍스트 2 + 표 1"
+    );
+
+    let r = doc.insert_text_logical(0, 0, 3, "X").unwrap();
+    assert!(r.contains("\"logicalOffset\":4"), "반환 캐럿 논리 4: {r}");
+
+    let para = &doc.document.sections[0].paragraphs[0];
+    assert_eq!(para.text, "가나X");
+    // 표는 여전히 논리 2 (X 앞) — getInlineControlIndexAtLogical 로 판정
+    let ci = doc.get_inline_control_index_at_logical(0, 0, 2).unwrap();
+    assert!(ci >= 0, "논리 2에 표가 있어야 함 (ci={ci})");
+    let ci3 = doc.get_inline_control_index_at_logical(0, 0, 3).unwrap();
+    assert_eq!(ci3, -1, "논리 3은 X(텍스트)여야 함");
+}
+
+/// [범위 삭제 2026-07-30] 한컴 O8 — 표를 걸친 선택을 지우면 표도 함께 사라진다.
+#[test]
+fn delete_range_logical_removes_spanned_inline_table() {
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document().unwrap();
+    doc.insert_text_native(0, 0, 0, "가나").unwrap();
+    doc.create_table_ex_native(0, 0, 2, 1, 1, true, Some(&[3000]), None)
+        .unwrap();
+    doc.insert_text_logical(0, 0, 3, "다").unwrap();
+
+    let inline_count = |d: &HwpDocument| -> usize {
+        d.document.sections[0].paragraphs[0]
+            .controls
+            .iter()
+            .filter(|c| crate::document_core::helpers::is_logical_inline_control(c))
+            .count()
+    };
+    assert_eq!(doc.document.sections[0].paragraphs[0].text, "가나다");
+    assert_eq!(inline_count(&doc), 1, "인라인 표 1개");
+    let para = &doc.document.sections[0].paragraphs[0];
+    assert_eq!(
+        crate::document_core::helpers::logical_paragraph_length(para),
+        4
+    );
+
+    // 논리 1~4 선택(나 + 표 + 다) 삭제 → 표가 사라지고 '가'만 남는다.
+    doc.delete_range_logical(0, 0, 1, 0, 4).unwrap();
+    assert_eq!(
+        doc.document.sections[0].paragraphs[0].text, "가",
+        "텍스트 잔여"
+    );
+    assert_eq!(inline_count(&doc), 0, "표가 남았다 — O8 위반");
+    assert_eq!(
+        crate::document_core::helpers::logical_paragraph_length(
+            &doc.document.sections[0].paragraphs[0]
+        ),
+        1
+    );
+}
+
+/// 선택이 표를 안 건드리면 표는 보존된다(과삭제 방지).
+#[test]
+fn delete_range_logical_keeps_table_outside_selection() {
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document().unwrap();
+    doc.insert_text_native(0, 0, 0, "가나").unwrap();
+    doc.create_table_ex_native(0, 0, 2, 1, 1, true, Some(&[3000]), None)
+        .unwrap();
+    doc.insert_text_logical(0, 0, 3, "다라").unwrap();
+
+    // 논리 3~5(표 뒤 '다라')만 삭제
+    doc.delete_range_logical(0, 0, 3, 0, 5).unwrap();
+    let para = &doc.document.sections[0].paragraphs[0];
+    assert_eq!(para.text, "가나");
+    let inline = para
+        .controls
+        .iter()
+        .filter(|c| crate::document_core::helpers::is_logical_inline_control(c))
+        .count();
+    assert_eq!(inline, 1, "선택 밖 표까지 지워졌다");
 }

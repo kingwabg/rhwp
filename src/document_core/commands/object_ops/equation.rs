@@ -199,6 +199,24 @@ impl DocumentCore {
         props_json: &str,
     ) -> Result<String, HwpError> {
         let dpi = self.dpi;
+        // [개선 트랙1] 기준계/정렬 전환 rebase — 본문 수식만 (셀 내부는 Para=셀
+        // 컨테이너 기준이라 v1 프로브 미지원 → 현행 유지).
+        let rebase_plan = if cell_idx.is_none() && cell_para_idx.is_none() {
+            self.find_equation_ref(section_idx, parent_para_idx, control_idx, None, None)
+                .ok()
+                .map(|eq| eq.common.clone())
+                .and_then(|old| {
+                    self.plan_object_rebase(
+                        section_idx,
+                        parent_para_idx,
+                        control_idx,
+                        props_json,
+                        &old,
+                    )
+                })
+        } else {
+            None
+        };
         let eq = self.find_equation_mut(
             section_idx,
             parent_para_idx,
@@ -206,7 +224,22 @@ impl DocumentCore {
             cell_idx,
             cell_para_idx,
         )?;
+        let was_tac = eq.common.treat_as_char;
         Self::apply_equation_properties(eq, dpi, props_json);
+        let tac_toggled = was_tac != eq.common.treat_as_char;
+        if let Some(plan) = rebase_plan {
+            let (h, v) = Self::rebased_offsets(&plan, &eq.common, dpi);
+            if let Some(h) = h {
+                eq.common.horizontal_offset = h as u32;
+            }
+            if let Some(v) = v {
+                eq.common.vertical_offset = v as u32;
+            }
+        }
+        // HWP5 파스 수식은 직렬화기가 raw_ctrl_data 를 그대로 기록하므로
+        // (serializer/control.rs serialize_equation_control) 물리 변경을 사본에 반영한다 —
+        // 안 하면 배치 편집(TAC 전환·오프셋·크기)이 .hwp 저장에서 파스 시점 값으로 원복된다.
+        Self::sync_raw_ctrl_data_from_common(&eq.common, &mut eq.raw_ctrl_data);
 
         // 표 셀 내 수식인 경우 표 dirty 플래그 설정
         if cell_idx.is_some() {
@@ -217,6 +250,15 @@ impl DocumentCore {
             {
                 t.dirty = true;
             }
+        }
+
+        // [트랙4 ④ 2026-08-05] TAC↔float 전환 시 host line_segs 재생산 — 그림 setter
+        // (Task #1151 migration)와 같은 원리. 종전엔 TAC 시절 수식 높이가 seg 에 박제돼
+        // 비-TAC(어울림) 전환 후에도 흐름이 수식 높이만큼 소비됐다(이중 진실 데싱크).
+        // reflow 가 유일한 생산자: 비-TAC 수식은 인라인 치수 계상에서 빠져 host 줄이
+        // 글자 높이로 돌아오고, 옆 흐름(훅 밴드)이 성립한다.
+        if tac_toggled && cell_idx.is_none() && cell_para_idx.is_none() {
+            self.reflow_paragraph(section_idx, parent_para_idx);
         }
 
         // 재조판

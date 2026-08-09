@@ -437,13 +437,24 @@ impl LayoutEngine {
         // (표의 allow_para_top_bleed 예외와 동일 취지).
         // vpos_accounts_for_height(파일 vpos 가 그림 공간을 이미 반영) 이면 그림은
         // base_y 위쪽 gap 안에 그려지므로 (frame 하단 = base_y) 클램프 비대상.
+        //
+        // [render-position/restrictInPage 결함] 예전엔 vert=Para 앵커만 클램프해서
+        // Paper/Page 앵커 + 큰 vertOffset(예: setPictureProperties vertOffset=200000)이
+        // 쪽 밖(y 가 쪽 높이의 2배 ≈ 2666px)에 그려져 그림이 어느 페이지에도 안 잡히고
+        // 완전히 사라졌다(image-shape QA "restrictInPage 가 렌더 위치를 가두는가"). Para 는
+        // 기존대로 단(col) 영역 기준을 유지하고, Paper/Page 앵커는 물리 쪽(paper) 밖으로
+        // 나가 완전 소실되는 경우만 하단으로 끌어올린다 — 물리 쪽 안 좌표는 손대지 않아
+        // 골든(정상 배치 그림)은 no-op. restrictInPage=off 는 현행대로 이탈 허용.
         let base_y = if !picture.common.treat_as_char
             && picture.common.flow_with_text
             && !vpos_accounts_for_height
-            && matches!(picture.common.vert_rel_to, VertRelTo::Para)
         {
-            let body_bottom = col_area.y + col_area.height - total_height;
-            base_y.min(body_bottom.max(col_area.y))
+            let (ref_y, ref_h) = match picture.common.vert_rel_to {
+                VertRelTo::Para => (col_area.y, col_area.height),
+                _ => (paper_area.y, paper_area.height),
+            };
+            let body_bottom = ref_y + ref_h - total_height;
+            base_y.min(body_bottom.max(ref_y))
         } else {
             base_y
         };

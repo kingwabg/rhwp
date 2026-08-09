@@ -278,6 +278,47 @@ impl DocumentCore {
     }
 
     /// 표의 행/열/셀 수를 반환한다 (네이티브).
+    /// 표 **밖에서 들어올 때** 어느 칸으로 들어갈지 — 캐럿 x 가 걸친 열을 고른다.
+    ///
+    /// 한컴·워드 정합: ↓ 는 첫 행에서, ↑ 는 마지막 행에서 **같은 기준**으로 열을 고른다.
+    /// 그래야 내려간 길과 올라온 길이 서로 뒤집은 모양이 된다(종전엔 ↓ 가 첫 셀, ↑ 가
+    /// 마지막 셀로 고정돼 좌우가 뒤바뀌었다 — 2026-08-02 사용자 지적).
+    ///
+    /// 판정: 각 열 첫 문단의 캐럿 x 를 재서, preferred_x 보다 왼쪽에서 시작하는 열 중
+    /// 가장 오른쪽 것. preferred_x 가 표 왼쪽 밖이면 첫 열.
+    fn pick_cell_in_row_by_x(
+        &self,
+        sec: usize,
+        host_para: usize,
+        ctrl_idx: usize,
+        table: &crate::model::table::Table,
+        row: u16,
+        preferred_x: f64,
+    ) -> usize {
+        let mut chosen: Option<usize> = None;
+        for col in 0..table.col_count {
+            let Some(ci) = table.cell_index_at(row, col) else {
+                continue;
+            };
+            let ctx = Some((host_para, ctrl_idx, ci, 0));
+            let Ok((_, x, _, _)) = self.get_cursor_rect_values(sec, 0, 0, ctx) else {
+                continue;
+            };
+            if chosen.is_none() {
+                chosen = Some(ci); // 첫 열은 기본값 — preferred_x 가 표 왼쪽 밖일 때
+            }
+            if x <= preferred_x + 0.5 {
+                chosen = Some(ci);
+            } else {
+                break; // 열은 왼→오 이므로 한 번 넘어서면 더 볼 것 없다
+            }
+        }
+        chosen.unwrap_or_else(|| {
+            // 좌표를 못 재면 방향에 맞는 모서리로 (종전 동작)
+            table.cell_index_at(row, 0).unwrap_or(0)
+        })
+    }
+
     pub(crate) fn move_vertical_native(
         &self,
         sec: usize,
@@ -1346,22 +1387,40 @@ impl DocumentCore {
         if let Some(ctrl_idx) = has_table_control(para_ref) {
             if let Some(Control::Table(ref table)) = para_ref.controls.get(ctrl_idx) {
                 if delta > 0 {
-                    // ArrowDown → 첫 셀(0,0)의 첫 줄
-                    if let Some(first_cell) = table.cells.first() {
-                        if !first_cell.paragraphs.is_empty() {
-                            let cell_para = &first_cell.paragraphs[0];
+                    // ArrowDown → **첫 행에서 캐럿 x 가 걸친 열**의 첫 줄.
+                    // 종전엔 무조건 첫 셀(1행 1열)로 들어가, 마지막 셀로 들어오는 ↑ 와
+                    // 짝이 안 맞았다(2026-08-02 사용자 지적: 표 위아래 이동이 다르다).
+                    let entry = self.pick_cell_in_row_by_x(
+                        sec,
+                        target_para,
+                        ctrl_idx,
+                        table,
+                        0,
+                        preferred_x,
+                    );
+                    if let Some(cell) = table.cells.get(entry) {
+                        if !cell.paragraphs.is_empty() {
+                            let cell_para = &cell.paragraphs[0];
                             let range = Self::get_line_char_range(cell_para, 0);
-                            let cell_ctx = Some((target_para, ctrl_idx, 0, 0));
+                            let cell_ctx = Some((target_para, ctrl_idx, entry, 0));
                             let offset = self
                                 .find_char_at_x_on_line(sec, 0, cell_ctx, range, preferred_x)
                                 .unwrap_or(0);
                             return Ok((sec, 0, offset, cell_ctx));
                         }
                     }
-                    return Ok((sec, 0, 0, Some((target_para, ctrl_idx, 0, 0))));
+                    return Ok((sec, 0, 0, Some((target_para, ctrl_idx, entry, 0))));
                 } else {
-                    // ArrowUp → 마지막 셀의 마지막 줄
-                    let last_cell_idx = table.cells.len().saturating_sub(1);
+                    // ArrowUp → **마지막 행에서 캐럿 x 가 걸친 열**의 마지막 줄 (↓ 와 대칭)
+                    let last_row = table.row_count.saturating_sub(1);
+                    let last_cell_idx = self.pick_cell_in_row_by_x(
+                        sec,
+                        target_para,
+                        ctrl_idx,
+                        table,
+                        last_row,
+                        preferred_x,
+                    );
                     if let Some(last_cell) = table.cells.get(last_cell_idx) {
                         let last_cpi = last_cell.paragraphs.len().saturating_sub(1);
                         if let Some(cell_para) = last_cell.paragraphs.get(last_cpi) {
@@ -1378,7 +1437,6 @@ impl DocumentCore {
                             return Ok((sec, last_cpi, offset, cell_ctx));
                         }
                     }
-                    let last_cell_idx = table.cells.len().saturating_sub(1);
                     return Ok((sec, 0, 0, Some((target_para, ctrl_idx, last_cell_idx, 0))));
                 }
             }
@@ -1563,6 +1621,19 @@ impl DocumentCore {
             // 문서 끝 — 표 마지막 위치 유지
             Ok((sec, 0, 0, None))
         } else {
+            // 위로 나가면 **표 앞 문단**으로. 종전엔 표를 품은 문단(ppi) 자신에 섰는데,
+            // 아래로 나갈 때는 ppi+1 로 건너뛰므로 위아래가 짝이 안 맞았다 — 표 위에서
+            // ↑ 를 누르면 같은 자리에 한 번 더 서는 유령 정거장이 생겼다(2026-08-02).
+            if ppi > 0 {
+                return self.enter_paragraph(sec, ppi - 1, delta, preferred_x);
+            }
+            if sec > 0 {
+                let prev_len = self.document.sections[sec - 1].paragraphs.len();
+                if prev_len > 0 {
+                    return self.enter_paragraph(sec - 1, prev_len - 1, delta, preferred_x);
+                }
+            }
+            // 문서 처음 — 표 위치 유지
             Ok((sec, ppi, 0, None))
         }
     }
@@ -1733,12 +1804,24 @@ impl DocumentCore {
             let control_positions = render_para
                 .map(find_logical_control_positions)
                 .unwrap_or_default();
+            // 논리 인라인(TAC) 컨트롤만 커서 슬롯을 갖는다 — 떠 있는 표도
+            // positions 에 자리값은 있지만 히트로 쓰면 앵커 문단 캐럿이 표 상자로
+            // 끌려간다(자리차지 이동 수리와 상충).
+            let inline_controls: Vec<bool> = render_para
+                .map(|p| {
+                    p.controls
+                        .iter()
+                        .map(crate::document_core::helpers::is_logical_inline_control)
+                        .collect()
+                })
+                .unwrap_or_default();
 
             fn visit(
                 node: &RenderNode,
                 sec: usize,
                 para: usize,
                 control_positions: &[usize],
+                inline_controls: &[bool],
                 offset: usize,
                 page: u32,
                 bias: CursorBias,
@@ -1750,6 +1833,40 @@ impl DocumentCore {
                         && eq.cell_index.is_none()
                     {
                         if let Some(ci) = eq.control_index {
+                            if let Some(pos) = control_positions.get(ci).copied() {
+                                if offset == pos || offset == pos + 1 {
+                                    let x = if offset == pos {
+                                        node.bbox.x
+                                    } else {
+                                        node.bbox.x + node.bbox.width
+                                    };
+                                    update_best_cursor(
+                                        best,
+                                        0,
+                                        CursorHit {
+                                            page,
+                                            x,
+                                            y: node.bbox.y,
+                                            h: node.bbox.height.max(10.0),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // [TAC 좌표계 2026-07-30] 글자취급 표도 수식처럼 컨트롤 논리 위치의
+                // 좌/우 모서리를 커서 히트로 제공한다 — 없으면 선택 rect 가 표 뒤
+                // 끝점(논리 pos+1)을 못 찾아 표 영역이 하이라이트에서 빠졌다(신고 ③).
+                // 셀 안 중첩 표는 para_index=None 으로 생성되어(table_cell_content.rs)
+                // 아래 Some 매칭에서 자연 배제된다.
+                if let RenderNodeType::Table(ref tn) = node.node_type {
+                    if tn.section_index == Some(sec) && tn.para_index == Some(para) {
+                        if let Some(ci) = tn
+                            .control_index
+                            .filter(|&ci| inline_controls.get(ci).copied().unwrap_or(false))
+                        {
                             if let Some(pos) = control_positions.get(ci).copied() {
                                 if offset == pos || offset == pos + 1 {
                                     let x = if offset == pos {
@@ -1809,6 +1926,7 @@ impl DocumentCore {
                         sec,
                         para,
                         control_positions,
+                        inline_controls,
                         offset,
                         page,
                         bias,
@@ -1823,6 +1941,7 @@ impl DocumentCore {
                 sec,
                 para,
                 &control_positions,
+                &inline_controls,
                 offset,
                 page,
                 bias,
@@ -1930,6 +2049,28 @@ impl DocumentCore {
             }
 
             visit(node, sec, para, line_idx, page)
+        }
+
+        /// [양쪽 흐름 2026-07-30] 그 줄 세그의 실제 x 범위(좌단, 우단).
+        /// 선택 rect 가 단 전체 폭을 칠하던 결함 수리에 쓴다 — 좌·우 두 조각으로 갈라진
+        /// 줄에서는 단 좌단~우단이 아니라 **자기 조각 안**만 칠해야 한다(부록4 갭 #2).
+        fn find_body_line_box(
+            node: &RenderNode,
+            sec: usize,
+            para: usize,
+            line_idx: usize,
+        ) -> Option<(f64, f64)> {
+            if let RenderNodeType::TextLine(ref line) = node.node_type {
+                if line.section_index == Some(sec)
+                    && line.para_index == Some(para)
+                    && line.line_index.map(|idx| idx as usize) == Some(line_idx)
+                {
+                    return Some((node.bbox.x, node.bbox.x + node.bbox.width));
+                }
+            }
+            node.children
+                .iter()
+                .find_map(|child| find_body_line_box(child, sec, para, line_idx))
         }
 
         // ── 페이지별 렌더 트리 캐시 (최대 2페이지) ──
@@ -2104,8 +2245,32 @@ impl DocumentCore {
                         // 같은 문단 내 강제 줄바꿈: 줄 끝까지 선택되고 다음 줄 시작이 sel_end이면 확장
                         (range_end == sel_end && range_end >= line_char_end && line_idx + 1 < line_count));
 
+                    // [양쪽 흐름 2026-07-30] 어울림 표 옆에서 한 줄이 좌·우 두 조각으로
+                    // 갈라진 경우(= 같은 vertical_pos 를 공유하는 세그 쌍), 선택 rect 를
+                    // 단 좌단~우단이 아니라 **자기 조각 경계**로 제한한다. 종전엔 전폭을
+                    // 칠해 하이라이트가 표를 덮었다(부록4 갭 #2). 갈라지지 않은 줄은
+                    // 종전 그대로(단 영역) — 들여쓰기 포함 하이라이트 동작 보존.
+                    let is_split_line = cell_ctx.is_none() && {
+                        let segs = &para.line_segs;
+                        segs.get(line_idx).map_or(false, |cur| {
+                            (line_idx > 0
+                                && segs
+                                    .get(line_idx - 1)
+                                    .map_or(false, |p| p.vertical_pos == cur.vertical_pos))
+                                || segs
+                                    .get(line_idx + 1)
+                                    .map_or(false, |n| n.vertical_pos == cur.vertical_pos)
+                        })
+                    };
                     let (area_left, area_right) = if cell_ctx.is_none() {
-                        find_column_area(rh.page, rh.x)
+                        let seg_box = if is_split_line {
+                            tree_cache.iter().find_map(|(_, tree)| {
+                                find_body_line_box(&tree.root, section_idx, para_idx, line_idx)
+                            })
+                        } else {
+                            None
+                        };
+                        seg_box.unwrap_or_else(|| find_column_area(rh.page, rh.x))
                     } else {
                         (0.0, 0.0)
                     };

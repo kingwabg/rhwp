@@ -26,6 +26,23 @@ use crate::model::ColorRef;
 use super::canonical_defaults::FONTFACE_LANG_NAMES;
 use super::context::SerializeContext;
 use super::utils::{empty_tag, end_tag, start_tag_attrs, write_xml_decl};
+
+/// 번호 종류 코드 → HWPX numFormat 이름. 파서 parse_numbering_format_code 의 역함수
+/// (정본 = parser/hwpx/header.rs). 미지원 코드는 DIGIT 로 떨어뜨린다 — 파서도 같은 폴백.
+fn numbering_format_name(code: u8) -> &'static str {
+    match code {
+        1 => "CIRCLED_DIGIT",
+        2 => "ROMAN_CAPITAL",
+        3 => "ROMAN_SMALL",
+        4 => "LATIN_CAPITAL",
+        5 => "LATIN_SMALL",
+        8 => "HANGUL_SYLLABLE",
+        10 => "HANGUL_JAMO",
+        12 => "HANGUL_NUMBER",
+        13 => "HANJA_NUMBER",
+        _ => "DIGIT",
+    }
+}
 use super::SerializeError;
 
 /// `header.xml` 바이트 생성. Stage 1 진입점.
@@ -892,23 +909,33 @@ fn write_numbering<W: Write>(
         let level_s = (level + 1).to_string();
         let start_s = start.to_string();
         let wa = h.width_adjust.to_string();
-        empty_tag(
-            w,
-            "hh:paraHead",
-            &[
-                ("start", &start_s),
-                ("level", &level_s),
-                ("align", "LEFT"),
-                ("useInstWidth", "1"),
-                ("autoIndent", "1"),
-                ("widthAdjust", &wa),
-                ("textOffsetType", "PERCENT"),
-                ("textOffset", "50"),
-                ("numFormat", "DIGIT"),
-                ("charPrIDRef", &u32::MAX.to_string()),
-                ("checkable", "0"),
-            ],
-        )?;
+        // [번호 패리티 2026-07-30] 예전엔 numFormat 을 "DIGIT" 로 **하드코딩**하고 형식 문자열
+        // (paraHead 텍스트 내용)을 아예 방출하지 않아, HWPX 저장 왕복에서 번호 종류와 수준별
+        // 형식이 소실됐다(전 수준이 1. 로 붕괴). 파서 역매핑을 맞춰 쓴다
+        // (정본 = parser/hwpx/header.rs parse_numbering_format_code).
+        let max_u32 = u32::MAX.to_string();
+        let attrs: [(&str, &str); 11] = [
+            ("start", &start_s),
+            ("level", &level_s),
+            ("align", "LEFT"),
+            ("useInstWidth", "1"),
+            ("autoIndent", "1"),
+            ("widthAdjust", &wa),
+            ("textOffsetType", "PERCENT"),
+            ("textOffset", "50"),
+            ("numFormat", numbering_format_name(h.number_format)),
+            ("charPrIDRef", &max_u32),
+            ("checkable", "0"),
+        ];
+        let fmt = n.level_formats.get(idx).map(|s| s.as_str()).unwrap_or("");
+        if fmt.is_empty() {
+            empty_tag(w, "hh:paraHead", &attrs)?;
+        } else {
+            // 형식 문자열은 태그 텍스트로 실린다(파서 read_numbering_para_head_text 와 대응)
+            start_tag_attrs(w, "hh:paraHead", &attrs)?;
+            super::utils::text(w, fmt)?;
+            end_tag(w, "hh:paraHead")?;
+        }
     }
     end_tag(w, "hh:numbering")?;
     Ok(())
@@ -1040,10 +1067,13 @@ fn write_para_pr<W: Write>(
     };
     // [#1986] breakLatinWord 는 IR 원문 보존값(없으면 KEEP_WORD 기본).
     let break_latin = ps.break_latin_word.as_deref().unwrap_or("KEEP_WORD");
-    let widow_orphan = ((ps.attr2 >> 5) & 1).to_string();
-    let keep_with_next = ((ps.attr2 >> 6) & 1).to_string();
-    let keep_lines = ((ps.attr2 >> 7) & 1).to_string();
-    let page_break_before = ((ps.attr2 >> 8) & 1).to_string();
+    // 문단 보호 4종 정본 = attr1 bit16-19 (HWP5 표 44) — 편집 경로(ParaShapeMods)·
+    // HWP5 파서·HWPX 파서가 모두 같은 비트를 쓴다. 종전 attr2 bit5-8 판독은
+    // 표 45 autoSpaceKrNum(bit5)과 충돌 + 편집분 소실.
+    let widow_orphan = ((ps.attr1 >> 16) & 1).to_string();
+    let keep_with_next = ((ps.attr1 >> 17) & 1).to_string();
+    let keep_lines = ((ps.attr1 >> 18) & 1).to_string();
+    let page_break_before = ((ps.attr1 >> 19) & 1).to_string();
     empty_tag(
         w,
         "hh:align",
@@ -1075,10 +1105,14 @@ fn write_para_pr<W: Write>(
         ],
     )?;
 
+    // HWP5 표 45: attr2 bit4=한글·영어, bit5=한글·숫자 자동 간격.
+    // 종전 "0" 상수 하드코딩으로 적용값·원본값이 왕복에서 소실됐다.
+    let e_asian_eng = ((ps.attr2 >> 4) & 1).to_string();
+    let e_asian_num = ((ps.attr2 >> 5) & 1).to_string();
     empty_tag(
         w,
         "hh:autoSpacing",
-        &[("eAsianEng", "0"), ("eAsianNum", "0")],
+        &[("eAsianEng", &e_asian_eng), ("eAsianNum", &e_asian_num)],
     )?;
 
     // margin + lineSpacing 은 한컴 원본과 동일하게 <hp:switch>(case/default)로 감싼다.
@@ -1336,6 +1370,37 @@ mod tests {
         );
         // [Finding 17] hwpml_version 미지정 시 "1.2" 폴백.
         assert!(xml.contains(r#"version="1.2""#), "기본 버전 폴백은 1.2");
+    }
+
+    /// [번호 패리티 2026-07-30] HWPX 번호 정의가 **번호 종류와 수준별 형식 문자열**을 실어야 한다.
+    /// 예전엔 numFormat="DIGIT" 하드코딩 + 형식 문자열 미방출로 왕복에서 전 수준이 1. 로 붕괴했다.
+    #[test]
+    fn write_header_numbering_keeps_format_and_kind() {
+        use crate::model::style::Numbering;
+        let mut doc = Document::default();
+        let mut n = Numbering::default();
+        n.level_formats[0] = "^1.".to_string();
+        n.level_formats[1] = "(^2)".to_string();
+        n.heads[0].number_format = 1; // ① CIRCLED_DIGIT
+        n.heads[1].number_format = 10; // ㄱ HANGUL_JAMO
+        doc.doc_info.numberings.push(n);
+
+        let ctx = SerializeContext::collect_from_document(&doc);
+        let bytes = write_header(&doc, &ctx).expect("write_header");
+        let xml = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            xml.contains(r#"numFormat="CIRCLED_DIGIT""#),
+            "1수준 번호 종류: {xml}"
+        );
+        assert!(
+            xml.contains(r#"numFormat="HANGUL_JAMO""#),
+            "2수준 번호 종류"
+        );
+        assert!(
+            xml.contains(">^1.<"),
+            "1수준 형식 문자열이 태그 텍스트로 실려야 한다"
+        );
+        assert!(xml.contains(">(^2)<"), "2수준 형식 문자열");
     }
 
     #[test]
@@ -1835,10 +1900,9 @@ mod tests {
         // attr1/attr2 보존 비트에서 역매핑돼야 한다.
         let mut ps = ParaShape::default();
         ps.break_latin_word = Some("HYPHENATION".to_string());
-        ps.attr1 = (2 << 20) // vertical = CENTER
-            & !(1 << 7); // breakNonLatinWord = BREAK_WORD (bit7=0)
-        ps.attr2 = (1 << 5) // widowOrphan = 1
-            | (1 << 8); // pageBreakBefore = 1
+        ps.attr1 = (2 << 20) // vertical = CENTER (bit7=0 → breakNonLatinWord=BREAK_WORD)
+            | (1 << 16) // widowOrphan = 1 (HWP5 표 44)
+            | (1 << 19); // pageBreakBefore = 1
 
         let mut writer = Writer::new(Vec::new());
         write_para_pr(&mut writer, 1, &ps).expect("write paraPr");

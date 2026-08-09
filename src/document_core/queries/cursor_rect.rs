@@ -291,7 +291,10 @@ impl DocumentCore {
         }
 
         fn is_inline_cursor_control(ctrl: &Control) -> bool {
-            is_treat_as_char_object_control(ctrl)
+            // 양식 개체는 common(treat_as_char)이 없지만 조판은 언제나 인라인 —
+            // 여기서 빠지면 캐럿 x 가 개체 폭을 건너뛰어 "논리로는 오른쪽인데 그림은
+            // 왼쪽"이 된다(2026-08-03 사용자 신고).
+            is_treat_as_char_object_control(ctrl) || matches!(ctrl, Control::Form(_))
         }
 
         fn text_offset_after_same_pos_inline_controls(
@@ -398,6 +401,14 @@ impl DocumentCore {
                                 (node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height),
                             );
                         }
+                    }
+                }
+                RenderNodeType::FormObject(form_node) => {
+                    if form_node.section_index == sec && form_node.para_index == para {
+                        bboxes.insert(
+                            form_node.control_index,
+                            (node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height),
+                        );
                     }
                 }
                 _ => {}
@@ -1361,6 +1372,17 @@ impl DocumentCore {
         use crate::renderer::layout::{compute_char_positions, CellContext, CellPathEntry};
         use crate::renderer::render_tree::{RenderNode, RenderNodeType};
 
+        // NaN/무한대 좌표 방어. 비유한 좌표가 거리 계산에 흘러들면
+        // `dist.partial_cmp(..).unwrap()`(min_by 비교자)이 None에서 panic하고,
+        // 그 뒤 문서 핸들이 borrowed로 남아 free()마저 실패한다 — 문서 전체가 먹통이 된다.
+        // 화면 배율이 0으로 나눠지기만 해도(0/0=NaN) 유입되므로, 범위 밖 쪽 번호처럼
+        // 정중히 거부해 panic 경로를 진입부에서 원천 차단한다.
+        if !x.is_finite() || !y.is_finite() {
+            return Err(HwpError::RenderError(format!(
+                "히트 테스트 좌표가 유효하지 않습니다: x={x}, y={y}"
+            )));
+        }
+
         let tree = self.build_page_tree_cached(page_num)?;
 
         // 문자 위치를 미리 계산한 TextRun 정보
@@ -1804,29 +1826,41 @@ impl DocumentCore {
             (y + (baseline - ascent).max(0.0), fallback_h)
         }
 
+        // [글자처럼 취급 2026-08-05] 본문 인라인 개체(이미지·표)를 히트 후보로 모은다.
+        // 표는 종전엔 빠져 있어(이미지·도형만) 표 옆 클릭이 offset 0/1 로 매핑되지 않았다
+        // — 클릭해도 표 앞/뒤에 캐럿이 안 서고 표 아래로 튀었다(사용자 신고: 마우스로도
+        // 안 됨). in_cell 로 중첩(셀 안) 표는 본문 후보에서 제외한다.
         fn collect_body_inline_image_hits(
             core: &DocumentCore,
             node: &RenderNode,
-            hits: &mut Vec<(usize, usize, usize, f64, f64, f64, f64)>,
+            in_cell: bool,
+            hits: &mut Vec<(usize, usize, usize, f64, f64, f64, f64, bool, bool)>,
         ) {
-            if let RenderNodeType::Image(ref img) = node.node_type {
-                if img.cell_context.is_none() {
+            // 반환: (표 뒤 오프셋, 문단이 이 개체 하나뿐인가) — sole 이면 옆 빈 공간이
+            // 전부 개체 앞/뒤이므로 넓은 클릭 밴드를 줘도 안전하다.
+            let char_slot = |si: usize, pi: usize, ci: usize| -> Option<(usize, bool)> {
+                core.document
+                    .sections
+                    .get(si)
+                    .and_then(|section| section.paragraphs.get(pi))
+                    .and_then(|para| {
+                        let ctrl = para.controls.get(ci)?;
+                        if !is_treat_as_char_object_control(ctrl) {
+                            return None;
+                        }
+                        let off = find_logical_control_positions(para).get(ci).copied()?;
+                        let sole = para.text.chars().all(|c| c.is_whitespace())
+                            && para.controls.len() == 1;
+                        Some((off, sole))
+                    })
+            };
+
+            match &node.node_type {
+                RenderNodeType::Image(img) if !in_cell && img.cell_context.is_none() => {
                     if let (Some(si), Some(pi), Some(ci)) =
                         (img.section_index, img.para_index, img.control_index)
                     {
-                        let char_offset = core
-                            .document
-                            .sections
-                            .get(si)
-                            .and_then(|section| section.paragraphs.get(pi))
-                            .and_then(|para| {
-                                let ctrl = para.controls.get(ci)?;
-                                if !is_treat_as_char_object_control(ctrl) {
-                                    return None;
-                                }
-                                find_logical_control_positions(para).get(ci).copied()
-                            });
-                        if let Some(char_offset) = char_offset {
+                        if let Some((char_offset, sole)) = char_slot(si, pi, ci) {
                             hits.push((
                                 si,
                                 pi,
@@ -1835,14 +1869,41 @@ impl DocumentCore {
                                 node.bbox.y,
                                 node.bbox.width,
                                 node.bbox.height,
+                                false,
+                                sole,
                             ));
                         }
                     }
                 }
+                RenderNodeType::Table(tn) if !in_cell => {
+                    if let (Some(si), Some(pi), Some(ci)) =
+                        (tn.section_index, tn.para_index, tn.control_index)
+                    {
+                        if let Some((char_offset, sole)) = char_slot(si, pi, ci) {
+                            hits.push((
+                                si,
+                                pi,
+                                char_offset,
+                                node.bbox.x,
+                                node.bbox.y,
+                                node.bbox.width,
+                                node.bbox.height,
+                                true,
+                                sole,
+                            ));
+                        }
+                    }
+                    // 표 아래(셀 내용)는 본문이 아니다 — in_cell 로 내려가 중첩 개체 제외
+                    for child in &node.children {
+                        collect_body_inline_image_hits(core, child, true, hits);
+                    }
+                    return;
+                }
+                _ => {}
             }
 
             for child in &node.children {
-                collect_body_inline_image_hits(core, child, hits);
+                collect_body_inline_image_hits(core, child, in_cell, hits);
             }
         }
 
@@ -1950,11 +2011,13 @@ impl DocumentCore {
         }
 
         let mut inline_image_hits = Vec::new();
-        collect_body_inline_image_hits(self, &tree.root, &mut inline_image_hits);
-        for (si, pi, char_offset, ix, iy, iw, ih) in inline_image_hits {
+        collect_body_inline_image_hits(self, &tree.root, false, &mut inline_image_hits);
+        for (si, pi, char_offset, ix, iy, iw, ih, is_table, sole) in inline_image_hits {
             let (caret_y, caret_h) = inline_image_caret_metrics(iy, ih);
             let right = ix + iw;
-            if x >= ix && x <= right && y >= iy && y <= iy + ih {
+            // 표는 bbox **안**을 가로채지 않는다 — 안엔 편집할 셀이 있어 셀 진입이 우선.
+            // 이미지는 안이 편집 불가라 좌우 반으로 앞/뒤 캐럿을 잡는다(기존 동작).
+            if !is_table && x >= ix && x <= right && y >= iy && y <= iy + ih {
                 let offset = if x > ix + iw / 2.0 {
                     char_offset + 1
                 } else {
@@ -1965,7 +2028,26 @@ impl DocumentCore {
                     page_num, si, pi, offset, caret_x, caret_y, caret_h,
                 ));
             }
-            if x >= right && x <= right + caret_h && y >= caret_y && y <= caret_y + caret_h {
+            // [글자처럼 취급 2026-08-05] 개체 옆 클릭 밴드. y 는 개체 높이 범위.
+            // **오른쪽**만 넓힌다(표 뒤 = 오른쪽 빈 공간, 신고의 핵심). 넓은 밴드는 조건 둘:
+            //   ① 문단이 이 개체 하나뿐(sole) — 앞뒤 텍스트를 가로채지 않게
+            //   ② 개체 오른쪽(같은 y)에 다른 셀이 없어야 — 좌우로 나란한 표(예: 2단 표)
+            //      사이 클릭은 셀로 가야 하므로. 오른쪽에 셀이 있으면 좁은 밴드로 양보.
+            let has_right_neighbor = cell_bboxes
+                .iter()
+                .any(|cb| cb.x > right + 1.0 && cb.y < iy + ih && cb.y + cb.h > iy);
+            // 오른쪽에 이웃 셀이 있으면(나란한 표) 밴드를 아예 끈다 — 좁은 밴드조차
+            // 표 사이 좁은 간격을 삼켜 셀 클릭을 가로챈다(exam_social 2단 표 실측).
+            // 오른쪽에 이웃 셀이 있으면(나란한 표) 밴드를 끈다 — 표 사이 클릭은 셀로.
+            // 없으면 표 오른쪽은 줄 끝까지 빈 여백이므로, 멀리 클릭해도 표 뒤로 보낸다.
+            let right_band = if has_right_neighbor {
+                0.0
+            } else {
+                f64::INFINITY
+            };
+            let _ = sole;
+            if right_band > 0.0 && x >= right && x <= right + right_band && y >= iy && y <= iy + ih
+            {
                 return Ok(format_body_inline_image_hit(
                     page_num,
                     si,
@@ -1976,7 +2058,7 @@ impl DocumentCore {
                     caret_h,
                 ));
             }
-            if x <= ix && x >= ix - caret_h && y >= caret_y && y <= caret_y + caret_h {
+            if x < ix && x >= ix - caret_h && y >= iy && y <= iy + ih {
                 return Ok(format_body_inline_image_hit(
                     page_num,
                     si,
@@ -2363,11 +2445,64 @@ impl DocumentCore {
             return Ok(format_hit(same_line_runs[idx], offset, page_num));
         }
 
+        // [render-history/표 좌우·표사이 여백] 최종 근접-run 폴백은 셀 run 도 후보로
+        // 삼는다. 그 탓에 표 좌·우 쪽 여백(본문 영역 밖)이나 표와 표 사이 여백을 눌러도
+        // 세로로 가장 가까운 셀 run 에 캐럿이 빨려들어가 cellPath 가 붙었다(= "표 안").
+        // 표 밖 클릭을 두 갈래로 걸러 셀 run 을 폴백 후보에서 제외한다:
+        //   A. 클릭 x 가 본문 영역(body_area) 좌우 밴드 밖 = 쪽 여백 → 셀 배제.
+        //   B. 클릭 y 가 그 표의 세로 범위 밖 = 표 위/아래·표와 표 사이 여백 → 그 표 셀 배제.
+        // 반대로 본문 x 밴드 안이면서 표의 세로 범위 안인 클릭(다단 사이 여백 등)은 그대로
+        // 셀로 스냅한다 — leading-gap/#717/#850/vpos 회귀 없음. B 가 x 를 안 보므로 표 오른쪽
+        // 여백(같은 줄) 클릭도 해당 표로 유지된다. 표 외곽은 셀 union 이 아니라 표 RenderNode
+        // 의 bbox(셀 사이 여백·표 패딩까지 포함) 세로 범위를 정본으로 쓴다.
+        fn collect_table_y_bounds(
+            node: &RenderNode,
+            map: &mut std::collections::HashMap<u32, (f64, f64)>,
+        ) {
+            if matches!(node.node_type, RenderNodeType::Table(_)) {
+                let b = &node.bbox;
+                map.insert(node.id, (b.y, b.y + b.height));
+            }
+            for child in &node.children {
+                collect_table_y_bounds(child, map);
+            }
+        }
+        let mut table_y_bounds: std::collections::HashMap<u32, (f64, f64)> =
+            std::collections::HashMap::new();
+        collect_table_y_bounds(&tree.root, &mut table_y_bounds);
+        // 본문 영역 x 밴드(쪽 좌우 여백 판정용). 못 구하면 배제 안 함(보수적).
+        let body_x_band: Option<(f64, f64)> = self.find_page(page_num).ok().map(|(pc, _, _)| {
+            (
+                pc.layout.body_area.x,
+                pc.layout.body_area.x + pc.layout.body_area.width,
+            )
+        });
+        // 표 세로 경계의 미세 오차 흡수(첫 줄 leading-gap 보호). 표 사이 여백 절반(수 px)보다
+        // 작게 둬 표와 표 사이 클릭은 확실히 배제되게 한다.
+        const TABLE_Y_TOL: f64 = 2.0;
+        let cell_run_in_bounds = |r: &RunInfo| -> bool {
+            if r.cell_context.is_none() {
+                return true; // 본문 run 은 항상 후보
+            }
+            // A. 쪽 좌우 여백 클릭이면 어떤 표 셀도 후보에서 제외
+            if let Some((lo, hi)) = body_x_band {
+                if x < lo || x > hi {
+                    return false;
+                }
+            }
+            // B. 그 표의 세로 범위 밖(위/아래·표 사이 여백)이면 제외
+            match r.table_id.and_then(|tid| table_y_bounds.get(&tid)) {
+                Some(&(miny, maxy)) => y >= miny - TABLE_Y_TOL && y <= maxy + TABLE_Y_TOL,
+                None => true, // 표 경계를 못 구하면 기존대로 (보수적)
+            }
+        };
+
         // 3. 가장 가까운 줄 찾기 (y 거리 기준)
         // 다단: 클릭 칼럼의 run을 우선 후보로 사용
         let column_runs: Vec<&RunInfo> = runs
             .iter()
             .filter(|r| text_run_hit_allowed_by_textbox_bbox(r, &textbox_bboxes, x, y))
+            .filter(|r| cell_run_in_bounds(r))
             .filter(|r| {
                 click_column.is_none() || r.column_index.is_none() || r.column_index == click_column
             })
@@ -2375,6 +2510,7 @@ impl DocumentCore {
         let all_allowed_runs: Vec<&RunInfo> = runs
             .iter()
             .filter(|r| text_run_hit_allowed_by_textbox_bbox(r, &textbox_bboxes, x, y))
+            .filter(|r| cell_run_in_bounds(r))
             .collect();
         let candidate_runs = if column_runs.is_empty() {
             &all_allowed_runs
@@ -3251,6 +3387,17 @@ impl DocumentCore {
     ) -> Result<String, HwpError> {
         let path = Self::parse_cell_path(path_json)?;
         let table = self.resolve_table_by_path(section_idx, parent_para_idx, &path)?;
+        // 입력 방어: resolve는 경로 마지막 세그먼트의 cellIndex를 검증하지 않아, 범위 밖
+        // cellIndex(예: 99)를 줘도 바깥 표를 답한다. 마지막 cellIndex를 검증해 거부한다.
+        if let Some(&(_, cell_idx, _)) = path.last() {
+            if cell_idx >= table.cells.len() {
+                return Err(HwpError::RenderError(format!(
+                    "셀 인덱스 {} 범위 초과 (총 {}셀)",
+                    cell_idx,
+                    table.cells.len()
+                )));
+            }
+        }
 
         Ok(format!(
             "{{\"rowCount\":{},\"colCount\":{},\"cellCount\":{}}}",
@@ -4004,6 +4151,20 @@ impl DocumentCore {
             Some(n) => n,
             None => return Ok("{\"hit\":false}".to_string()),
         };
+
+        // [render-history/hitTestInHeaderFooter y좌표] 이전 구현은 좌표를 전혀 안 보고
+        // 마지막 폴백(가장 가까운 줄)이 항상 hit:true 를 돌려줬다 — 본문 한가운데도,
+        // 쪽 밖도, 머리말이 아예 없는 문서(빈 머리말 노드)도 모두 hit. 그래서 이 API 로는
+        // "머리말을 눌렀는지"를 판별할 수 없었다. hf_node.bbox 는 layout.header_area/
+        // footer_area(= hitTestHeaderFooter 가 쓰는 판정 밴드)와 동일하므로, 클릭이 그
+        // 밴드 밖이면 여기서 hit:false 로 걸러 두 API 의 판정을 일치시킨다.
+        {
+            let b = &hf_node.bbox;
+            let inside = x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height;
+            if !inside {
+                return Ok("{\"hit\":false}".to_string());
+            }
+        }
 
         // TextRun 정보 수집
         struct HfRunInfo {

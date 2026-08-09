@@ -447,16 +447,9 @@ fn table_has_detached_para_flow_object(table: &crate::model::table::Table) -> bo
 
 type ParaFloatLanes = std::collections::HashMap<usize, FloatLaneSet>;
 
-#[derive(Debug, Clone, Copy)]
-struct VisibleFloatExclusion {
-    /// visible host 문단의 양수 offset 자리차지 표가 후속 본문을 밀어내야 하는 y 구간.
-    top: f64,
-    bottom: f64,
-    /// 이 zone 을 만든 표가 앵커된 host 문단 index. 같은 문단의 텍스트(섹션 제목)는
-    /// 자기 표가 만든 zone 에 밀리면 안 된다 — 한컴은 제목을 문단 앵커(표 위)에 두고
-    /// 양수 offset 표를 그 아래에 둔다. consume 시 self-owned zone 을 skip 하는 데 쓴다.
-    owner_para: usize,
-}
+/// [officex] 자리차지 배타 밴드 — typeset 과 **같은 타입**을 쓴다(float_placement.rs).
+/// 종전엔 layout·typeset 에 각각 별도 struct 가 있어 규칙이 갈릴 위험이 있었다.
+type VisibleFloatExclusion = super::float_placement::FloatBand;
 
 fn render_node_contains_text_for_para(node: &RenderNode, para_index: usize) -> bool {
     if let RenderNodeType::TextRun(run) = &node.node_type {
@@ -1251,8 +1244,9 @@ pub struct LayoutEngine {
     show_transparent_borders: std::cell::Cell<bool>,
     /// 잘림 보기: false이면 Body/셀 클립 해제
     clip_enabled: std::cell::Cell<bool>,
-    /// 머리말/꼬리말 감추기 세트: (global_page_index, is_header)
-    hidden_header_footer: std::cell::RefCell<std::collections::HashSet<(u32, bool)>>,
+    /// 머리말/꼬리말 감추기 override: (global_page_index, is_header) → 감춤 여부.
+    /// [page-section/결함4·5] 존재하면 모델 기본값보다 우선(true=감춤, false=강제표시).
+    hidden_header_footer: std::cell::RefCell<std::collections::HashMap<(u32, bool), bool>>,
     /// 총 쪽수 (머리말/꼬리말 필드 치환용)
     total_pages: std::cell::Cell<u32>,
     /// 현재 페이지 번호 (바탕쪽 글상자 쪽번호 치환용)
@@ -1317,6 +1311,8 @@ pub struct LayoutEngine {
     show_control_codes: std::cell::Cell<bool>,
     /// 현재 페이지 용지 너비 (표 HorzRelTo::Paper 위치 계산용)
     current_paper_width: std::cell::Cell<f64>,
+    /// 현재 페이지 용지 높이 — 표 restrictInPage(bit13) off 일 때 용지 밖 이탈만 막는 상한 계산용
+    current_paper_height: std::cell::Cell<f64>,
     /// 현재 페이지 본문 영역 (표 HorzRelTo::Page / VertRelTo::Page 위치 계산용)
     /// (x, y, width, height). 미설정 시 (0, 0, 0, 0) — 호출부에서 col_area로 폴백.
     current_body_area: std::cell::Cell<(f64, f64, f64, f64)>,
@@ -1344,6 +1340,11 @@ pub struct LayoutEngine {
     cell_units_cache: std::cell::RefCell<
         std::collections::HashMap<usize, std::sync::Arc<Vec<table_layout::CellUnit>>>,
     >,
+    /// [officex/어울림 배선 3/3] 현재 항목이 속한 흐름의 자리차지 배타 밴드 스냅샷.
+    /// build_single_column 이 항목마다 채우고 비운다 — paragraph_layout 의 줄 루프가
+    /// 줄 단위 회피(stack)에 소비한다. 19인자 함수에 인자를 늘리지 않기 위한 인테리어 셀
+    /// (current_paper_height 패턴). 본문 흐름 전용 — 셀 내부(cell_ctx)는 소비하지 않는다.
+    current_flow_bands: std::cell::RefCell<Vec<VisibleFloatExclusion>>,
     /// [Issue #2063] 표 단위 불변량 `has_visible_text_with_nested_table` 를 표 포인터로
     /// 캐시한다. 이 값은 (측정 대상 셀과 무관한) 표 전체 스캔 결과인데 셀별
     /// `cell_units_uncached` 안에서 계산되어 52,694 셀 표에서 O(셀²)(≈28억) 로 폭증했다.
@@ -1361,7 +1362,7 @@ mod shape_layout;
 mod table_cell_content;
 mod table_layout;
 mod table_partial;
-mod text_measurement;
+pub(crate) mod text_measurement;
 mod utils;
 
 pub(crate) use paragraph_layout::ensure_min_baseline;
@@ -1395,7 +1396,7 @@ impl LayoutEngine {
             numbering_state: std::cell::RefCell::new(NumberingState::default()),
             show_transparent_borders: std::cell::Cell::new(false),
             clip_enabled: std::cell::Cell::new(true),
-            hidden_header_footer: std::cell::RefCell::new(std::collections::HashSet::new()),
+            hidden_header_footer: std::cell::RefCell::new(std::collections::HashMap::new()),
             total_pages: std::cell::Cell::new(0),
             current_page_number: std::cell::Cell::new(0),
             current_page_is_section_first: std::cell::Cell::new(true),
@@ -1416,6 +1417,7 @@ impl LayoutEngine {
             active_field: std::cell::RefCell::new(None),
             show_control_codes: std::cell::Cell::new(false),
             current_paper_width: std::cell::Cell::new(0.0),
+            current_paper_height: std::cell::Cell::new(0.0),
             current_body_area: std::cell::Cell::new((0.0, 0.0, 0.0, 0.0)),
             is_hwp3_variant: std::cell::Cell::new(false),
             use_hwp3_origin_flow_spacing_before: std::cell::Cell::new(false),
@@ -1423,6 +1425,7 @@ impl LayoutEngine {
             is_hwpx_source: std::cell::Cell::new(false),
             hwpx_page_preview: std::cell::RefCell::new(None),
             cell_units_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
+            current_flow_bands: std::cell::RefCell::new(Vec::new()),
             table_nested_text_flag_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             #[cfg(test)]
             table_nested_text_flag_scan_count: std::cell::Cell::new(0),
@@ -1804,8 +1807,8 @@ impl LayoutEngine {
         self.show_transparent_borders.set(enabled);
     }
 
-    /// 머리말/꼬리말 감추기 세트를 설정한다.
-    pub fn set_hidden_header_footer(&self, hidden: &std::collections::HashSet<(u32, bool)>) {
+    /// 머리말/꼬리말 감추기 override 맵을 설정한다.
+    pub fn set_hidden_header_footer(&self, hidden: &std::collections::HashMap<(u32, bool), bool>) {
         *self.hidden_header_footer.borrow_mut() = hidden.clone();
     }
 
@@ -1865,6 +1868,13 @@ impl LayoutEngine {
         wrap_around_paras: &[super::pagination::WrapAroundPara],
     ) -> PageRenderTree {
         let layout = &page_content.layout;
+        // [officex/E2] 용지 기하는 **모든 페이지**에서 채운다. 종전엔 바탕쪽(build_master_page)
+        // 에서만 설정돼, 바탕쪽 없는 일반 문서는 0 으로 남아 compute_table_y_position 의
+        // 폴백(col_area.y*2 + height)이 쓰였다. 그 폴백은 위·아래 여백 대칭을 가정하므로
+        // 비대칭 문서에서 용지 높이를 과대평가해(실측 A4: 1141.4 vs 실제 1122.5)
+        // restrictInPage=false 표가 용지 밖으로 18.9px 새어나갔다("용지 밖 이탈만 막는다" 계약 위반).
+        self.current_paper_width.set(layout.page_width);
+        self.current_paper_height.set(layout.page_height);
         let mut tree = PageRenderTree::new(
             page_content.page_index,
             layout.page_width,
@@ -1918,11 +1928,19 @@ impl LayoutEngine {
         }
 
         // 머리말 (감추기 설정 시 건너뜀)
-        let hide_header = page_content
-            .page_hide
-            .as_ref()
-            .map(|ph| ph.hide_header)
-            .unwrap_or(false);
+        // [page-section/결함4·5] override(toggle/강제표시)가 있으면 모델 PageHide 보다 우선.
+        let hide_header = self
+            .hidden_header_footer
+            .borrow()
+            .get(&(page_content.page_index, true))
+            .copied()
+            .unwrap_or_else(|| {
+                page_content
+                    .page_hide
+                    .as_ref()
+                    .map(|ph| ph.hide_header)
+                    .unwrap_or(false)
+            });
         if !hide_header {
             self.build_header(
                 &mut tree,
@@ -2001,6 +2019,16 @@ impl LayoutEngine {
             for child in &body_node.children {
                 expand_clip(&mut clip, child);
             }
+            // [테두리 잘림 2026-07-28] 선은 경로 중심 기준으로 그려져 두께의 절반이 bbox
+            // 바깥으로 나간다. 위 expand_clip은 자식 bbox에 "딱" 맞추므로, 여백 경계에 붙은
+            // 표는 왼쪽·위 선의 절반이 clip 밖으로 잘려 그 두 변만 얇게 보였다
+            // (실측 diag_table_edge_clip: 여유 0.013px / 선 0.5px → 47% 손실).
+            const STROKE_HALF_PAD: f64 = 2.0; // 0.5mm(≈1.9px) 굵기 테두리까지 커버
+            clip.x -= STROKE_HALF_PAD;
+            clip.y -= STROKE_HALF_PAD;
+            clip.width += STROKE_HALF_PAD * 2.0;
+            clip.height += STROKE_HALF_PAD * 2.0;
+
             let body_bottom = body_bbox.y + body_bbox.height;
             let max_bottom = body_bottom + 10.0;
             if clip.y + clip.height > max_bottom {
@@ -2033,11 +2061,19 @@ impl LayoutEngine {
         );
 
         // 꼬리말 + 쪽 번호 (감추기 설정 시 건너뜀)
-        let hide_footer = page_content
-            .page_hide
-            .as_ref()
-            .map(|ph| ph.hide_footer)
-            .unwrap_or(false);
+        // [page-section/결함4·5] override(toggle/강제표시)가 있으면 모델 PageHide 보다 우선.
+        let hide_footer = self
+            .hidden_header_footer
+            .borrow()
+            .get(&(page_content.page_index, false))
+            .copied()
+            .unwrap_or_else(|| {
+                page_content
+                    .page_hide
+                    .as_ref()
+                    .map(|ph| ph.hide_footer)
+                    .unwrap_or(false)
+            });
         let mut footer_node = if !hide_footer {
             self.build_footer(
                 &mut tree,
@@ -2282,7 +2318,15 @@ impl LayoutEngine {
                     None, // 머리말/꼬리말 컨텍스트 — wrap zone 무관
                 );
             }
-            if y_offset >= area.y + area.height {
+            // [render-position/머리말 문단 좌표 되감김 결함] 예전엔 y_offset 이 머리말 띠
+            // (area) 하단을 넘으면 즉시 break 해서, 띠를 넘긴 4번째 이후 문단이 render tree 에
+            // 아예 실리지 않았다. 그러면 getCursorRectInHeaderFooter 가 그 문단을 못 찾고
+            // 폴백으로 머리말 영역 top(y≈75.6)을 돌려줘, 좌표가 첫 줄 위로 되감겨 서로 겹쳐
+            // 보였다(page-section QA "머리말 문단을 늘리면 좌표가 아래로 쌓이는가"). 한컴도
+            // 머리말 내용이 띠를 넘으면 본문 위로 흘러 겹치므로, 넘친 문단도 계속 배치해
+            // 좌표를 단조 증가시킨다. 물리 쪽(paper) 밖으로까지 나가면 그때만 멈춘다(런어웨이
+            // 방지). 띠 안에 들어오는 정상 머리말은 이 지점에 도달하지 않아 렌더 무변동.
+            if y_offset >= paper_area.y + paper_area.height {
                 break;
             }
         }
@@ -2797,6 +2841,7 @@ impl LayoutEngine {
                 // 바탕쪽은 본문보다 먼저 렌더링되므로 표 위치 계산용 현재 페이지 context를
                 // 여기서 명시적으로 채워야 `vertRelTo=PAGE`, `horzRelTo=PAGE`가 올바르게 동작한다.
                 self.current_paper_width.set(layout.page_width);
+                self.current_paper_height.set(layout.page_height);
                 self.current_body_area.set((
                     body_area.x,
                     body_area.y,
@@ -3087,11 +3132,14 @@ impl LayoutEngine {
             RenderNodeType::Header,
             layout_rect_to_bbox(&layout.header_area),
         );
-        // 감추기 플래그가 설정된 페이지는 머리말 내용을 렌더링하지 않음
-        let hidden = self
-            .hidden_header_footer
-            .borrow()
-            .contains(&(page_content.page_index, true));
+        // 감추기 override 가 명시적으로 true 인 페이지만 머리말 내용을 건너뛴다
+        // (build_page 에서 이미 PageHide 병합 판정을 했으므로 여기선 override 만 확인).
+        let hidden = matches!(
+            self.hidden_header_footer
+                .borrow()
+                .get(&(page_content.page_index, true)),
+            Some(true)
+        );
         if !hidden {
             if let Some(hf_ref) = &page_content.active_header {
                 if let Some(para) = paragraphs.get(hf_ref.para_index) {
@@ -3222,11 +3270,14 @@ impl LayoutEngine {
             RenderNodeType::Footer,
             layout_rect_to_bbox(&layout.footer_area),
         );
-        // 감추기 플래그가 설정된 페이지는 꼬리말 내용을 렌더링하지 않음
-        let hidden = self
-            .hidden_header_footer
-            .borrow()
-            .contains(&(page_content.page_index, false));
+        // 감추기 override 가 명시적으로 true 인 페이지만 꼬리말 내용을 건너뛴다
+        // (build_page 에서 이미 PageHide 병합 판정을 했으므로 여기선 override 만 확인).
+        let hidden = matches!(
+            self.hidden_header_footer
+                .borrow()
+                .get(&(page_content.page_index, false)),
+            Some(true)
+        );
         if !hidden {
             if let Some(hf_ref) = &page_content.active_footer {
                 if let Some(para) = paragraphs.get(hf_ref.para_index) {
@@ -3886,6 +3937,7 @@ impl LayoutEngine {
             pagination_tolerance_px: 0.0,
         };
         let col_content = ColumnContent {
+            topbottom_bands: Vec::new(),
             column_index: 0,
             start_height,
             endnote_flow: true,
@@ -4318,6 +4370,26 @@ impl LayoutEngine {
             std::collections::HashMap::new();
         let mut para_float_lanes: ParaFloatLanes = std::collections::HashMap::new();
         let mut visible_float_exclusions: Vec<VisibleFloatExclusion> = Vec::new();
+        // [officex/어울림 배선 3/3] 사전 밴드 선등록 — typeset 이 실어 온(위로 올린 표)
+        // 밴드를 단 시작 시점에 절대 y 로 추정해 등록한다. 앵커 문단 도착을 기다리면
+        // 이미 배치된 앞 문단(판정식의 "앞 글자")을 밀 수 없다. para_start_y 사전 시드는
+        // 표 위치 동결 — 밀린 텍스트를 표가 따라 내려가는 순환을 끊는다(한컴 semantics).
+        // 추정식: col_anchor_y + (flow_top − start_height). 신규 조판 문서는 양쪽이 같은
+        // 컴포저를 쓰므로 실측 일치(probe-flow), 저장 vpos 문서는 재생 분기가 줄을 지배한다.
+        for band in &col_content.topbottom_bands {
+            if band.height <= 0.5 {
+                continue;
+            }
+            let est_top = col_anchor_y + band.flow_top - col_content.start_height;
+            visible_float_exclusions.push(VisibleFloatExclusion::full_width(
+                est_top,
+                est_top + band.height,
+                Some(band.para_index),
+            ));
+            para_start_y
+                .entry(band.para_index)
+                .or_insert(est_top - band.offset_from_para_top);
+        }
         // [Task #1151 v9 결함 D] paragraph 단위 inline picture 가로 분배 cursor state.
         // 같은 paragraph 의 sibling tac=true picture 들이 가로로 inline 분배 (한컴 native 정합).
         let mut para_inline_state: std::collections::HashMap<
@@ -5023,22 +5095,24 @@ impl LayoutEngine {
                         _ => 0.0,
                     }
                 };
-                let mut jump_to = y_offset;
-                for zone in &visible_float_exclusions {
-                    // [Issue #1549] 자기 문단에 앵커된 float 표는 그 문단의 텍스트(제목)를
-                    // 밀어내지 않는다 — 제목은 앵커(표 위)에 남아야 한다. owner 가 다른 후속
-                    // 문단은 그대로 표 아래로 밀린다.
-                    if zone.owner_para == item_para {
-                        continue;
-                    }
-                    let starts_in_zone = jump_to + 0.5 >= zone.top && jump_to < zone.bottom;
-                    let overlaps_zone = item_probe_height > 0.0
-                        && jump_to < zone.top
-                        && jump_to + item_probe_height > zone.top + 0.5;
-                    if starts_in_zone || overlaps_zone {
-                        jump_to = jump_to.max(zone.bottom);
-                    }
-                }
+                // [Issue #1549] 자기 문단에 앵커된 float 표는 그 문단의 텍스트(제목)를
+                // 밀어내지 않는다 — 제목은 앵커(표 위)에 남아야 한다. owner 로 전달한다.
+                // [officex/어울림 본편] 부분폭 밴드(옆 흐름 대상)는 문단을 아래로 밀지
+                // 않는다 — 줄 소비부(live_band_narrow)가 폭을 좁혀 옆으로 흘린다.
+                // 전폭 밴드만 종전대로 y 점프 대상.
+                let full_width_bands: Vec<super::float_placement::FloatBand> =
+                    visible_float_exclusions
+                        .iter()
+                        .filter(|b| b.x_start.is_infinite() && b.x_end.is_infinite())
+                        .copied()
+                        .collect();
+                let jump_to = super::float_placement::skip_float_bands(
+                    y_offset,
+                    &full_width_bands,
+                    item_probe_height,
+                    Some(item_para),
+                    None, // 가로 무시 = 종전 동작(모든 밴드가 전폭)
+                );
                 if jump_to > y_offset + 0.5 {
                     let delta = jump_to - y_offset;
                     y_offset = jump_to;
@@ -5132,6 +5206,11 @@ impl LayoutEngine {
             if let Some(floor) = endnote_sep_body_floor.take() {
                 y_offset = y_offset.max(floor);
             }
+            // [officex/어울림 배선 3/3] 이 항목의 줄 루프가 소비할 밴드 스냅샷.
+            // 문단 시작 점프(위 skip_float_bands) **이후** 시점의 목록이어야
+            // 문단 단위·줄 단위 소비가 같은 밴드를 본다. 항목 종료 후 비워
+            // 각주/머리말 등 다른 흐름의 paragraph_layout 으로 새지 않게 한다.
+            *self.current_flow_bands.borrow_mut() = visible_float_exclusions.clone();
             let (mut new_y, was_tac) = self.layout_column_item(
                 tree,
                 &mut col_node,
@@ -5156,6 +5235,7 @@ impl LayoutEngine {
                 wrap_around_paras,
                 &col_content.wrap_anchors,
             );
+            self.current_flow_bands.borrow_mut().clear();
             if zero_between_shape_tail_margin_px > 0.0 {
                 // 미주 사이 0에서 직전 미주의 마지막 수식 tail을 앞 단에 남기고
                 // 비TAC 그림만 다음 단으로 넘긴 경우, 한컴은 그림 뒤 bottom margin을
@@ -5892,6 +5972,7 @@ impl LayoutEngine {
                 para_index,
                 control_index,
             } => {
+                let flow_y_before = y_offset;
                 y_offset = self.layout_shape_item(
                     tree,
                     col_node,
@@ -5902,6 +5983,22 @@ impl LayoutEngine {
                     *control_index,
                     &ctx,
                     y_offset,
+                );
+                // [트랙4 ① 2026-08-05] 앵커선행 host Square 가족 float 그림/도형/수식 —
+                // 표 팔(layout_table_control_block :6734)과 등가의 라이브 밴드 등록.
+                // 부분폭(옆 공간 ≥ MIN_SIDE_PX)이면 x-범위 밴드(옆 흐름 — 뒤 문단을 밀지
+                // 않고 편집 훅의 좁힘 cs/sw 재생이 옆에 세운다), 전폭에 가까우면 전폭
+                // 밴드(뒤 문단 줄을 상자 아래로 — composer 는 전폭 줄을 "layout 이 밴드
+                // 아래로 민다"에 위임한다, line_breaking segs_for_top 참조).
+                self.push_square_float_object_band(
+                    col_node,
+                    paragraphs,
+                    *para_index,
+                    *control_index,
+                    col_area,
+                    layout,
+                    flow_y_before,
+                    visible_float_exclusions,
                 );
             }
             PageItem::EndnoteSeparator {
@@ -5927,6 +6024,87 @@ impl LayoutEngine {
             }
         }
         (y_offset, false)
+    }
+
+    /// [트랙4 ① 2026-08-05] Square 가족 float **개체**(그림/도형/수식)의 라이브 밴드 등록.
+    /// 표는 layout_table_control_block(:6734) 이 담당 — 판정(is_para_square_family_float ×
+    /// text_is_blank_before_control)과 부분폭/전폭 분류(MIN_SIDE_PX)를 표 팔과 동일하게 쓴다.
+    ///
+    /// bbox 는 1차 패스에서 방금 emit 된 그림(Image) 노드의 실측을 우선한다(렌더가 정본 —
+    /// 표 팔과 같은 이유). 그리기 도형·수식은 2차 패스(layout_column_shapes_pass) 렌더라
+    /// 이 시점 실측이 없어 공용 수평 헬퍼(horizontal_range)와 흐름 y + voff 로 추정한다.
+    /// ponytail: 수식은 layout_shape 가 정렬 기반 x 를 쓰므로 Center/Right 문단에서 추정
+    ///           x 가 어긋날 수 있다 — x 는 부분폭/전폭 분류에만 쓰여 실해가 없고, 정렬
+    ///           수식 실측이 필요해지면 2차 패스 자리로 옮긴다.
+    #[allow(clippy::too_many_arguments)]
+    fn push_square_float_object_band(
+        &self,
+        col_node: &RenderNode,
+        paragraphs: &[Paragraph],
+        para_index: usize,
+        control_index: usize,
+        col_area: &LayoutRect,
+        layout: &PageLayoutInfo,
+        flow_y_before: f64,
+        visible_float_exclusions: &mut Vec<VisibleFloatExclusion>,
+    ) {
+        let Some(para) = paragraphs.get(para_index) else {
+            return;
+        };
+        let common = match para.controls.get(control_index) {
+            Some(Control::Picture(p)) => &p.common,
+            Some(Control::Shape(s)) => s.common(),
+            Some(Control::Equation(e)) => &e.common,
+            _ => return,
+        };
+        if !super::float_placement::is_para_square_family_float(common)
+            || !para.text_is_blank_before_control(control_index)
+        {
+            return;
+        }
+        let ml = hwpunit_to_px(common.margin.left as i32, self.dpi);
+        let mr = hwpunit_to_px(common.margin.right as i32, self.dpi);
+        let mb = hwpunit_to_px(common.margin.bottom as i32, self.dpi);
+        let measured = col_node.children.iter().rev().find_map(|n| {
+            let pc = match &n.node_type {
+                RenderNodeType::Image(v) => v.para_index.zip(v.control_index),
+                _ => None,
+            };
+            (pc == Some((para_index, control_index))).then_some((
+                n.bbox.x - col_area.x,
+                n.bbox.x + n.bbox.width - col_area.x,
+                n.bbox.y,
+                n.bbox.y + n.bbox.height,
+            ))
+        });
+        let (x0, x1, top, bottom) = measured.unwrap_or_else(|| {
+            let w_px = hwpunit_to_px(common.width as i32, self.dpi);
+            let h_px = hwpunit_to_px(common.height as i32, self.dpi);
+            let ctx = super::float_placement::FloatPlacementContext::new(*col_area)
+                .with_body_area(layout.body_area)
+                .with_paper_width(layout.page_width);
+            let (ax0, ax1) = super::float_placement::horizontal_range(common, w_px, ctx, self.dpi);
+            let top =
+                flow_y_before + hwpunit_to_px(signed_hwpunit(common.vertical_offset), self.dpi);
+            (ax0 - col_area.x, ax1 - col_area.x, top, top + h_px)
+        });
+        if bottom <= top + 0.5 {
+            return;
+        }
+        let (bx0, bx1) = (x0 - ml, x1 + mr);
+        let side_room = (col_area.width - (bx1 - bx0).max(0.0)).max(0.0);
+        let band = if side_room >= crate::renderer::composer::MIN_SIDE_PX && bx0.is_finite() {
+            VisibleFloatExclusion {
+                x_start: bx0,
+                x_end: bx1,
+                top,
+                bottom: bottom + mb,
+                owner_para: None,
+            }
+        } else {
+            VisibleFloatExclusion::full_width(top, bottom + mb, None)
+        };
+        visible_float_exclusions.push(band);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6184,8 +6362,19 @@ impl LayoutEngine {
             // [#2019 v3] 빈 앵커에 매달린 Paper/Page 기준 Square 표는 본문 flow 표가
             // 아니라 페이지 절대좌표 부동 표다. 표 자체는 선언 y 에 그리되, 뒤따르는
             // 문단을 표 아래로 밀지 않는다.
+            // [officex 2026-07-26] Square 전용이던 게이트를 어울림 가족(Square|Tight|Through)으로.
+            // Tight/Through 는 경계 규칙만 다른 같은 어울림 배치라 위치 계약(vertRelTo/vertAlign)이
+            // 동일해야 하는데, 여기서 빠져 흐름 위치에 남았다(실측: Page+Center 에서 Square=545
+            // 중앙 vs Tight/Through=238.9 고정 — diag_square_jump). Para 기준은 종전에도 6종
+            // 동일해 이 게이트만 넓힌다.
+            let tbl_is_square_family = matches!(
+                t.common.text_wrap,
+                crate::model::shape::TextWrap::Square
+                    | crate::model::shape::TextWrap::Tight
+                    | crate::model::shape::TextWrap::Through
+            );
             let paper_page_square_empty_top = if !is_tac
-                && tbl_is_square
+                && tbl_is_square_family
                 && !para_has_visible_text(para)
                 && matches!(
                     t.common.vert_rel_to,
@@ -6267,7 +6456,43 @@ impl LayoutEngine {
                         horizontal_range(&t.common, width_px, placement_ctx, self.dpi);
                     let v_offset_px =
                         hwpunit_to_px(signed_hwpunit(t.common.vertical_offset), self.dpi);
-                    let raw_top = (para_y_for_table + v_offset_px).max(para_y_for_table);
+                    // [사용자 신고 2026-07-28] 위 본문이 있으면 어울림 표가 위로 못 올라감 —
+                    // 이 .max(para_y) 클램프가 음수 voff 를 통째로 삼켰다(voff -3000 에도
+                    // bbox 부동, 드래그 롤백이 반납 → "그 텍스트 위로는 이동이 안 돼").
+                    // Para 기준의 음수 오프셋은 한컴에서 정당한 배치(앵커 줄 위) — 위로도
+                    // 흐르게 허용한다. 위쪽 한계는 아래 restrictInPage 클램프(본문/용지)가
+                    // 그대로 지킨다. 앞 문단과의 어울림은 부분폭 밴드 + reflow 훅(재줄바꿈)
+                    // 파이프라인이 처리한다.
+                    let raw_top = para_y_for_table + v_offset_px;
+                    // [officex 2026-07-27] 빈 host lane 경로에 restrictInPage(bit13) 계약 적용 —
+                    // compute_table_y_position 의 Para 클램프와 동일: 제한 ON = 본문 안,
+                    // OFF = 용지 안(밖 이탈만 금지). 종전엔 lane 이 클램프 없이 raw_top 을
+                    // 그대로 써서, 제한 ON 인 표를 API/드래그로 밀면 용지 밖(+500mm 실측
+                    // y=2137)까지 나갔다. 표 높이는 선언값(+외곽 상하) 근사 — measured 는
+                    // 이 시점에 없고, 근사 오차는 클램프 위치 수 px 로 실사용 무해.
+                    let tbl_h_px = hwpunit_to_px(t.common.height as i32, self.dpi).max(0.0)
+                        + hwpunit_to_px(t.outer_margin_top as i32, self.dpi)
+                        + hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi);
+                    let max_top = if t.common.flow_with_text {
+                        col_area.y + col_area.height - tbl_h_px
+                    } else {
+                        let paper_h = {
+                            let ph = self.current_paper_height.get();
+                            if ph > 0.0 {
+                                ph
+                            } else {
+                                col_area.y * 2.0 + col_area.height
+                            }
+                        };
+                        paper_h - tbl_h_px
+                    };
+                    // 위쪽 하한도 같은 계약: 제한 ON=본문 위(col_area.y), OFF=용지 위(0).
+                    let top_floor = if t.common.flow_with_text {
+                        col_area.y
+                    } else {
+                        0.0
+                    };
+                    let raw_top = raw_top.max(top_floor).min(max_top.max(col_area.y));
                     let lane_top = para_float_lanes
                         .entry(para_index)
                         .or_default()
@@ -6480,11 +6705,34 @@ impl LayoutEngine {
                         self.dpi,
                     );
                 }
-                if is_first_empty_para_float_control && !is_tac {
+                if is_first_empty_para_float_control && !is_tac && !para_has_visible_text(para) {
+                    // [트랙3] 앵커선행 확장으로 텍스트 있는 host 도 이 분기에 들어오게 됐다 —
+                    // 빈 문단부호는 진짜 빈 host 에만 찍는다(텍스트 host 는 post-text 가 표시).
                     let marker_x = tbl_inline_x.unwrap_or(col_area.x + effective_margin);
                     // FullParagraph에서 빈 줄 진행을 생략한 대신, 표와 같은 줄에
                     // host 문단부호를 렌더링한다. 표 뒤 빈 문단은 그대로 남아
                     // 아래쪽 탈출 위치를 제공한다.
+                    // [자리차지 이동 2026-07-30] voff>0 으로 표가 흐름 아래로 이동한 경우,
+                    // 한컴(웹한글 스크린샷 오라클)은 앵커 조판부호·커서를 본문 흐름 위치에
+                    // 남기고 표 상자만 오프셋 위치에 그린다. 종전엔 마크가 table_y_start
+                    // (=lane_top=흐름y+voff)를 따라가 캐럿이 표 좌상단에 붙고, 흐름 자리
+                    // 클릭이 뒤 문단으로 갔다. voff==0 은 종전대로 표와 같은 줄.
+                    // [어울림 2026-07-30 채록] 배치를 어울림(Square)으로 바꿔도 한컴은
+                    // 조판부호·앵커 줄을 흐름 위치에 그대로 둔다(부록2 O7). 단 옆 흐름
+                    // 계약이 흐름을 table_y_before 로 유지하는 건 **부분폭** square 뿐이라
+                    // (아래 y_offset 분기와 같은 판정) 전폭은 종전대로 둔다.
+                    let square_side_flow =
+                        super::float_placement::is_para_square_family_float(&t.common) && {
+                            let w_px = hwpunit_to_px(t.common.width as i32, self.dpi);
+                            col_area.width - w_px >= crate::renderer::composer::MIN_SIDE_PX
+                        };
+                    let marker_y = if (is_para_topbottom_float(&t.common) || square_side_flow)
+                        && signed_hwpunit(t.common.vertical_offset) > 0
+                    {
+                        table_y_before
+                    } else {
+                        table_y_start
+                    };
                     push_empty_para_end_mark(
                         tree,
                         col_node,
@@ -6493,7 +6741,7 @@ impl LayoutEngine {
                         page_content.section_index,
                         para_index,
                         marker_x,
-                        table_y_start,
+                        marker_y,
                         self.dpi,
                     );
                 }
@@ -6522,6 +6770,32 @@ impl LayoutEngine {
                     } else {
                         table_y_before.max(table_visual_end + visible_outer_bottom_px)
                     }
+                } else if is_current_empty_para_float
+                    && is_para_topbottom_float(&t.common)
+                    && signed_hwpunit(t.common.vertical_offset) > 0
+                    && table_visual_height > 0.0
+                {
+                    // [편집/자리차지] 빈 host 표를 아래로(voff>0) 이동한 경우 — 한컴은 표 위
+                    // 공간(voff 만큼)을 **뒤 문단 줄들이 채우고** 표 상자 구간은 건너뛴다
+                    // (자리차지 = "개체 높이만큼 줄을 차지", 한컴 도움말 정본). 종전엔 advance
+                    // 를 표높이만 하고 상자만 voff 아래 그려서, 옛 자리에 공백이 남고 새
+                    // 자리에서 본문과 겹쳤다(실측 diag_move_topbottom: 표 345 인데 p8~10 이
+                    // 332·354·375 그대로). visible host voff>0(#1549)과 같은 계약으로 통일:
+                    // 흐름은 표 앞(table_y_before)에서 계속, 상자는 아래 배타 밴드로만 존재.
+                    table_y_before
+                } else if is_current_empty_para_float
+                    && super::float_placement::is_para_square_family_float(&t.common)
+                    && {
+                        // 부분폭(옆 공간 MIN_SIDE_PX 이상) Square 만 — 등록 분기와 같은 판정.
+                        // [트랙3] 임계를 composer(줄바꿈)와 통일 — 훅 34 vs layout 40 이
+                        // 어긋나 [34,40) 구간에서 '좁힌 줄이 표 아래' 모순이 났다.
+                        let w_px = hwpunit_to_px(t.common.width as i32, self.dpi);
+                        col_area.width - w_px >= crate::renderer::composer::MIN_SIDE_PX
+                    }
+                {
+                    // 옆 흐름 계약: 본문 흐름은 표 앞에서 계속되고(다음 문단이 표 옆에
+                    // 선다), 표 상자는 부분폭 밴드로만 존재한다. 아래 등록 분기와 짝.
+                    table_y_before
                 } else if paper_page_square_empty_top.is_some() {
                     table_y_before
                 } else if table_visual_shift > 0.0 {
@@ -6540,11 +6814,104 @@ impl LayoutEngine {
                         // (한컴: 섹션 표와 다음 섹션 제목 사이 간격 = 표 아래 외곽여백).
                         let margin_bottom_px =
                             hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi);
-                        visible_float_exclusions.push(VisibleFloatExclusion {
-                            top: table_visual_top,
-                            bottom: table_visual_end + margin_bottom_px,
-                            owner_para: para_index,
-                        });
+                        visible_float_exclusions.push(VisibleFloatExclusion::full_width(
+                            table_visual_top,
+                            table_visual_end + margin_bottom_px,
+                            Some(para_index),
+                        ));
+                    }
+                } else if is_current_empty_para_float
+                    && is_para_topbottom_float(&t.common)
+                    && signed_hwpunit(t.common.vertical_offset) > 0
+                    && table_visual_height > 0.0
+                {
+                    // 위 y_offset 분기와 짝: 아래로 이동한 빈 host 자리차지 표의 상자를
+                    // 배타 밴드로 등록해 뒤 문단 줄들이 위 공간을 채우고 상자를 건너뛰게.
+                    let table_visual_top = table_visual_end - table_visual_height;
+                    if table_visual_end > table_visual_top + 0.5 {
+                        let margin_bottom_px =
+                            hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi);
+                        visible_float_exclusions.push(VisibleFloatExclusion::full_width(
+                            table_visual_top,
+                            table_visual_end + margin_bottom_px,
+                            None,
+                        ));
+                    }
+                } else if is_current_empty_para_float
+                    && super::float_placement::is_para_square_family_float(&t.common)
+                    && table_visual_height > 0.0
+                {
+                    // [officex/어울림 본편] 빈 host Square 가족 표 — 본문이 **옆으로** 흐르는
+                    // 배치의 라이브(줄세그 없는 편집 문서) 경로. 표 상자를 **부분폭** 밴드로
+                    // 등록하면: 세로로 겹치는 줄은 아래 소비부(paragraph_layout 의
+                    // live_band_narrow)가 옆 남은 폭으로 좁히고, 가로로 안 겹치는 항목은
+                    // skip_float_bands 의 x_range 게이트가 그냥 통과시킨다. 전폭에 가까운
+                    // 표(남는 폭 < MIN_SIDE_PX)는 옆 흐름이 무의미하므로 전폭 밴드와 동일하게 둔다.
+                    let table_visual_top = table_visual_end - table_visual_height;
+                    if table_visual_end > table_visual_top + 0.5 {
+                        // 방금 layout_table 이 col_node 에 붙인 Table 노드의 실측 x 를 쓴다
+                        // (정렬·오프셋 규칙을 여기서 재현하지 않기 위해 — 렌더가 정본).
+                        let tbl_x_range =
+                            col_node
+                                .children
+                                .iter()
+                                .rev()
+                                .find_map(|n| match &n.node_type {
+                                    RenderNodeType::Table(_) => {
+                                        // 한컴의 표-글 간격 = 표 바깥 여백. 밴드 폭에 포함해
+                                        // 옆 줄이 여백만큼 떨어져 시작하게 한다.
+                                        let ml =
+                                            hwpunit_to_px(t.outer_margin_left as i32, self.dpi);
+                                        let mr =
+                                            hwpunit_to_px(t.outer_margin_right as i32, self.dpi);
+                                        Some((
+                                            n.bbox.x - ml - col_area.x,
+                                            n.bbox.x + n.bbox.width + mr - col_area.x,
+                                        ))
+                                    }
+                                    _ => None,
+                                });
+                        let margin_bottom_px =
+                            hwpunit_to_px(t.outer_margin_bottom as i32, self.dpi);
+                        let (x0, x1) = tbl_x_range.unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
+                        let side_room = (col_area.width - (x1 - x0).max(0.0)).max(0.0);
+                        // 부분폭 = 진짜 옆 흐름. 줄 내용은 편집 훅(reflow_paras_for_
+                        // square_bands, 2-패스)이 밴드 기준으로 재줄바꿈해 line_segs 에
+                        // 줄별 cs/sw 로 기록하고, 렌더는 그 저장값을 재생 소비한다.
+                        // 1차 조판(기록 전)의 일시 겹침은 재조판에서 해소된다.
+                        let band = if side_room >= crate::renderer::composer::MIN_SIDE_PX
+                            && x0.is_finite()
+                        {
+                            VisibleFloatExclusion {
+                                x_start: x0,
+                                x_end: x1,
+                                top: table_visual_top,
+                                bottom: table_visual_end + margin_bottom_px,
+                                owner_para: None,
+                            }
+                        } else {
+                            VisibleFloatExclusion::full_width(
+                                table_visual_top,
+                                table_visual_end + margin_bottom_px,
+                                None,
+                            )
+                        };
+                        visible_float_exclusions.push(band);
+                    }
+                } else if is_current_visible_para_float && table_visual_height > 0.0 {
+                    // [officex/어울림 배선 3/3] 비양수 오프셋(v_off ≤ 0) visible float 도
+                    // 실제 그려진 상자를 배타 밴드로 등록한다 — 위로 올린 표가 host 문단의
+                    // 앞선 줄들을 아래로 미는 한컴 동작(판정식: probe-flow.mjs)의 근거.
+                    // owner 를 None 으로 두는 이유: 양수 오프셋(#1549)과 달리 이 표는
+                    // **자기 문단의 텍스트도** 밀어야 한다(제목-위·표-아래 계약이 아니라
+                    // 표-위·본문-아래). 항목 순서가 [표, host 텍스트]라 등록이 항상 선행한다.
+                    let table_visual_top = table_visual_end - table_visual_height;
+                    if table_visual_end > table_visual_top + 0.5 {
+                        visible_float_exclusions.push(VisibleFloatExclusion::full_width(
+                            table_visual_top,
+                            table_visual_end,
+                            None,
+                        ));
                     }
                 }
             }
@@ -6742,6 +7109,10 @@ impl LayoutEngine {
                 .get(control_index)
                 .map(|c| matches!(c, Control::Table(t) if t.common.treat_as_char))
                 .unwrap_or(false);
+            // [트랙3 2026-08-05] square 팔은 "빈 문단"에서 "앵커선행"(컨트롤 앞 공백뿐,
+            // 뒤 텍스트 허용)으로 확장 — host post-text 가 표 옆(table_y_before)으로
+            // 흐르는 중간 케이스를 layout 경로에 배정한다. topbottom 팔은
+            // !para_has_visible_text 유지(voff>0 분기 6665/6713 격리).
             let is_current_empty_para_float = para
                 .controls
                 .get(control_index)
@@ -6749,7 +7120,10 @@ impl LayoutEngine {
                     matches!(
                         c,
                         Control::Table(t)
-                            if is_para_topbottom_float(&t.common) && !para_has_visible_text(para)
+                            if (is_para_topbottom_float(&t.common)
+                                && !para_has_visible_text(para))
+                                || (super::float_placement::is_para_square_family_float(&t.common)
+                                    && para.text_is_blank_before_control(control_index))
                     )
                 })
                 .unwrap_or(false);
@@ -6766,12 +7140,14 @@ impl LayoutEngine {
                 })
                 .unwrap_or(false);
             let is_first_empty_para_float_control = is_current_empty_para_float
-                && para.controls.iter().position(|c| {
+                && para.controls.iter().enumerate().position(|(ci, c)| {
                     matches!(
                         c,
                         Control::Table(t)
-                            if is_para_topbottom_float(&t.common)
-                                && !para_has_visible_text(para)
+                            if (is_para_topbottom_float(&t.common)
+                                && !para_has_visible_text(para))
+                                || (super::float_placement::is_para_square_family_float(&t.common)
+                                    && para.text_is_blank_before_control(ci))
                     )
                 }) == Some(control_index);
             // ── 표 위 간격 ──

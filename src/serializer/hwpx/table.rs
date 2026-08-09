@@ -65,7 +65,11 @@ pub fn write_table<W: Write>(
     let col_cnt = table.col_count.to_string();
     let cell_spacing = table.cell_spacing.to_string();
     let border_fill_id_ref = table.border_fill_id.to_string();
-    let no_adjust = bool01((table.attr | table.raw_table_record_attr) & 0x08 != 0);
+    // noAdjust = HWPTAG_TABLE 레코드 attr bit3. `table.attr` 은 **CommonObjAttr FLAGS**
+    // 의 미러이고 그 bit3 은 vert_rel_to 하위 비트라 여기서 OR 하면 안 된다
+    // (vertRelTo=PAGE 표가 noAdjust=1 로 새어나갔다). 모든 Table.attr 기록자가 FLAGS 를
+    // 쓴다: parser/control.rs:161 · hwp3/mod.rs:606 · hwpx/section.rs:1853.
+    let no_adjust = bool01(table.raw_table_record_attr & 0x08 != 0);
 
     start_tag_attrs(
         w,
@@ -148,7 +152,10 @@ fn write_pos<W: Write>(w: &mut Writer<W>, c: &CommonObjAttr) -> Result<(), Seria
             // treatAsChar 표의 1→0 케이스에서 0→1 드롭으로 표 partial-split 임계를 흔들어
             // 페이지네이션이 달라졌다(IR-invisible). #1594 holdAnchorAndSO 와 동형.
             ("flowWithText", bool01(c.flow_with_text)),
-            ("allowOverlap", "0"),
+            // [officex] allowOverlap 도 IR(allow_overlap)을 보존한다 — 파서는 이 속성을
+            // 읽는데(parser/hwpx/section.rs:1692) 표만 "0" 하드코딩이라 HWPX 왕복에서
+            // "개체 겹침 허용"이 무조건 꺼졌다. 그림/도형 직렬화기는 이미 IR 을 쓴다.
+            ("allowOverlap", bool01(c.allow_overlap)),
             ("holdAnchorAndSO", hold),
             ("vertRelTo", vert_rel_to_str(c.vert_rel_to)),
             ("horzRelTo", horz_rel_to_str(c.horz_rel_to)),

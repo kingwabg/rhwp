@@ -26,6 +26,81 @@ use crate::renderer::svg_layer::SvgLayerRenderer;
 use std::cell::RefCell;
 use std::fmt::Write as _;
 
+/// setPageDef 가 받는 키 화이트리스트(= getPageDef 가 내보내는 키와 동일).
+const PAGE_DEF_KEYS: &[&str] = &[
+    "width",
+    "height",
+    "marginLeft",
+    "marginRight",
+    "marginTop",
+    "marginBottom",
+    "marginHeader",
+    "marginFooter",
+    "marginGutter",
+    "landscape",
+    "binding",
+];
+
+/// setSectionDef 가 받는 키 화이트리스트(= getSectionDef 가 내보내는 키와 동일).
+const SECTION_DEF_KEYS: &[&str] = &[
+    "pageNum",
+    "pageNumType",
+    "pictureNum",
+    "tableNum",
+    "equationNum",
+    "columnSpacing",
+    "defaultTabSpacing",
+    "hideHeader",
+    "hideFooter",
+    "hideMasterPage",
+    "hideBorder",
+    "hideFill",
+    "hideEmptyLine",
+];
+
+/// [page-section/결함1·2] setPageDef·setSectionDef 입력 JSON 을 엄격 검증한다.
+///
+/// 왜: 기존 ad-hoc 문자열 파서(json_u32 등)는 파싱 실패나 낯선 키를 조용히 무시하고
+/// `ok:true` 를 돌려줘, 호출부가 "적용됐다"고 오인했다. serde_json 으로 정식 파싱해
+/// (1) 깨진 JSON·객체 아님·(2) 화이트리스트 밖 키(=다른 API 키 오용)를 거부한다.
+fn validate_def_json(
+    json: &str,
+    allowed: &[&str],
+) -> Result<serde_json::Map<String, serde_json::Value>, HwpError> {
+    let value: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| HwpError::RenderError(format!("JSON 파싱 실패: {}", e)))?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| HwpError::RenderError("JSON 객체가 아님".to_string()))?
+        .clone();
+    for key in obj.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(HwpError::RenderError(format!("지원하지 않는 키: {}", key)));
+        }
+    }
+    Ok(obj)
+}
+
+/// [page-section/결함6] 쪽 테두리 병합용 '선없음' base.
+/// 지정하지 않은 방향은 실선이 아니라 선없음(type 0)으로 남겨 오염을 막는다.
+fn none_page_border_fill() -> crate::model::style::BorderFill {
+    use crate::model::style::{
+        BorderFill, BorderLine, BorderLineType, CenterLine, DiagonalLine, Fill,
+    };
+    BorderFill {
+        raw_data: None,
+        attr: 0,
+        borders: [BorderLine {
+            line_type: BorderLineType::None,
+            width: 0,
+            color: 0,
+        }; 4],
+        diagonal: DiagonalLine::default(),
+        center_line: CenterLine::None,
+        fill: Fill::default(),
+    }
+}
+
 // ── [#2004] 부동 전면 이미지 스택 → 인라인 재분류 (render-전용, 원본 무손상) ──
 
 /// 부동(tac=false) 그림/그림-도형의 공통 속성(읽기).
@@ -1597,6 +1672,21 @@ impl DocumentCore {
             }
         }
 
+        // [page-section/결함3] 구역의 단 간격(columnSpacing)이 실제 레이아웃에 반영되게 한다.
+        // 레이아웃은 find_initial_column_def 로 찾은 Control::ColumnDef.spacing 만 쓰므로,
+        // section_def.column_spacing 만 바꾸면 화면엔 아무 변화가 없었다. 여기서 존재하는
+        // 초기 ColumnDef 컨트롤의 spacing 도 함께 갱신해 두 값이 어긋나지 않게 한다.
+        if let Some(v) = json_u16(json, "columnSpacing") {
+            let spacing = v as i16;
+            for para in section.paragraphs.iter_mut() {
+                for ctrl in para.controls.iter_mut() {
+                    if let Control::ColumnDef(ref mut cd) = ctrl {
+                        cd.spacing = spacing;
+                    }
+                }
+            }
+        }
+
         // raw_stream 무효화
         section.raw_stream = None;
         Ok(())
@@ -1621,6 +1711,8 @@ impl DocumentCore {
         section_idx: usize,
         json: &str,
     ) -> Result<String, HwpError> {
+        // [page-section/결함1] 깨진 JSON·다른 API 키를 조용히 삼키지 않도록 먼저 엄격 검증.
+        validate_def_json(json, SECTION_DEF_KEYS)?;
         self.apply_section_def_json(section_idx, json)?;
         let page_count = self.recompose_and_paginate();
         Ok(format!("{{\"ok\":true,\"pageCount\":{}}}", page_count))
@@ -1628,6 +1720,8 @@ impl DocumentCore {
 
     /// 모든 구역의 SectionDef를 일괄 변경하고 재페이지네이션 (네이티브 에러 타입)
     pub fn set_section_def_all_native(&mut self, json: &str) -> Result<String, HwpError> {
+        // [page-section/결함1] 일괄 적용도 동일하게 입력을 검증한다.
+        validate_def_json(json, SECTION_DEF_KEYS)?;
         let count = self.document.sections.len();
         for idx in 0..count {
             self.apply_section_def_json(idx, json)?;
@@ -1735,7 +1829,25 @@ impl DocumentCore {
         use crate::document_core::helpers::{json_bool, json_i16, json_str, json_u32};
         use crate::model::page::{PageBorderBasis, PageBorderUiBasis};
 
-        let border_fill_id = self.create_border_fill_from_json(json);
+        // [page-section/결함6] 지정 안 한 테두리가 실선 기본값으로 오염되지 않도록,
+        // 현재 구역 테두리를 base 로 병합한다. 최초 설정(id 0)이면 '선없음' base 에서 시작.
+        let current_bf_id = self
+            .document
+            .sections
+            .get(section_idx)
+            .map(|s| s.section_def.page_border_fill.border_fill_id)
+            .unwrap_or(0);
+        let base = if current_bf_id > 0 {
+            self.document
+                .doc_info
+                .border_fills
+                .get((current_bf_id - 1) as usize)
+                .cloned()
+                .unwrap_or_else(none_page_border_fill)
+        } else {
+            none_page_border_fill()
+        };
+        let border_fill_id = self.create_border_fill_from_json_based(json, base);
         let section = self
             .document
             .sections
@@ -1885,6 +1997,31 @@ impl DocumentCore {
     ) -> Result<String, HwpError> {
         use crate::model::page::BindingMethod;
 
+        // [page-section/결함1] 깨진 JSON·다른 API 키를 조용히 성공 처리하지 않도록 먼저 검증.
+        let obj = validate_def_json(json, PAGE_DEF_KEYS)?;
+        // [page-section/결함2] 음수 치수·여백은 ad-hoc u32 파서가 조용히 무시했다 → 명시적으로 거부.
+        for key in [
+            "width",
+            "height",
+            "marginLeft",
+            "marginRight",
+            "marginTop",
+            "marginBottom",
+            "marginHeader",
+            "marginFooter",
+            "marginGutter",
+            "binding",
+        ] {
+            if let Some(n) = obj.get(key).and_then(|v| v.as_i64()) {
+                if n < 0 {
+                    return Err(HwpError::RenderError(format!(
+                        "음수 값 거부: {}={}",
+                        key, n
+                    )));
+                }
+            }
+        }
+
         let section = self
             .document
             .sections
@@ -1954,6 +2091,40 @@ impl DocumentCore {
 
         // FIX 3: raw_stream 무효화 → 직렬화 시 모델에서 재구성
         section.raw_stream = None;
+
+        // [용지 패리티 2026-07-30] **본문 폭이 바뀌면 문단 LineSeg 를 새 폭으로 재계산한다.**
+        // compose 는 저장된 LineSeg 를 그대로 쓰므로(formatting.rs 의 동일 처리 참조),
+        // 무효화하지 않으면 여백·용지 크기·방향을 바꿔도 줄나눔 폭이 옛 값에 얼어붙는다
+        // (실측: 여백 8504→20000, 세로→가로 전환에도 줄 수 4 불변 — 여백은 x 만 밀렸다).
+        {
+            let styles = resolve_styles(&self.document.doc_info, self.dpi);
+            let dpi = self.dpi;
+            let column_def = {
+                let s = &self.document.sections[section_idx];
+                DocumentCore::find_initial_column_def(&s.paragraphs)
+            };
+            let col_width = {
+                let s = &self.document.sections[section_idx];
+                let layout =
+                    PageLayoutInfo::from_page_def(&s.section_def.page_def, &column_def, dpi);
+                layout
+                    .column_areas
+                    .first()
+                    .map(|a| a.width)
+                    .unwrap_or(layout.body_area.width)
+            };
+            let para_count = self.document.sections[section_idx].paragraphs.len();
+            for pi in 0..para_count {
+                let ps_id = self.document.sections[section_idx].paragraphs[pi].para_shape_id;
+                let ps = styles.para_styles.get(ps_id as usize);
+                let ml = ps.map(|s| s.margin_left).unwrap_or(0.0);
+                let mr = ps.map(|s| s.margin_right).unwrap_or(0.0);
+                let available = (col_width - ml - mr).max(1.0);
+                let para = &mut self.document.sections[section_idx].paragraphs[pi];
+                para.line_segs.clear();
+                crate::renderer::composer::reflow_line_segs(para, available, &styles, dpi);
+            }
+        }
 
         // 재조판 + 재페이지네이션
         self.composed = self
@@ -2549,6 +2720,9 @@ impl DocumentCore {
 
     /// 구역을 재조판하고 dirty로 표시한다.
     pub(crate) fn recompose_section(&mut self, section_idx: usize) {
+        // [편집 훅 단일화 2026-08-05] 모든 편집 명령이 이 관문(또는 mark_section_dirty)을
+        // 지나므로 여기서 어울림 재줄바꿈을 예약한다 — 소비는 paginate() 단일 지점.
+        self.square_reflow_pending = true;
         self.invalidate_page_tree_cache();
         self.composed[section_idx] = compose_section(&self.document.sections[section_idx]);
         if section_idx < self.dirty_sections.len() {
@@ -2563,6 +2737,9 @@ impl DocumentCore {
     /// 구역을 dirty로 표시만 한다 (재조판 없이).
     /// 셀 내부 편집처럼 composed 데이터가 불변인 경우 사용.
     pub(crate) fn mark_section_dirty(&mut self, section_idx: usize) {
+        // [편집 훅 단일화 2026-08-05] recompose_section 과 함께 편집 커밋의 두 관문 —
+        // 어울림 재줄바꿈 예약(소비는 paginate()).
+        self.square_reflow_pending = true;
         if section_idx < self.dirty_sections.len() {
             self.dirty_sections[section_idx] = true;
         }
@@ -2693,7 +2870,36 @@ impl DocumentCore {
         let sec_count = self.document.sections.len().max(1);
         let empty_breaks: Vec<std::collections::HashSet<usize>> =
             vec![std::collections::HashSet::new(); sec_count];
+        // [편집 훅 단일화 2026-08-05] 어울림 재줄바꿈은 편집 커밋이 세운 pending 을
+        // 여기서 단일 소비한다. 순서는 1차 조판 → 훅 → (segs 가 바뀌면) 2차 조판:
+        // 문단 분할/병합/붙여넣기는 문단 인덱스를 밀어, stale 페이지네이션 위 렌더트리의
+        // para_index ↔ 모델 대응이 어긋난다(host 미스매치 → 밴드 0 → 흔적 전폭 오원복).
+        // 훅을 1차 조판 **뒤**에 돌려야 밴드·para_tops 가 현재 모델과 정합한다.
+        // (설계 스펙의 "훅 → paginate" 는 인덱스 불변 편집에서만 성립 — 코드가 정본.)
+        // 드래그(suppress) 중엔 소비하지 않고 pending 을 유지한다 — 드롭 커밋이 소비.
+        let hook_sections: Vec<usize> =
+            if self.square_reflow_pending && !self.suppress_square_reflow {
+                self.dirty_sections
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, d)| d.then_some(i))
+                    .collect()
+            } else {
+                Vec::new()
+            };
         self.paginate_pass(&empty_breaks);
+        if self.square_reflow_pending && !self.suppress_square_reflow {
+            self.square_reflow_pending = false;
+            let mut changed = false;
+            for si in hook_sections {
+                changed |= self.reflow_paras_for_square_bands(si);
+            }
+            if changed {
+                self.paginate_pass(&empty_breaks);
+                // 훅 내부 recompose_section 이 되살린 pending 은 이번 소비의 산물 — 정리.
+                self.square_reflow_pending = false;
+            }
+        }
     }
 
     fn paginate_pass(&mut self, force_breaks: &[std::collections::HashSet<usize>]) {
@@ -5142,6 +5348,7 @@ mod tests {
 
         // "page 2" 단: para 1 만 포함.
         let cc = ColumnContent {
+            topbottom_bands: Vec::new(),
             column_index: 0,
             start_height: 0.0,
             endnote_flow: false,

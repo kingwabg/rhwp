@@ -123,6 +123,8 @@ impl DocumentCore {
             inner_control_idx,
         )?;
         Self::apply_equation_properties(eq, dpi, props_json);
+        // 본문 수식 setter 와 동일 — raw_ctrl_data 사본을 물리에 맞춘다 (equation.rs 참조).
+        Self::sync_raw_ctrl_data_from_common(&eq.common, &mut eq.raw_ctrl_data);
 
         let section = &mut self.document.sections[section_idx];
         section.raw_stream = None;
@@ -297,6 +299,17 @@ impl DocumentCore {
             return Err(HwpError::RenderError(format!(
                 "문단 인덱스 {} 범위 초과",
                 para_idx
+            )));
+        }
+        // 입력 방어: 문단 길이 밖(음수=u32 래핑) char_offset을 조용히 끝에 붙이지 않는다.
+        let footnote_text_len = self.document.sections[section_idx].paragraphs[para_idx]
+            .text
+            .chars()
+            .count();
+        if char_offset > footnote_text_len {
+            return Err(HwpError::InvalidField(format!(
+                "각주 오프셋 {} 범위 초과 (문단 길이 {})",
+                char_offset, footnote_text_len
             )));
         }
 
@@ -609,6 +622,17 @@ impl DocumentCore {
             return Err(HwpError::RenderError(format!(
                 "문단 인덱스 {} 범위 초과",
                 para_idx
+            )));
+        }
+        // 입력 방어: 문단 길이 밖(음수=u32 래핑) char_offset을 조용히 끝에 붙이지 않는다.
+        let endnote_text_len = self.document.sections[section_idx].paragraphs[para_idx]
+            .text
+            .chars()
+            .count();
+        if char_offset > endnote_text_len {
+            return Err(HwpError::InvalidField(format!(
+                "미주 오프셋 {} 범위 초과 (문단 길이 {})",
+                char_offset, endnote_text_len
             )));
         }
 

@@ -16,10 +16,11 @@ export class CaretRenderer {
     private container: HTMLElement,
     private virtualScroll: VirtualScroll,
   ) {
+    // 밑줄형 캐럿 — 글자 아래에 깔리는 가로 바. 색은 파랑↔하늘색 중간(#4367F5).
     this.caretEl = document.createElement('div');
     this.caretEl.className = 'caret';
     this.caretEl.style.cssText =
-      'position:absolute;width:2px;background:#000;pointer-events:none;z-index:10;display:none;';
+      'position:absolute;height:2px;background:#4367F5;pointer-events:none;z-index:10;display:none;';
 
     // IME 조합 오버레이 (블랙박스 + 흰색 글자)
     this.compEl = document.createElement('div');
@@ -65,9 +66,12 @@ export class CaretRenderer {
     const pageOffset = this.virtualScroll.getPageOffset(pageIndex);
     const pageLeft = this.calcPageLeft(pageIndex);
 
+    // 밑줄형: 줄 바닥에 글자 폭 근사(높이×0.6)의 가로 바를 깐다
+    const thickness = 2;
+    const width = Math.max(6, height * 0.6 * zoom);
     this.caretEl.style.left = `${pageLeft + x * zoom}px`;
-    this.caretEl.style.top = `${pageOffset + y * zoom}px`;
-    this.caretEl.style.height = `${height * zoom}px`;
+    this.caretEl.style.top = `${pageOffset + (y + height) * zoom - thickness}px`;
+    this.caretEl.style.width = `${width}px`;
   }
 
   /** 새 CursorRect로 갱신한다 (깜박임 리셋) */
@@ -144,7 +148,8 @@ export class CaretRenderer {
     const bounds = rect.cellBounds;
     if (!bounds) return rect;
 
-    const caretWidth = 2 / Math.max(zoom, 0.01);
+    // 밑줄형 캐럿의 문서 좌표 폭(높이×0.6, 최소 6px 상당)
+    const caretWidth = Math.max(rect.height * 0.6, 6 / Math.max(zoom, 0.01));
     const height = Math.min(rect.height, Math.max(0, bounds.h));
     const maxX = Math.max(bounds.x, bounds.x + bounds.w - caretWidth);
     const maxY = Math.max(bounds.y, bounds.y + bounds.h - height);

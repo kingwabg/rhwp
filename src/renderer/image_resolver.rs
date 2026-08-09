@@ -434,6 +434,27 @@ pub(crate) fn detect_image_mime_type(data: &[u8]) -> &'static str {
     "application/octet-stream"
 }
 
+/// 삽입 시점 이미지 형식 검증 — 매직 바이트로 알려진 이미지 포맷인지 판정.
+///
+/// [image-shape/쓰레기 바이트] `detect_image_mime_type` 이 `application/octet-stream` 을
+/// 돌려주는 미지 바이트(PNG/JPG 헤더가 아닌 쓰레기)를 삽입 단계에서 거부하기 위한 관문.
+/// EMF/SVG 는 `detect_image_mime_type` 이 다루지 않으므로(HWP 는 이 둘도 embed 한다) 여기서
+/// 별도로 인정한다 — 그래야 정상 벡터 이미지를 오탐 거부하지 않는다.
+pub(crate) fn is_supported_image_format(data: &[u8]) -> bool {
+    if detect_image_mime_type(data) != "application/octet-stream" {
+        return true;
+    }
+    // EMF: 레코드 타입 ENHMETA_HEADER(=1, LE) + offset 40 의 " EMF" 시그니처.
+    if data.len() >= 44
+        && data[0..4] == [0x01, 0x00, 0x00, 0x00]
+        && data[40..44] == [0x20, 0x45, 0x4D, 0x46]
+    {
+        return true;
+    }
+    // 텍스트 SVG (`<svg` 또는 `<?xml ...?><svg`).
+    crate::renderer::svg_fragment::is_svg_prefix(data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{grayscale_jpeg_bytes_to_png_bytes, resolve_image_payload};

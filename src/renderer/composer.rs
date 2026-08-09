@@ -259,6 +259,84 @@ fn synthesize_marker_paragraph(para: &Paragraph) -> Option<Paragraph> {
     Some(synth)
 }
 
+/// [oracle-corpus-mining-20260805 횡단 법칙 1] 글자처럼 취급(TAC) 개체의 **상자** —
+/// 글리프 상자 정의의 단일 소스(12법칙 #2 "같은 값을 두 경로로 계산하지 말 것").
+///
+/// - **잉크 상자** = 개체 자체 크기. 그리는 크기·렌더 x 전진이 쓴다.
+/// - **글리프 상자** = 잉크 + 바깥여백(폭은 좌+우, 높이는 상+하). 줄바꿈 폭 판정과
+///   줄 높이가 쓴다 — 코퍼스 전 표본에서 저장 lh = 표높이 + 바깥여백 상하(편차 0~4HU,
+///   마진 0이면 정확 일치), 폭 판정도 기부 양식 s0#25(47813+570 > sw 47833)가 증거다.
+///
+/// 바깥여백 필드는 개체마다 다르다(표 `outer_margin_*`, 그림·도형 `common.margin`) —
+/// 그 차이를 여기서 흡수한다. 단 **표만** 여백을 계상한다: 그림·도형·수식·폼의 TAC
+/// 여백 참여는 오라클 미채취이고(코퍼스 표본은 전부 표), 그쪽 잉크 폭은 렌더 bbox 로도
+/// 쓰이므로 근거 없이 넓히면 개체가 늘어난다. 채취되면 이 함수 한 곳만 고치면 된다.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TacBox {
+    /// 잉크 폭 (HWPUNIT, 0 = 미상)
+    pub ink_width: i32,
+    /// 잉크 높이 (HWPUNIT, 0 = 미상)
+    pub ink_height: i32,
+    /// 바깥여백 좌+우
+    pub margin_h: i32,
+    /// 바깥여백 상+하
+    pub margin_v: i32,
+}
+
+impl TacBox {
+    /// 글리프 폭 = 잉크 + 바깥여백 좌우 (줄 채움·줄바꿈 판정용)
+    pub(crate) fn glyph_width(&self) -> i32 {
+        self.ink_width + self.margin_h
+    }
+
+    /// 글리프 높이 = 잉크 + 바깥여백 상하 (줄 높이용)
+    pub(crate) fn glyph_height(&self) -> i32 {
+        self.ink_height + self.margin_v
+    }
+
+    /// 잉크 폭·높이가 둘 다 유효한가 — 줄 채움에 폭으로 참여할 조건.
+    pub(crate) fn has_ink(&self) -> bool {
+        self.ink_width > 0 && self.ink_height > 0
+    }
+}
+
+/// TAC 개체의 상자를 돌려준다(TAC 아닌 개체는 None). 폭·높이가 0 인 개체도 높이만
+/// 유효할 수 있으므로 여기서 걸러내지 않는다 — 폭 참여가 필요한 쪽이 `has_ink()` 로 건다.
+pub(crate) fn tac_box_hwp(ctrl: &Control) -> Option<TacBox> {
+    let (ink_width, ink_height, margin_h, margin_v) = match ctrl {
+        Control::Picture(pic) if pic.common.treat_as_char => {
+            (pic.common.width as i32, pic.common.height as i32, 0, 0)
+        }
+        Control::Shape(shape) if shape.common().treat_as_char => {
+            let common = shape.common();
+            let shape_attr = shape.shape_attr();
+            (
+                (common.width as i32).max(shape_attr.current_width as i32),
+                (common.height as i32).max(shape_attr.current_height as i32),
+                0,
+                0,
+            )
+        }
+        Control::Table(table) if table.common.treat_as_char => (
+            table.get_column_widths().iter().sum::<u32>() as i32,
+            table.common.height as i32,
+            (table.outer_margin_left as i32 + table.outer_margin_right as i32).max(0),
+            (table.outer_margin_top as i32 + table.outer_margin_bottom as i32).max(0),
+        ),
+        Control::Equation(eq) if eq.common.treat_as_char => {
+            (eq.common.width as i32, eq.common.height as i32, 0, 0)
+        }
+        Control::Form(form) => (form.width as i32, form.height as i32, 0, 0),
+        _ => return None,
+    };
+    Some(TacBox {
+        ink_width,
+        ink_height,
+        margin_h,
+        margin_v,
+    })
+}
+
 /// 문단을 줄별 텍스트 런으로 분할한다.
 pub fn compose_paragraph(para: &Paragraph) -> ComposedParagraph {
     // [Task #991] HWP5 parser 의 inline marker 누락 보정 (rendering 전용)
@@ -570,6 +648,16 @@ fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
             utf16_end,
             para.text.chars().count(),
         );
+        // 마지막 줄은 **문단 텍스트 끝까지**다 — utf16 변환을 거치지 않는다.
+        //
+        // 위에서 마지막 줄의 끝을 `para.char_count` 로 잡는데, 그 값은 UTF-16 오프셋으로
+        // 해석된다. 편집으로 만들어진 문단은 거기에 **글자 수**가 들어 있어, 이모지처럼
+        // UTF-16 에서 2칸인 글자가 있으면 그 개수만큼 줄이 짧게 끊겼다 —
+        // "앞 😀😀😀 뒤" 에서 " 뒤" 가 줄 밖으로 밀려 사라지고 캐럿이 줄 머리로
+        // 되돌아갔다(2026-07-31 실측). BMP 문자만 있으면 두 값이 같아 오래 안 드러났다.
+        if line_idx + 1 == line_seg_count {
+            text_end = para.text.chars().count();
+        }
         if text_end < text_start {
             text_end = text_start;
         }
@@ -2412,8 +2500,12 @@ pub mod lineseg_compare;
 
 pub(crate) use line_breaking::{
     is_line_end_forbidden, is_line_start_forbidden, paragraph_flow_end, recalculate_section_vpos,
-    reflow_line_segs, tokenize_paragraph, BreakToken,
+    reflow_line_segs, reflow_line_segs_with_bands, side_pick_for_band, tokenize_paragraph,
+    BreakToken, ReflowBand,
 };
+
+/// [테스트 노출] 옆 조각 선택 규칙 — 게이트 회귀를 단위 테스트로 잠근다(부록4 갭 #1).
+pub use line_breaking::{side_pick_for_band as side_pick_for_band_pub, MIN_SIDE_PX};
 
 #[cfg(test)]
 mod lineseg_compare_tests;

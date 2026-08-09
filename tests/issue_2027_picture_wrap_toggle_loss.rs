@@ -241,13 +241,32 @@ fn picture_survives_wrap_and_tac_toggle_sequence() {
     assert_picture_visible(&mut core, para_idx, ci, "7.글자처럼 off(2회차)");
 }
 
-/// tac 토글 왕복 후 앵커 문단 line_segs 가 원본으로 복원되는지 (마이그레이션 비가역성 검증).
+/// tac 토글 왕복 후 앵커 문단 line_segs 의 **줄 크기**가 원본으로 복원되는지
+/// (마이그레이션 비가역성 검증 — 그림 높이로 부풀려진 lh 가 남지 않는다).
+///
+/// [편집 훅 phase A 2026-08-05] 종전에는 줄 경계(text_start)까지 비트 동일을
+/// 단언했으나, 어울림 그림이 앵커 문단 줄 위에 얹힌 이 구성에서는 한컴도 글을
+/// 그림 옆으로 흐르게 한다 — 훅 일반화(phase A)로 앵커 자기 줄이 밴드 기준
+/// 재줄바꿈되며 줄 경계가 정당하게 바뀐다(실측: cs=9000 옆 흐름, 겹침 0).
+/// 본 핀의 원 취지인 "줄 크기 세트 복원"만 잠근다.
 #[test]
 fn tac_roundtrip_preserves_anchor_line_segs() {
     let mut core = load_core();
     let (para_idx, ci) = insert_test_picture(&mut core);
 
-    let before = seg_keys(&core.document().sections[0].paragraphs[para_idx].line_segs);
+    let size_set = |segs: &[LineSeg]| -> std::collections::BTreeSet<(i32, i32, i32, i32)> {
+        segs.iter()
+            .map(|s| {
+                (
+                    s.line_height,
+                    s.text_height,
+                    s.baseline_distance,
+                    s.line_spacing,
+                )
+            })
+            .collect()
+    };
+    let before = size_set(&core.document().sections[0].paragraphs[para_idx].line_segs);
 
     set_props(&mut core, para_idx, ci, r#"{"treatAsChar":true}"#, "tac on");
     set_props(
@@ -258,10 +277,10 @@ fn tac_roundtrip_preserves_anchor_line_segs() {
         "tac off",
     );
 
-    let after = seg_keys(&core.document().sections[0].paragraphs[para_idx].line_segs);
+    let after = size_set(&core.document().sections[0].paragraphs[para_idx].line_segs);
     assert_eq!(
         before, after,
-        "tac on→off 왕복 후 앵커 문단 line_segs 가 원본과 달라짐 (비가역 마이그레이션)"
+        "tac on→off 왕복 후 앵커 문단 줄 크기가 원본과 달라짐 (그림 높이 잔류 = 비가역 마이그레이션)"
     );
 }
 

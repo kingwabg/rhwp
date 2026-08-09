@@ -9,6 +9,23 @@ use crate::model::event::DocumentEvent;
 use crate::model::paragraph::Paragraph;
 use crate::model::shape::{common_obj_offsets, ShapeObject};
 
+/// [개선 트랙1] 기준계 전환 rebase 계획 — mutation 전 실측(frames/bbox)과
+/// old rel/align 스냅샷. apply 후 `DocumentCore::rebased_offsets` 로 확정한다.
+pub(crate) struct ObjectRebasePlan {
+    pub frames: crate::renderer::float_placement::RebaseFrames,
+    pub bbox: crate::renderer::render_tree::BoundingBox,
+    pub h_wanted: bool,
+    pub v_wanted: bool,
+    pub old_horz: (
+        crate::model::shape::HorzRelTo,
+        crate::model::shape::HorzAlign,
+    ),
+    pub old_vert: (
+        crate::model::shape::VertRelTo,
+        crate::model::shape::VertAlign,
+    ),
+}
+
 impl DocumentCore {
     const COMMON_OBJ_ATTR_KNOWN_MASK: u32 = 0x01
         | (0x03 << 3)
@@ -29,6 +46,34 @@ impl DocumentCore {
             crate::document_core::converters::common_obj_attr_writer::pack_common_attr_bits(c);
         c.attr = (c.attr & !Self::COMMON_OBJ_ATTR_KNOWN_MASK)
             | (packed & Self::COMMON_OBJ_ATTR_KNOWN_MASK);
+    }
+    /// 물리(`CommonObjAttr`) → `raw_ctrl_data` 사본 갱신.
+    ///
+    /// HWP5 파스본은 직렬화기가 raw_ctrl_data 를 그대로 기록하므로(표 CTRL_HEADER ·
+    /// 수식 eqed) setter 가 물리를 바꾼 뒤 이 함수를 불러 사본을 따라오게 한다.
+    /// **비어 있거나 짧으면 손대지 않는다** — 토막을 만들면 HWPX→HWP 어댑터의
+    /// `is_empty` 합성 조건이 무력화된다(표 저장 손상 사고와 같은 기전).
+    pub(crate) fn sync_raw_ctrl_data_from_common(
+        c: &crate::model::shape::CommonObjAttr,
+        raw: &mut [u8],
+    ) {
+        use crate::model::shape::common_obj_offsets as o;
+        if raw.len() < o::MIN_LEN {
+            return;
+        }
+        raw[o::FLAGS].copy_from_slice(&c.attr.to_le_bytes());
+        raw[o::V_OFFSET].copy_from_slice(&c.vertical_offset.to_le_bytes());
+        raw[o::H_OFFSET].copy_from_slice(&c.horizontal_offset.to_le_bytes());
+        raw[o::WIDTH].copy_from_slice(&c.width.to_le_bytes());
+        raw[o::HEIGHT].copy_from_slice(&c.height.to_le_bytes());
+        raw[o::Z_ORDER].copy_from_slice(&c.z_order.to_le_bytes());
+        raw[o::MARGIN_LEFT].copy_from_slice(&c.margin.left.to_le_bytes());
+        raw[o::MARGIN_RIGHT].copy_from_slice(&c.margin.right.to_le_bytes());
+        raw[o::MARGIN_TOP].copy_from_slice(&c.margin.top.to_le_bytes());
+        raw[o::MARGIN_BOTTOM].copy_from_slice(&c.margin.bottom.to_le_bytes());
+        if raw.len() >= o::PREVENT_PAGE_BREAK.end {
+            raw[o::PREVENT_PAGE_BREAK].copy_from_slice(&c.prevent_page_break.to_le_bytes());
+        }
     }
     pub(crate) fn is_structure_only_empty_paragraph(para: &Paragraph) -> bool {
         para.text.is_empty()
@@ -245,11 +290,13 @@ impl DocumentCore {
             c.allow_overlap = false;
             c.attr &= !(1 << 14);
         }
-        if let Some(v) = json_u32(props_json, "vertOffset") {
-            c.vertical_offset = v;
+        // [개선 트랙1 2026-08-05] 오프셋은 부호 있는 HWPUNIT — json_u32 는 '-' 에서
+        // 파싱이 끊겨 음수를 조용히 버렸다(그림·표 경로의 json_i32 와 비대칭).
+        if let Some(v) = crate::document_core::helpers::json_i32(props_json, "vertOffset") {
+            c.vertical_offset = v as u32;
         }
-        if let Some(v) = json_u32(props_json, "horzOffset") {
-            c.horizontal_offset = v;
+        if let Some(v) = crate::document_core::helpers::json_i32(props_json, "horzOffset") {
+            c.horizontal_offset = v as u32;
         }
         if let Some(v) = json_str(props_json, "description") {
             c.description = v;
@@ -328,6 +375,253 @@ impl DocumentCore {
         self.update_connectors_in_section(section_idx);
 
         Ok("{\"ok\":true}".to_string())
+    }
+    /// [개선 트랙1 2026-08-05] 기준계 전환 rebase 용 실측 프로브 — mutation **전에**
+    /// 렌더트리에서 (기준 프레임들, 개체 현재 bbox)를 채취한다.
+    ///
+    /// 렌더트리 실측이 정본인 근거는 저장소에 이미 두 번 선언돼 있다: 어울림 훅은
+    /// 'vpos 축은 float 흐름 소비를 미반영, 렌더트리가 정본'(table_ops.rs 어울림 본편),
+    /// Task #1151 셀 좌표도 렌더트리 채취(table.rs compute_cell_page_offset). 별도
+    /// 페이지 레이아웃 재계산 경로를 새로 만들지 않는다.
+    ///
+    /// para_y 는 host 문단 첫 TextLine top — 공백뿐인 host 는 TextLine 이 없어 None 일
+    /// 수 있고, 그 경우 Para 축 rebase 는 스킵된다(offset_for_target_y 가 None 반환).
+    pub(crate) fn probe_object_frames(
+        &self,
+        section_idx: usize,
+        para_idx: usize,
+        control_idx: usize,
+    ) -> Option<(
+        crate::renderer::float_placement::RebaseFrames,
+        crate::renderer::render_tree::BoundingBox,
+    )> {
+        use crate::renderer::page_layout::LayoutRect;
+        use crate::renderer::render_tree::{BoundingBox, RenderNode, RenderNodeType};
+
+        #[derive(Default)]
+        struct Probe {
+            body: Option<BoundingBox>,
+            col: Option<BoundingBox>,
+            para_y: Option<f64>,
+            bbox: Option<BoundingBox>,
+        }
+
+        fn walk(n: &RenderNode, sec: usize, pi: usize, ci: usize, probe: &mut Probe) {
+            match &n.node_type {
+                // 머리말/꼬리말/바탕쪽/각주는 자체 문단 인덱스 공간 — 본문과 충돌 방지.
+                RenderNodeType::Header
+                | RenderNodeType::Footer
+                | RenderNodeType::MasterPage
+                | RenderNodeType::FootnoteArea => return,
+                RenderNodeType::Body { .. } => {
+                    if probe.body.is_none() {
+                        probe.body = Some(n.bbox);
+                    }
+                }
+                RenderNodeType::Column(_) => {
+                    if probe.col.is_none() {
+                        probe.col = Some(n.bbox);
+                    }
+                }
+                RenderNodeType::TextLine(tl) => {
+                    if tl.para_index == Some(pi)
+                        && tl.line_index == Some(0)
+                        && probe.para_y.is_none()
+                    {
+                        probe.para_y = Some(n.bbox.y);
+                    }
+                }
+                RenderNodeType::Table(t) => {
+                    if t.section_index == Some(sec)
+                        && t.para_index == Some(pi)
+                        && t.control_index == Some(ci)
+                        && probe.bbox.is_none()
+                    {
+                        probe.bbox = Some(n.bbox);
+                    }
+                    // 셀 내부는 본문이 아니다 (어울림 프로브와 동일 규칙).
+                    return;
+                }
+                RenderNodeType::Image(img) => {
+                    if img.section_index == Some(sec)
+                        && img.para_index == Some(pi)
+                        && img.control_index == Some(ci)
+                        && probe.bbox.is_none()
+                    {
+                        probe.bbox = Some(n.bbox);
+                    }
+                }
+                RenderNodeType::Line(l) => {
+                    if l.section_index == Some(sec)
+                        && l.para_index == Some(pi)
+                        && l.control_index == Some(ci)
+                        && l.cell_para_index.is_none()
+                        && probe.bbox.is_none()
+                    {
+                        probe.bbox = Some(n.bbox);
+                    }
+                }
+                RenderNodeType::Rectangle(r) => {
+                    if r.section_index == Some(sec)
+                        && r.para_index == Some(pi)
+                        && r.control_index == Some(ci)
+                        && r.cell_para_index.is_none()
+                        && probe.bbox.is_none()
+                    {
+                        probe.bbox = Some(n.bbox);
+                    }
+                }
+                RenderNodeType::Ellipse(e) => {
+                    if e.section_index == Some(sec)
+                        && e.para_index == Some(pi)
+                        && e.control_index == Some(ci)
+                        && e.cell_para_index.is_none()
+                        && probe.bbox.is_none()
+                    {
+                        probe.bbox = Some(n.bbox);
+                    }
+                }
+                RenderNodeType::Path(p) => {
+                    if p.section_index == Some(sec)
+                        && p.para_index == Some(pi)
+                        && p.control_index == Some(ci)
+                        && p.cell_para_index.is_none()
+                        && probe.bbox.is_none()
+                    {
+                        probe.bbox = Some(n.bbox);
+                    }
+                }
+                RenderNodeType::Equation(eq) => {
+                    if eq.section_index == Some(sec)
+                        && eq.para_index == Some(pi)
+                        && eq.control_index == Some(ci)
+                        && eq.cell_para_index.is_none()
+                        && probe.bbox.is_none()
+                    {
+                        probe.bbox = Some(n.bbox);
+                    }
+                }
+                _ => {}
+            }
+            for c in &n.children {
+                walk(c, sec, pi, ci, probe);
+            }
+        }
+
+        // 페이지 수 확보(조판 유발) 후 페이지 순회 — compute_cell_page_offset 패턴.
+        let page_count = self.page_count().max(1) as usize;
+        for pg in 0..page_count {
+            let Ok(tree) = self.build_page_render_tree(pg as u32) else {
+                continue;
+            };
+            let mut probe = Probe::default();
+            walk(&tree.root, section_idx, para_idx, control_idx, &mut probe);
+            let Some(bbox) = probe.bbox else { continue };
+            let paper = tree.root.bbox;
+            let to_rect = |b: BoundingBox| LayoutRect {
+                x: b.x,
+                y: b.y,
+                width: b.width,
+                height: b.height,
+            };
+            let body = probe.body.map(to_rect)?;
+            let col = probe.col.map(to_rect).unwrap_or(body);
+            return Some((
+                crate::renderer::float_placement::RebaseFrames {
+                    paper_w: paper.width,
+                    paper_h: paper.height,
+                    body,
+                    col,
+                    para_y: probe.para_y,
+                },
+                bbox,
+            ));
+        }
+        None
+    }
+    /// [개선 트랙1] rebase 판정 + 프로브 — mutation **전에** 호출한다.
+    ///
+    /// 판정: 축별로 (rel_to/align 키가 있고) AND (오프셋 키 부재)일 때만 후보.
+    /// 명시 오프셋 동봉 = opt-out (신규 API 불필요). 값이 실제 변했는지는 apply 후
+    /// `rebased_offsets` 가 old 스냅샷과 비교해 확정한다. textWrap 단독 변경은 키
+    /// 자체가 없어 후보가 안 되고(wrap 은 기준계 불변), treatAsChar 토글은 별도
+    /// migration 계약(picture tac)이 맡으므로 제외한다.
+    ///
+    /// ⚠ 확인 필요(리스크): studio 다이얼로그가 변경 키만이 아니라 전체 키(오프셋
+    /// 포함)를 항상 전송하면 이 판정이 영영 안 걸린다 — 그 경우 명시 opt-in 키
+    /// ("rebaseOffsets":true)로 전환한다.
+    pub(crate) fn plan_object_rebase(
+        &self,
+        section_idx: usize,
+        para_idx: usize,
+        control_idx: usize,
+        props_json: &str,
+        old: &crate::model::shape::CommonObjAttr,
+    ) -> Option<ObjectRebasePlan> {
+        use crate::document_core::helpers::{json_bool, json_str};
+
+        // tac 개체·tac 토글은 rebase 대상이 아니다.
+        if old.treat_as_char {
+            return None;
+        }
+        if json_bool(props_json, "treatAsChar").is_some_and(|v| v != old.treat_as_char) {
+            return None;
+        }
+        let h_wanted = (json_str(props_json, "horzRelTo").is_some()
+            || json_str(props_json, "horzAlign").is_some())
+            && !props_json.contains("\"horzOffset\"");
+        let v_wanted = (json_str(props_json, "vertRelTo").is_some()
+            || json_str(props_json, "vertAlign").is_some())
+            && !props_json.contains("\"vertOffset\"");
+        if !h_wanted && !v_wanted {
+            // 조기 탈출 — 프로브(페이지 수 × 렌더트리 1회)를 아예 안 돈다.
+            return None;
+        }
+        let (frames, bbox) = self.probe_object_frames(section_idx, para_idx, control_idx)?;
+        Some(ObjectRebasePlan {
+            frames,
+            bbox,
+            h_wanted,
+            v_wanted,
+            old_horz: (old.horz_rel_to, old.horz_align),
+            old_vert: (old.vert_rel_to, old.vert_align),
+        })
+    }
+
+    /// [개선 트랙1] apply 후 새 기준계로 역산한 오프셋 (h, v). 축별로 값이 실제
+    /// 변했을 때만 Some — Para 세로인데 para_y 미채취면 None(해당 축 현행 유지).
+    pub(crate) fn rebased_offsets(
+        plan: &ObjectRebasePlan,
+        new: &crate::model::shape::CommonObjAttr,
+        dpi: f64,
+    ) -> (Option<i32>, Option<i32>) {
+        use crate::renderer::float_placement::{offset_for_target_x, offset_for_target_y};
+        if new.treat_as_char {
+            return (None, None);
+        }
+        let h = (plan.h_wanted && plan.old_horz != (new.horz_rel_to, new.horz_align)).then(|| {
+            offset_for_target_x(
+                new.horz_rel_to,
+                new.horz_align,
+                plan.bbox.x,
+                plan.bbox.width,
+                &plan.frames,
+                dpi,
+            )
+        });
+        let v = if plan.v_wanted && plan.old_vert != (new.vert_rel_to, new.vert_align) {
+            offset_for_target_y(
+                new.vert_rel_to,
+                new.vert_align,
+                plan.bbox.y,
+                plan.bbox.height,
+                &plan.frames,
+                dpi,
+            )
+        } else {
+            None
+        };
+        (h, v)
     }
     pub(crate) fn first_char_or_nul(value: &str) -> char {
         value.chars().next().unwrap_or('\0')

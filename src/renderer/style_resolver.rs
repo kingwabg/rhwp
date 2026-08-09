@@ -196,6 +196,44 @@ pub struct ResolvedParaStyle {
     pub keep_lines: bool,
     /// 문단 앞에서 항상 쪽 나눔 — attr1 bit 19
     pub page_break_before: bool,
+    /// 줄 기준선 비율 r = `baseline_distance / line_height` — 문단 모양의 **세로 정렬**
+    /// (attr1 bit20-21 / HWPX `hh:align@vertical`)에서 온다.
+    /// 자세한 값 근거는 [`para_vertical_align_baseline_ratio`].
+    pub line_baseline_ratio: f64,
+}
+
+/// 문단 세로 정렬(`ParaShape.attr1` bit20-21) → 줄 기준선 비율 r = bd/lh.
+///
+/// [oracle-pdf-mining-20260806 §2-A] 저장 seg 573,835개(lh>0·bd>0) 전수 히스토그램과
+/// attr1 bit20-21 교차: 0.85 가 522,175건(91%)이고 그 중 508,624건이 세로정렬=글꼴기준,
+/// 0.50 이 30,613건(5.3%)이고 그 중 30,336건이 세로정렬=가운데, 아래쪽 204건은 bd=lh.
+/// HWPX 교차검증 — `samples/hwpx/exam_social.hwpx` 의 `<hh:align vertical="CENTER">`
+/// paraPr id {25,40,43,48,54,63} ⊇ bd/lh≈0.5 인 줄이 쓰는 id {25,40,43,48,54}.
+///
+/// 위쪽(=1)은 코퍼스에 유효 표본이 없어 **미측정** — 기본값 0.85 를 유지한다.
+///
+/// 소비 범위 — `LineSeg` **생산**(`line_breaking::reflow_line_segs*`)과, 저장 seg 를
+/// 덮어쓰는 **렌더측 글꼴 기반 폴백**(`paragraph_layout` 의 글자취급 Shape/그림 앞 텍스트
+/// 분기, `corrected_line_baseline_for_source`) 양쪽이 이 하나를 읽는다.
+///
+/// ⚠ 남은 덮어쓰기 — `paragraph_layout::ensure_min_baseline` 이 렌더 기준선을
+/// `max(_, 0.8 × max_font_size)` 로 바닥 처리한다. 그 함수의 주석이 밝히듯 이는
+/// **세로정렬=가운데(r=0.50)를 의도적으로 덮는** 어센트 보호 정책이라, 줄높이 == 글꼴크기인
+/// 순수 텍스트 줄에서는 저장 0.50 도 이 비율도 화면에서는 0.80 으로 착지한다(줄이 글꼴보다
+/// 높은 글자취급 개체 줄은 0.50 그대로 통과한다 — 실측).
+///
+/// [oracle-pdf-mining-20260806 §2-E] 이 바닥은 한컴 인쇄 PDF 실측으로 **판정 완료** —
+/// 한컴도 가운데 순수 텍스트 줄의 글리프를 저장 bd(0.5·lh)가 아니라 글꼴 어센트
+/// (실측 0.8512·fs)에 앉히므로 바닥은 한컴 실동작의 미러다. 걷어내지 않는다.
+/// 이 비율 r 은 **줄 상자 분할**(글자 상자를 r:(1−r) 로 가르는 §2-C 모델의 r)이고,
+/// 글리프 기준선은 상자 안 어센트에 놓인다(`bd − r·fs + 0.85·fs`). r = 어센트(0.85)일 때만
+/// 이 식이 bd 로 축퇴해 직독과 일치하고, 가운데(0.50)에서는 직독이 실측과 어긋난다.
+pub fn para_vertical_align_baseline_ratio(attr1: u32) -> f64 {
+    match (attr1 >> 20) & 0x03 {
+        2 => 0.50, // 가운데
+        3 => 1.00, // 아래쪽
+        _ => 0.85, // 0=글꼴기준(코퍼스 91%), 1=위쪽(미측정 — 기본값 유지)
+    }
 }
 
 impl Default for ResolvedParaStyle {
@@ -224,6 +262,7 @@ impl Default for ResolvedParaStyle {
             keep_with_next: false,
             keep_lines: false,
             page_break_before: false,
+            line_baseline_ratio: 0.85,
         }
     }
 }
@@ -875,10 +914,13 @@ fn resolve_single_para_style(
         condense_min_space: ((ps.attr1 >> 9) & 0x7f).min(75) as u8,
         english_break_unit: ((ps.attr1 >> 5) & 0x03) as u8,
         korean_break_unit: ((ps.attr1 >> 7) & 0x01) as u8,
-        widow_orphan: (ps.attr1 >> 16) & 1 != 0 || (ps.attr2 >> 5) & 1 != 0,
-        keep_with_next: (ps.attr1 >> 17) & 1 != 0 || (ps.attr2 >> 6) & 1 != 0,
-        keep_lines: (ps.attr1 >> 18) & 1 != 0 || (ps.attr2 >> 7) & 1 != 0,
-        page_break_before: (ps.attr1 >> 19) & 1 != 0 || (ps.attr2 >> 8) & 1 != 0,
+        // 정본 = attr1 bit16-19 (HWP5 표 44). attr2 OR 폴백은 autoSpaceKrNum(표 45
+        // bit5) 충돌로 제거 — HWPX 파서도 attr1 로 통일(2026-07-30).
+        widow_orphan: (ps.attr1 >> 16) & 1 != 0,
+        keep_with_next: (ps.attr1 >> 17) & 1 != 0,
+        keep_lines: (ps.attr1 >> 18) & 1 != 0,
+        page_break_before: (ps.attr1 >> 19) & 1 != 0,
+        line_baseline_ratio: para_vertical_align_baseline_ratio(ps.attr1),
     }
 }
 

@@ -99,3 +99,6 @@ samples/issue836/
 # Python 바이트코드 캐시 (tools/render_page_gate.py 등 실행 시 생성)
 __pycache__/
 *.pyc
+
+# 골든 SVG 비교 산출물 — 실패 때만 쓰이고 매 실행 덮어써진다(추적하면 워킹트리가 계속 더러워진다)
+tests/golden_svg/**/*.actual.svg

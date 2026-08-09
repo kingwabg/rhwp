@@ -167,12 +167,15 @@ fn height_criterion_to_bits(v: SizeCriterion) -> u32 {
 }
 
 fn text_wrap_to_bits(v: TextWrap) -> u32 {
-    // hwplib 기준: 0=어울림(Square), 1=자리차지(TopAndBottom), 2=글뒤로(BehindText), 3=글앞으로(InFrontOfText)
-    // Tight/Through 는 HWP 5.0 에 직접 매핑이 없어 Square 로 폴백.
+    // [image-shape/textWrap] 이 엔진의 내부 배치 코드: 0=어울림(Square), 1=자리차지(TopAndBottom),
+    // 2=글뒤로(BehindText), 3=글앞으로(InFrontOfText). (parser/control/shape.rs 와 짝을 맞춘 규약)
+    // 왜: Tight/Through 를 예전엔 둘 다 0(Square)으로 접어 저장 왕복에서 어울림으로 강등됐다.
+    // bit21-23 은 3비트(0~7)이므로 아직 안 쓰던 코드 4/5 를 Tight/Through 에 배정해 왕복 보존한다.
+    // (레이아웃은 Square·Tight·Through 를 동일 취급하므로 렌더에는 영향 없음 — 값 보존만 목적.)
     match v {
         TextWrap::Square => 0,
-        TextWrap::Tight => 0,
-        TextWrap::Through => 0,
+        TextWrap::Tight => 4,
+        TextWrap::Through => 5,
         TextWrap::TopAndBottom => 1,
         TextWrap::BehindText => 2,
         TextWrap::InFrontOfText => 3,

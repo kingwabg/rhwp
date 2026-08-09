@@ -12,9 +12,35 @@ pub(crate) fn signed_hwpunit(value: HwpUnit) -> i32 {
 }
 
 /// A non-TAC `TopAndBottom` object positioned from its host paragraph.
+///
+/// ⚠ **[officex] `VertRelTo::Para` 조건을 절대 떼지 말 것** (2026-07-26).
+/// 어울림(배타 밴드) 대상을 "TopAndBottom 인 모든 표"로 넓히려던 계획이 있었으나,
+/// 그러면 `VertRelTo::Page` + `VertAlign::Bottom` 인 **결재 서명틀**까지 밴드가 되어
+/// 서로 반대 방향을 잠근 짝 테스트가 동시에 깨진다:
+///   · `tests/issue_1611_footer_page_bottom_pagination.rs:19` — 발신명의 footer 가
+///     flow 를 **소비해야** `page_count == 2`
+///   · `tests/issue_1658_page_bottom_fixed_exclusion.rs:32` — 같은 틀이 flow 를
+///     **소비하면 안 되어** `page_count == 1`
+/// `issue_1658` 머리주석이 이 둘을 "배타 예약(과소)과 flow 소비(과대) 양쪽을 잠근다"고
+/// 명시한다. 그 개체는 아래 `is_page_bottom_fixed_float` 가 따로 맡는 영역이다.
+/// 즉 이 술어는 **세 조건이 다 필요하다** — 하나라도 빼면 두 계약이 충돌한다.
 pub(crate) fn is_para_topbottom_float(common: &CommonObjAttr) -> bool {
     !common.treat_as_char
         && matches!(common.text_wrap, TextWrap::TopAndBottom)
+        && matches!(common.vert_rel_to, VertRelTo::Para)
+}
+
+/// [officex 2026-07-27] Para 기준 **어울림 가족**(Square|Tight|Through) 부동 표.
+/// 빈 host 어울림 표가 어느 배치 경로에도 못 들어 vertOffset 이 렌더에 반영되지 않던
+/// 결함(드래그해도 화면 부동 — 모델 오프셋만 축적)의 수리 지점: 빈 host lane 경로의
+/// 분류를 topbottom 전용에서 이 가족까지 넓힌다. Page/Paper 기준 빈 host 는
+/// paper_page_square_empty_top(#2019/가족 확장)이 이미 처리하므로 Para 만 대상이다.
+pub(crate) fn is_para_square_family_float(common: &CommonObjAttr) -> bool {
+    !common.treat_as_char
+        && matches!(
+            common.text_wrap,
+            TextWrap::Square | TextWrap::Tight | TextWrap::Through
+        )
         && matches!(common.vert_rel_to, VertRelTo::Para)
 }
 
@@ -105,6 +131,84 @@ pub(crate) fn horizontal_range(
     (x, x + width_px.max(0.0))
 }
 
+// ── [개선 트랙1 2026-08-05] 기준계/정렬 전환 오프셋 rebase — forward 공식의 항등 역산 ──
+//
+// rel_to/align 전환 시 옛 기준계 오프셋이 그대로 남아 개체가 시각 점프하는 증상을 닫는다.
+// 역산은 이 파일 한 곳에만 둔다: forward 가 3곳(horizontal_range/table_layout/
+// picture_footnote)에 갈라져 있지만 branch 구조는 동일하다. table_layout 의 Paper
+// om_top_px·caption_top_offset 은 역산에 넣지 않는다 — 목표값이 실측 bbox 라 1차
+// 근사로 흡수되고, 잔차는 한컴 오라클로 캘리브레이션한다.
+
+/// mutation 전에 렌더트리에서 실측한 기준 프레임들 (px, 페이지 절대 좌표).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RebaseFrames {
+    pub paper_w: f64,
+    pub paper_h: f64,
+    pub body: LayoutRect,
+    pub col: LayoutRect,
+    /// host 문단 첫 줄 top. 공백뿐인 host 는 TextLine 이 없어 미채취일 수 있다 —
+    /// 그 경우 Para 축 rebase 는 스킵(현행 동작 유지)한다.
+    pub para_y: Option<f64>,
+}
+
+/// px 오프셋 → HWPUNIT signed (round). 저장은 `as u32` 비트캐스트로 signed_hwpunit 와 왕복.
+fn px_offset_to_hwpunit(px: f64, dpi: f64) -> i32 {
+    (px * super::HWPUNIT_PER_INCH / dpi).round() as i32
+}
+
+/// `horizontal_range` 의 branch 별 항등 역산: 현재 시각 위치(target_x_px)를 새 기준계
+/// (horz_rel_to/horz_align)에서 재현하는 오프셋을 돌려준다. Right/Outside 는 forward 의
+/// `- h_offset` 부호 반전이 여기서 흡수된다. Para 는 호스트 여백 0 인 본문 v1 가정으로
+/// Column 과 동일 원점을 쓴다(horizontal_range 의 host_margin 0 경로와 일치).
+pub(crate) fn offset_for_target_x(
+    horz_rel_to: HorzRelTo,
+    horz_align: HorzAlign,
+    target_x_px: f64,
+    width_px: f64,
+    frames: &RebaseFrames,
+    dpi: f64,
+) -> i32 {
+    let (ref_x, ref_w) = match horz_rel_to {
+        HorzRelTo::Paper => (0.0, frames.paper_w),
+        HorzRelTo::Page => (frames.body.x, frames.body.width),
+        HorzRelTo::Column | HorzRelTo::Para => (frames.col.x, frames.col.width),
+    };
+    let off_px = match horz_align {
+        HorzAlign::Left | HorzAlign::Inside => target_x_px - ref_x,
+        HorzAlign::Center => target_x_px - ref_x - (ref_w - width_px).max(0.0) / 2.0,
+        HorzAlign::Right | HorzAlign::Outside => ref_x + (ref_w - width_px).max(0.0) - target_x_px,
+    };
+    px_offset_to_hwpunit(off_px, dpi)
+}
+
+/// `offset_for_target_x` 의 세로 동형. ref 매핑은 table_layout·picture_footnote 의
+/// 세로 forward 와 맞춘다: Paper→(0, paper_h), Page→body, Para→para_y.
+/// Para 인데 para_y 미채취면 None — 호출자는 해당 축 rebase 를 스킵한다.
+pub(crate) fn offset_for_target_y(
+    vert_rel_to: VertRelTo,
+    vert_align: VertAlign,
+    target_y_px: f64,
+    height_px: f64,
+    frames: &RebaseFrames,
+    dpi: f64,
+) -> Option<i32> {
+    let (ref_y, ref_h) = match vert_rel_to {
+        VertRelTo::Paper => (0.0, frames.paper_h),
+        VertRelTo::Page => (frames.body.y, frames.body.height),
+        VertRelTo::Para => {
+            let para_y = frames.para_y?;
+            // forward(table_layout:2421)와 동형: 앵커부터 컬럼 바닥까지가 기준 높이.
+            (para_y, (frames.col.y + frames.col.height - para_y).max(0.0))
+        }
+    };
+    let off_px = match vert_align {
+        VertAlign::Top | VertAlign::Inside => target_y_px - ref_y,
+        VertAlign::Center => target_y_px - ref_y - (ref_h - height_px) / 2.0,
+        VertAlign::Bottom | VertAlign::Outside => ref_y + ref_h - height_px - target_y_px,
+    };
+    Some(px_offset_to_hwpunit(off_px, dpi))
+}
+
 /// A placed float lane in page/column-relative coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct FloatLane {
@@ -176,6 +280,121 @@ pub(crate) fn ranges_overlap(a_start: f64, a_end: f64, b_start: f64, b_end: f64)
     let b0 = b_start.min(b_end);
     let b1 = b_start.max(b_end);
     a0 < b1 && b0 < a1
+}
+
+// ── [officex] 자리차지(TopAndBottom) 배타 밴드 — layout·typeset 공용 ──────────────
+//
+// 왜 여기 있나: 같은 개념이 layout.rs 와 typeset.rs 에 **각각 따로** 구현돼 있었다
+// (VisibleFloatExclusion 이 두 벌, 게이트도 미묘하게 다름). typeset 이 페이지 분할을
+// 먼저 확정하고 layout 이 그리므로, 두 쪽 규칙이 어긋나면 컬럼 높이 예산이 갈려
+// 페이지 바닥이 터진다. 그래서 규칙을 **한 함수**로 모은다 — 이후 어떤 변경이든
+// 두 엔진에 동시에 적용되도록 하는 것이 목적이다.
+//
+// 밴드는 x 가 없는 **순수 y 구간**이다. 이는 명세의 TopAndBottom 정의
+// ("좌, 우에는 텍스트를 배치하지 않음", 「한글 문서 파일 형식 5.0」 표 69)와 정확히 일치한다.
+
+/// 자리차지 개체가 본문에서 밀어내는 구간.
+///
+/// [officex] x 범위를 갖는다 — 지금 모든 호출자는 컬럼 전폭(`FloatBand::full_width`)을 넘겨
+/// 세로 밴드처럼 쓰지만, 빈-host 표는 x 를 아는 `FloatLaneSet` 경로를 타고 있어
+/// 좌·중·우 표가 나란히 선다(`tests/issue_986.rs:114`). 그 경로를 밴드로 옮기려면
+/// 폭이 반드시 있어야 하므로, 자료구조를 먼저 넓혀 두고 등록 범위는 나중에 손댄다.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FloatBand {
+    /// 밴드가 가리는 가로 범위(컬럼 로컬 px). 전폭이면 `f64::NEG_INFINITY..INFINITY`.
+    pub x_start: f64,
+    pub x_end: f64,
+    pub top: f64,
+    pub bottom: f64,
+    /// 이 밴드를 만든 개체가 앵커된 문단. 같은 문단의 텍스트(섹션 제목)는 자기 표가 만든
+    /// 밴드에 밀리면 안 된다 — 한컴은 제목을 앵커(표 위)에 두고 표를 그 아래에 둔다.
+    /// typeset 처럼 소유자 개념이 없는 호출자는 None 을 쓴다(그러면 스킵이 일어나지 않는다).
+    pub owner_para: Option<usize>,
+}
+
+impl FloatBand {
+    /// 가로 전폭을 가리는 밴드 — 종전 동작(x 무시)과 정확히 같다.
+    pub(crate) fn full_width(top: f64, bottom: f64, owner_para: Option<usize>) -> Self {
+        Self {
+            x_start: f64::NEG_INFINITY,
+            x_end: f64::INFINITY,
+            top,
+            bottom,
+            owner_para,
+        }
+    }
+
+    fn overlaps_x(&self, x_start: f64, x_end: f64) -> bool {
+        // 전폭 밴드는 항상 겹친다(무한대 비교를 타지 않고 빠르게 끝낸다).
+        if self.x_start.is_infinite() && self.x_end.is_infinite() {
+            return true;
+        }
+        ranges_overlap(self.x_start, self.x_end, x_start, x_end)
+    }
+}
+
+/// 시작 y 에서 밴드들을 피해 내려간 y 를 돌려준다. 피할 게 없으면 `start` 그대로.
+///
+/// - `probe_height`: 항목/줄의 잉크 높이. **0 이면 겹침 프로브를 끈다**(시작점이 밴드
+///   안에 있는 경우만 본다). 호출자마다 프로브 조건이 달라 값으로 흡수한다.
+/// - `owner`: 지금 배치 중인 문단. 같은 문단이 소유한 밴드는 건너뛴다.
+/// - `x_range`: 배치 중인 항목의 가로 범위. `None` 이면 가로를 보지 않는다(= 종전 동작).
+pub(crate) fn skip_float_bands(
+    start: f64,
+    bands: &[FloatBand],
+    probe_height: f64,
+    owner: Option<usize>,
+    x_range: Option<(f64, f64)>,
+) -> f64 {
+    let mut jump_to = start;
+    for band in bands {
+        if let (Some(band_owner), Some(current)) = (band.owner_para, owner) {
+            if band_owner == current {
+                continue;
+            }
+        }
+        // 가로가 안 겹치면 이 밴드는 이 항목을 밀지 않는다(좌·중·우 표가 나란히 서는 근거).
+        if let Some((x0, x1)) = x_range {
+            if !band.overlaps_x(x0, x1) {
+                continue;
+            }
+        }
+        let starts_in_band = jump_to + 0.5 >= band.top && jump_to < band.bottom;
+        let overlaps_band =
+            probe_height > 0.0 && jump_to < band.top && jump_to + probe_height > band.top + 0.5;
+        if starts_in_band || overlaps_band {
+            jump_to = jump_to.max(band.bottom);
+        }
+    }
+    jump_to
+}
+
+/// [officex/어울림 본편] 문단의 줄들을 밴드를 피해 세로로 쌓는다 — layout·typeset 공용 계산부.
+///
+/// 지금의 소비는 **문단 단위**(첫 줄만 프로브)라, 밴드 위에서 시작한 문단의 중간 줄이
+/// 표를 관통한다. 이 함수가 그 격차를 메우는 계산이다: 줄마다 skip_float_bands 를 적용해
+/// 최종 y 목록과 끝 y 를 돌려준다. **두 엔진이 이 한 함수를 써야** 한다 —
+/// layout 은 줄 y 배치에, typeset 은 같은 값으로 문단 높이 예산에. 한쪽만 쓰면
+/// 분할 예산과 그림이 갈려 페이지 바닥이 터진다(오늘 S3·S4 에서 확인한 병).
+///
+/// - `line_advances`: 줄별 (잉크 높이, 줄 간격). 프로브는 **잉크 높이만** 쓴다(#1789 계약 —
+///   spacing 포함 판정은 표 위에 남아야 할 줄을 아래로 밀어 한컴과 최대 345px 어긋났다).
+/// - 반환: (각 줄의 top y, 마지막 줄 아래 y).
+pub(crate) fn stack_lines_through_bands(
+    start_y: f64,
+    line_advances: &[(f64, f64)],
+    bands: &[FloatBand],
+    owner: Option<usize>,
+    x_range: Option<(f64, f64)>,
+) -> (Vec<f64>, f64) {
+    let mut y = start_y;
+    let mut tops = Vec::with_capacity(line_advances.len());
+    for &(ink_height, spacing) in line_advances {
+        y = skip_float_bands(y, bands, ink_height, owner, x_range);
+        tops.push(y);
+        y += ink_height + spacing;
+    }
+    (tops, y)
 }
 
 #[cfg(test)]
@@ -277,5 +496,253 @@ mod tests {
 
         assert_eq!(x0, 140.0);
         assert_eq!(x1, 240.0);
+    }
+
+    /// [개선 트랙1 검증 핀] 4 HorzRelTo × 3 HorzAlign × {+3000,-3000} 오프셋에 대해
+    /// horizontal_range → offset_for_target_x 왕복 항등(±1HU).
+    #[test]
+    fn rebase_roundtrip_all_frames() {
+        let dpi = 96.0;
+        let col = LayoutRect {
+            x: 60.0,
+            y: 50.0,
+            width: 500.0,
+            height: 700.0,
+        };
+        let body = LayoutRect {
+            x: 40.0,
+            y: 30.0,
+            width: 540.0,
+            height: 740.0,
+        };
+        let paper_w = 620.0;
+        let frames = RebaseFrames {
+            paper_w,
+            paper_h: 820.0,
+            body,
+            col,
+            para_y: Some(120.0),
+        };
+        let width_hu = 12000u32;
+        let width_px = hwpunit_to_px(width_hu as i32, dpi);
+
+        for rel in [
+            HorzRelTo::Paper,
+            HorzRelTo::Page,
+            HorzRelTo::Column,
+            HorzRelTo::Para,
+        ] {
+            for align in [HorzAlign::Left, HorzAlign::Center, HorzAlign::Right] {
+                for offset in [3000i32, -3000i32] {
+                    let mut common = base_common();
+                    common.horz_rel_to = rel;
+                    common.horz_align = align;
+                    common.horizontal_offset = offset as u32;
+                    common.width = width_hu;
+
+                    let ctx = FloatPlacementContext::new(col)
+                        .with_body_area(body)
+                        .with_paper_width(paper_w);
+                    let (x, _) = horizontal_range(&common, width_px, ctx, dpi);
+                    let recovered = offset_for_target_x(rel, align, x, width_px, &frames, dpi);
+                    assert!(
+                        (recovered - offset).abs() <= 1,
+                        "왕복 실패 rel={rel:?} align={align:?} off={offset} → {recovered}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 세로 역산 — Page/Paper/Para × Top/Center/Bottom 왕복 항등(forward 는
+    /// picture_footnote:343-352 와 동형 수식으로 로컬 재현).
+    #[test]
+    fn rebase_roundtrip_vertical() {
+        let dpi = 96.0;
+        let col = LayoutRect {
+            x: 60.0,
+            y: 50.0,
+            width: 500.0,
+            height: 700.0,
+        };
+        let body = LayoutRect {
+            x: 40.0,
+            y: 30.0,
+            width: 540.0,
+            height: 740.0,
+        };
+        let frames = RebaseFrames {
+            paper_w: 620.0,
+            paper_h: 820.0,
+            body,
+            col,
+            para_y: Some(120.0),
+        };
+        let height_px = 90.0;
+        for rel in [VertRelTo::Paper, VertRelTo::Page, VertRelTo::Para] {
+            let (ref_y, ref_h) = match rel {
+                VertRelTo::Paper => (0.0, frames.paper_h),
+                VertRelTo::Page => (body.y, body.height),
+                VertRelTo::Para => (120.0, col.y + col.height - 120.0),
+            };
+            for align in [VertAlign::Top, VertAlign::Center, VertAlign::Bottom] {
+                for offset in [3000i32, -3000i32] {
+                    let off_px = hwpunit_to_px(offset, dpi);
+                    let y = match align {
+                        VertAlign::Top | VertAlign::Inside => ref_y + off_px,
+                        VertAlign::Center => ref_y + (ref_h - height_px) / 2.0 + off_px,
+                        VertAlign::Bottom | VertAlign::Outside => {
+                            ref_y + ref_h - height_px - off_px
+                        }
+                    };
+                    let recovered = offset_for_target_y(rel, align, y, height_px, &frames, dpi)
+                        .expect("para_y 채취됨");
+                    assert!(
+                        (recovered - offset).abs() <= 1,
+                        "세로 왕복 실패 rel={rel:?} align={align:?} off={offset} → {recovered}"
+                    );
+                }
+            }
+        }
+        // para_y 미채취 → Para 축은 None (게이트와 생산이 한 소스).
+        let no_para = RebaseFrames {
+            para_y: None,
+            ..frames
+        };
+        assert!(offset_for_target_y(
+            VertRelTo::Para,
+            VertAlign::Top,
+            100.0,
+            height_px,
+            &no_para,
+            dpi
+        )
+        .is_none());
+    }
+
+    // ── skip_float_bands — 리팩터 전 두 엔진의 동작을 그대로 고정한다 ──────────────
+    fn band(top: f64, bottom: f64, owner: Option<usize>) -> FloatBand {
+        FloatBand::full_width(top, bottom, owner)
+    }
+    /// 가로 범위를 가진 밴드 — 좌·중·우 표가 나란히 서는 근거를 고정한다.
+    fn xband(x0: f64, x1: f64, top: f64, bottom: f64) -> FloatBand {
+        FloatBand {
+            x_start: x0,
+            x_end: x1,
+            top,
+            bottom,
+            owner_para: None,
+        }
+    }
+
+    #[test]
+    fn skip_bands_leaves_start_when_clear() {
+        let bands = [band(100.0, 200.0, None)];
+        assert_eq!(skip_float_bands(10.0, &bands, 0.0, None, None), 10.0);
+        assert_eq!(skip_float_bands(250.0, &bands, 0.0, None, None), 250.0);
+    }
+
+    #[test]
+    fn skip_bands_jumps_when_starting_inside() {
+        let bands = [band(100.0, 200.0, None)];
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None, None), 200.0);
+        // 경계: top 바로 위(0.5 여유) 는 안쪽으로 본다
+        assert_eq!(skip_float_bands(99.6, &bands, 0.0, None, None), 200.0);
+    }
+
+    #[test]
+    fn skip_bands_overlap_probe_only_when_height_given() {
+        let bands = [band(100.0, 200.0, None)];
+        // 시작은 밴드 위지만 잉크가 밴드를 관통한다
+        assert_eq!(skip_float_bands(90.0, &bands, 30.0, None, None), 200.0);
+        // probe_height 0 이면 겹침을 보지 않는다(typeset 의 비-HWPX 경로와 동일)
+        assert_eq!(skip_float_bands(90.0, &bands, 0.0, None, None), 90.0);
+    }
+
+    #[test]
+    fn skip_bands_ignores_self_owned_band() {
+        let bands = [band(100.0, 200.0, Some(7))];
+        // 자기 표가 만든 밴드에는 밀리지 않는다(Issue #1549 제목 유지)
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, Some(7), None), 150.0);
+        // 다른 문단은 그대로 밀린다
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, Some(8), None), 200.0);
+        // 소유자 개념이 없는 호출자(typeset)는 항상 밀린다
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None, None), 200.0);
+    }
+
+    #[test]
+    fn skip_bands_chains_through_multiple() {
+        let bands = [band(100.0, 200.0, None), band(200.0, 300.0, None)];
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None, None), 300.0);
+    }
+
+    #[test]
+    fn skip_bands_respects_x_when_range_given() {
+        // 왼쪽 절반만 가리는 밴드. 오른쪽에 놓인 항목은 밀리지 않아야 한다
+        // (빈-host 좌·중·우 표가 나란히 서는 근거 — tests/issue_986.rs:114).
+        let bands = [xband(0.0, 100.0, 100.0, 200.0)];
+        assert_eq!(
+            skip_float_bands(150.0, &bands, 0.0, None, Some((0.0, 50.0))),
+            200.0
+        );
+        assert_eq!(
+            skip_float_bands(150.0, &bands, 0.0, None, Some((120.0, 200.0))),
+            150.0
+        );
+        // x_range 를 안 주면 가로를 보지 않는다 = 종전 동작
+        assert_eq!(skip_float_bands(150.0, &bands, 0.0, None, None), 200.0);
+    }
+
+    #[test]
+    fn full_width_band_always_overlaps() {
+        // 전폭 밴드는 어떤 x 를 줘도 민다(무한대 비교를 타지 않는 빠른 경로).
+        let bands = [band(100.0, 200.0, None)];
+        assert_eq!(
+            skip_float_bands(150.0, &bands, 0.0, None, Some((9_000.0, 9_100.0))),
+            200.0
+        );
+    }
+
+    #[test]
+    fn stack_lines_no_bands_is_cumulative() {
+        let (tops, end) =
+            stack_lines_through_bands(100.0, &[(17.0, 3.0), (17.0, 3.0)], &[], None, None);
+        assert_eq!(tops, vec![100.0, 120.0]);
+        assert_eq!(end, 140.0);
+    }
+
+    #[test]
+    fn stack_lines_mid_paragraph_jumps_band() {
+        // 문단이 밴드 위(y=100)에서 시작 — 3번째 줄이 밴드[140..300]에 닿으면 아래로 점프.
+        // 지금 문단 단위 소비(첫 줄만 프로브)로는 불가능한, 관통을 막는 바로 그 동작이다.
+        let bands = [band(140.0, 300.0, None)];
+        let lines = [(17.0, 3.0), (17.0, 3.0), (17.0, 3.0), (17.0, 3.0)];
+        let (tops, end) = stack_lines_through_bands(100.0, &lines, &bands, None, None);
+        assert_eq!(tops[0], 100.0);
+        assert_eq!(tops[1], 120.0); // 잉크 120..137 — 밴드 위에 안전(#1789: spacing 미포함)
+        assert_eq!(tops[2], 300.0); // 잉크가 밴드에 닿는 첫 줄 — 밴드 아래로
+        assert_eq!(tops[3], 320.0);
+        assert_eq!(end, 340.0);
+    }
+
+    #[test]
+    fn stack_lines_owner_paragraph_not_pushed() {
+        // 자기 표가 만든 밴드는 자기 문단(제목)을 밀지 않는다 — Issue #1549 계약 그대로.
+        let bands = [band(140.0, 300.0, Some(7))];
+        let lines = [(17.0, 3.0), (17.0, 3.0), (17.0, 3.0)];
+        let (tops, _) = stack_lines_through_bands(100.0, &lines, &bands, Some(7), None);
+        assert_eq!(tops, vec![100.0, 120.0, 140.0]);
+    }
+
+    #[test]
+    fn stack_lines_respects_x_lane() {
+        // 왼쪽 절반 밴드 — 오른쪽 레인의 줄은 관통이 아니라 '옆'이므로 안 밀린다.
+        let bands = [xband(0.0, 100.0, 140.0, 300.0)];
+        let lines = [(17.0, 3.0), (17.0, 3.0), (17.0, 3.0)];
+        let (right, _) =
+            stack_lines_through_bands(100.0, &lines, &bands, None, Some((120.0, 200.0)));
+        assert_eq!(right, vec![100.0, 120.0, 140.0]);
+        let (left, _) = stack_lines_through_bands(100.0, &lines, &bands, None, Some((0.0, 50.0)));
+        assert_eq!(left[2], 300.0);
     }
 }

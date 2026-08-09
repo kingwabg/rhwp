@@ -2481,21 +2481,49 @@ impl LayoutEngine {
                         && declared_height > 0.0
                         && table_height
                             > declared_height + ROWBREAK_OBJECT_BOTTOM_BLEED_TOLERANCE_PX;
-                let pushed =
-                    if matches!(table_text_wrap, crate::model::shape::TextWrap::TopAndBottom) {
-                        raw_y.max(y_start)
-                    } else {
-                        raw_y
-                    };
-                let min_y = if allow_para_top_bleed && v_offset < 0.0 {
+                // [officex] TopAndBottom(자리차지) push-down 도 bit13 을 존중한다.
+                // 명세상 TopAndBottom 은 "좌, 우에는 텍스트를 배치하지 않음"일 뿐,
+                // "앞 내용 아래로 강제"가 아니다. 종전엔 제한을 꺼도 이 push-down 이
+                // 아래 클램프보다 **먼저** 걸려 위쪽 이동이 통째로 막혔다
+                // (실측: restrictInPage=false·vertOffset=-20mm 인데 y 가 132.3 그대로).
+                let pushed = if table.common.flow_with_text
+                    && matches!(table_text_wrap, crate::model::shape::TextWrap::TopAndBottom)
+                {
+                    raw_y.max(y_start)
+                } else {
+                    raw_y
+                };
+                // [officex] bit13(restrictInPage = common.flow_with_text)을 실제로 존중한다.
+                // 명세(한글 문서 파일 형식 5.0, 개체 공통 속성 bit13): "VertRelTo가 'para'일 때
+                // 오브젝트의 세로 위치를 본문 영역으로 제한할지 여부(0=off, 1=on)".
+                // 종전엔 바로 위 주석이 bit13을 언급하면서도 검사 없이 **항상** 본문 영역으로
+                // 클램프해, 제한을 꺼도 표가 본문 위로 못 올라갔다(실측: 위로 20mm → 0px 이동).
+                // 제한이 꺼져 있으면 용지 안에서 자유롭게 두고 용지 밖 이탈만 막는다.
+                let restrict = table.common.flow_with_text;
+                let min_y = if !restrict {
+                    0.0
+                } else if allow_para_top_bleed && v_offset < 0.0 {
                     body_top + v_offset
                 } else {
                     body_top
                 };
+                let max_y = if restrict {
+                    body_bottom.max(min_y)
+                } else {
+                    let paper_h = {
+                        let ph = self.current_paper_height.get();
+                        if ph > 0.0 {
+                            ph
+                        } else {
+                            col_area.y * 2.0 + col_area.height
+                        }
+                    };
+                    (paper_h - table_height).max(min_y)
+                };
                 if allow_rowbreak_object_bottom_bleed {
                     pushed.max(min_y)
                 } else {
-                    pushed.clamp(min_y, body_bottom.max(min_y))
+                    pushed.clamp(min_y, max_y)
                 }
             } else {
                 raw_y
@@ -3524,98 +3552,15 @@ impl LayoutEngine {
                                 }
                             }
                         } else {
-                            // 비-TAC 표: 기존 수직 배치
-                            // 앞 텍스트 너비만큼 x 오프셋 적용
-                            let tac_text_offset = if nested_table.attr & 0x01 != 0 {
-                                let mut text_w = 0.0;
-                                for line in &composed.lines {
-                                    for run in &line.runs {
-                                        if !run.text.is_empty() {
-                                            let ts = resolved_to_text_style(
-                                                styles,
-                                                run.char_style_id,
-                                                run.lang_index,
-                                            );
-                                            // [Task #555] PUA 옛한글 변환 후 자모 시퀀스 폭.
-                                            text_w += estimate_text_width(
-                                                effective_text_for_metrics(run),
-                                                &ts,
-                                            );
-                                        }
-                                    }
-                                }
-                                text_w
-                            } else {
-                                0.0
-                            };
-                            // TAC 표 앞 텍스트 렌더링 (문단부호 등 표시용)
-                            if tac_text_offset > 0.0 {
-                                let line_h = composed
-                                    .lines
-                                    .first()
-                                    .map(|l| hwpunit_to_px(l.line_height, self.dpi))
-                                    .unwrap_or(12.0);
-                                let baseline = line_h * 0.85;
-                                let line_id = tree.next_id();
-                                let mut line_node = RenderNode::new(
-                                    line_id,
-                                    RenderNodeType::TextLine(TextLineNode::new(line_h, baseline)),
-                                    BoundingBox::new(
-                                        inner_area.x,
-                                        nested_y,
-                                        tac_text_offset,
-                                        line_h,
-                                    ),
-                                );
-                                let mut run_x = inner_area.x;
-                                for line in &composed.lines {
-                                    for run in &line.runs {
-                                        if run.text.is_empty() {
-                                            continue;
-                                        }
-                                        let ts = resolved_to_text_style(
-                                            styles,
-                                            run.char_style_id,
-                                            run.lang_index,
-                                        );
-                                        // [Task #555] PUA 옛한글 변환 후 자모 시퀀스 폭.
-                                        let run_w = estimate_text_width(
-                                            effective_text_for_metrics(run),
-                                            &ts,
-                                        );
-                                        let run_id = tree.next_id();
-                                        let run_node = RenderNode::new(
-                                            run_id,
-                                            RenderNodeType::TextRun(TextRunNode {
-                                                text: run.text.clone(),
-                                                style: ts,
-                                                char_shape_id: Some(run.char_style_id),
-                                                para_shape_id: Some(para.para_shape_id),
-                                                section_index: Some(section_index),
-                                                para_index: None,
-                                                char_start: None,
-                                                cell_context: cell_context.clone(),
-                                                is_para_end: false,
-                                                is_line_break_end: false,
-                                                rotation: 0.0,
-                                                is_vertical: false,
-                                                char_overlap: None,
-                                                border_fill_id: 0,
-                                                baseline,
-                                                field_marker: FieldMarkerType::None,
-                                            }),
-                                            BoundingBox::new(run_x, nested_y, run_w, line_h),
-                                        );
-                                        line_node.children.push(run_node);
-                                        run_x += run_w;
-                                    }
-                                }
-                                cell_node.children.push(line_node);
-                            }
+                            // 비-TAC 표: 기존 수직 배치.
+                            // 종전엔 여기서 앞 텍스트 폭으로 x 오프셋(`tac_text_offset`)을
+                            // 잡고 그 텍스트를 직접 렌더하는 ~90줄이 있었다. 조건이
+                            // `nested_table.common.treat_as_char` 인데 이 분기는 같은 물리로
+                            // 갈라진 `if is_tac_table` 의 else 라 항상 false — 도달 불가였다.
                             let ctrl_area = LayoutRect {
-                                x: inner_area.x + tac_text_offset,
+                                x: inner_area.x,
                                 y: nested_y,
-                                width: (inner_area.width - tac_text_offset).max(0.0),
+                                width: inner_area.width,
                                 height: (inner_area.height - (nested_y - inner_area.y)).max(0.0),
                             };
                             let table_h = self.layout_table(
@@ -3892,6 +3837,16 @@ impl LayoutEngine {
             // 셀 BorderFill 조회
             let border_style = if cell.border_fill_id > 0 {
                 let idx = (cell.border_fill_id as usize).saturating_sub(1);
+                if std::env::var("RHWP_BORDER_DBG").is_ok() {
+                    eprintln!(
+                        "[BORDER] cell r{}c{} bf_id={} styles_len={} hit={}",
+                        cell.row,
+                        cell.col,
+                        cell.border_fill_id,
+                        styles.border_styles.len(),
+                        styles.border_styles.get(idx).is_some()
+                    );
+                }
                 styles.border_styles.get(idx)
             } else {
                 None

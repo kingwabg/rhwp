@@ -1006,24 +1006,27 @@ fn parse_para_shape_child(
                             ps.attr1 &= !(1 << 7);
                         }
                     }
+                    // 문단 보호 4종 정본 = attr1 bit16-19 (HWP5 표 44 — HWP5 파서·편집
+                    // 경로(ParaShapeMods)와 같은 비트). 종전 attr2 bit5-8 사수는 표 45
+                    // autoSpaceKrNum(bit5)과 충돌했고 HWP5 저장(attr2 원시 기록)으로도 샜다.
                     b"widowOrphan" => {
                         if parse_bool(&attr) {
-                            ps.attr2 |= 1 << 5;
+                            ps.attr1 |= 1 << 16;
                         }
                     }
                     b"keepWithNext" => {
                         if parse_bool(&attr) {
-                            ps.attr2 |= 1 << 6;
+                            ps.attr1 |= 1 << 17;
                         }
                     }
                     b"keepLines" => {
                         if parse_bool(&attr) {
-                            ps.attr2 |= 1 << 7;
+                            ps.attr1 |= 1 << 18;
                         }
                     }
                     b"pageBreakBefore" => {
                         if parse_bool(&attr) {
-                            ps.attr2 |= 1 << 8;
+                            ps.attr1 |= 1 << 19;
                         }
                     }
                     _ => {}
@@ -1032,9 +1035,28 @@ fn parse_para_shape_child(
             ParaShapeChildKind::Other
         }
         b"autoSpacing" => {
-            // HWPX autoSpacing은 HWP ParaShape.attr1 bits 20..21이 아니다.
-            // 해당 비트는 문단 세로 정렬이며, <align vertical="...">에서 채운다.
-            // autoSpacing의 HWP 저장 위치는 별도 검증 전까지 attr1에 반영하지 않는다.
+            // HWP5 표 45: attr2 bit4=한글·영어, bit5=한글·숫자 자동 간격 — 적용
+            // (model/style.rs)·판독(formatting.rs) 경로와 같은 정본 비트.
+            // (attr1 bit20-21 은 문단 세로 정렬 — <align vertical> 소관.)
+            for attr in ce.attributes().flatten() {
+                match attr.key.as_ref() {
+                    b"eAsianEng" => {
+                        if parse_bool(&attr) {
+                            ps.attr2 |= 1 << 4;
+                        } else {
+                            ps.attr2 &= !(1 << 4);
+                        }
+                    }
+                    b"eAsianNum" => {
+                        if parse_bool(&attr) {
+                            ps.attr2 |= 1 << 5;
+                        } else {
+                            ps.attr2 &= !(1 << 5);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             ParaShapeChildKind::Other
         }
         b"switch" => ParaShapeChildKind::Switch,

@@ -843,11 +843,35 @@ impl HwpDocument {
         {
             return Err(JsValue::from_str("인덱스 범위 초과"));
         }
-        let (text_offset, _) = crate::document_core::helpers::logical_to_text_offset(
+        let (text_offset, at_ctrl) = crate::document_core::helpers::logical_to_text_offset(
             &self.document.sections[sec].paragraphs[pi],
             logical_offset as usize,
         );
-        let result = self.insert_text_native(sec, pi, text_offset, text)?;
+        // [TAC 삽입 정합 2026-07-30] 변환이 (text_offset, true)면 삽입점이 인라인 컨트롤
+        // 바로 뒤다. text_offset 그대로 삽입하면 insert_text_at 의 "컨트롤 앞" 규약에
+        // 걸려 컨트롤이 오른쪽으로 밀린다(표 뒤 타이핑이 표 앞에 꽂히는 실측 결함).
+        // 후행 컨트롤(text_offset==text_len)은 insert_text_at 의 하이브리드 확장
+        // 오프셋(text_len + 소비한 후행 컨트롤 수)이 "컨트롤 뒤"를 정확히 표현한다.
+        // ponytail: 텍스트 중간의 컨트롤 뒤 삽입은 여전히 컨트롤 앞으로 감 —
+        // 스트림 좌표 삽입 코어 도입 시 승격.
+        let insert_offset = if at_ctrl {
+            let text_len = self.document.sections[sec].paragraphs[pi]
+                .text
+                .chars()
+                .count();
+            if text_offset >= text_len {
+                let logical_at_text_end = crate::document_core::helpers::text_to_logical_offset(
+                    &self.document.sections[sec].paragraphs[pi],
+                    text_len,
+                );
+                text_len + (logical_offset as usize).saturating_sub(logical_at_text_end)
+            } else {
+                text_offset
+            }
+        } else {
+            text_offset
+        };
+        let result = self.insert_text_native(sec, pi, insert_offset, text)?;
         // 삽입 후 논리적 오프셋 반환
         let new_text_offset = text_offset + text.chars().count();
         let new_logical = crate::document_core::helpers::text_to_logical_offset(
@@ -855,6 +879,26 @@ impl HwpDocument {
             new_text_offset,
         );
         Ok(format!("{{\"ok\":true,\"logicalOffset\":{}}}", new_logical))
+    }
+
+    /// [진단] 문단 line_segs 의 (vertical_pos, column_start, tag) 3튜플 배열(JSON).
+    ///
+    /// 양쪽 흐름의 좌·우 세그가 같은 vpos 를 공유하고 태그가 한컴 인코딩
+    /// (좌=FIRST-only, 우=LAST-only)인지 테스트에서 확인하는 용도.
+    #[wasm_bindgen(js_name = debugLineSegTags)]
+    pub fn debug_line_seg_tags(&self, section_idx: u32, para_idx: u32) -> Result<String, JsValue> {
+        let sec = section_idx as usize;
+        let pi = para_idx as usize;
+        if sec >= self.document.sections.len() || pi >= self.document.sections[sec].paragraphs.len()
+        {
+            return Err(JsValue::from_str("인덱스 범위 초과"));
+        }
+        let items: Vec<String> = self.document.sections[sec].paragraphs[pi]
+            .line_segs
+            .iter()
+            .map(|s| format!("[{},{},{}]", s.vertical_pos, s.column_start, s.tag))
+            .collect();
+        Ok(format!("[{}]", items.join(",")))
     }
 
     /// 문단의 논리적 길이를 반환한다 (텍스트 문자 + 인라인 컨트롤 수).
@@ -910,6 +954,35 @@ impl HwpDocument {
             &self.document.sections[sec].paragraphs[pi],
             text_offset as usize,
         ) as u32)
+    }
+
+    /// 논리 오프셋 위치에 있는 인라인(글자취급) 컨트롤의 컨트롤 인덱스를 반환한다.
+    /// 그 위치가 텍스트 문자이거나 범위 밖이면 -1. (studio 가 표 뒤 Backspace/앞 Delete
+    /// 에서 "지울 대상이 컨트롤인지"를 판정해 deleteTableControl 등으로 라우팅하는 용도.)
+    #[wasm_bindgen(js_name = getInlineControlIndexAtLogical)]
+    pub fn get_inline_control_index_at_logical(
+        &self,
+        section_idx: u32,
+        para_idx: u32,
+        logical_offset: u32,
+    ) -> Result<i32, JsValue> {
+        let sec = section_idx as usize;
+        let pi = para_idx as usize;
+        if sec >= self.document.sections.len() || pi >= self.document.sections[sec].paragraphs.len()
+        {
+            return Err(JsValue::from_str("인덱스 범위 초과"));
+        }
+        let para = &self.document.sections[sec].paragraphs[pi];
+        let positions = crate::document_core::helpers::find_logical_control_positions(para);
+        let target = logical_offset as usize;
+        for (ci, ctrl) in para.controls.iter().enumerate() {
+            if crate::document_core::helpers::is_logical_inline_control(ctrl)
+                && positions.get(ci).copied() == Some(target)
+            {
+                return Ok(ci as i32);
+            }
+        }
+        Ok(-1)
     }
 
     /// 문단에서 텍스트를 삭제한다.
@@ -1450,6 +1523,69 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// [경계선 재설계 2026-08-04] 한 칸 경계 어긋내기(Shift+드래그) — 격자 재구성 정본.
+    /// edge: "bottom" | "right". delta: HWPUNIT (+아래/오른쪽, -위/왼쪽).
+    #[wasm_bindgen(js_name = offsetCellBoundary)]
+    pub fn offset_cell_boundary(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+        cell_idx: u32,
+        edge: &str,
+        delta: i32,
+    ) -> Result<String, JsValue> {
+        let edge_right = match edge {
+            "right" => true,
+            "bottom" => false,
+            other => {
+                return Err(JsValue::from_str(&format!(
+                    "edge 는 bottom|right 여야 합니다: {}",
+                    other
+                )))
+            }
+        };
+        self.offset_cell_boundary_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+            cell_idx as usize,
+            edge_right,
+            delta,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// [경계선 재설계 2026-08-04] 어긋난 경계 복원(치유) — 스냅으로 정렬선에 캐치되면 호출.
+    #[wasm_bindgen(js_name = restoreCellBoundary)]
+    pub fn restore_cell_boundary(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+        cell_idx: u32,
+        edge: &str,
+    ) -> Result<String, JsValue> {
+        let edge_right = match edge {
+            "right" => true,
+            "bottom" => false,
+            other => {
+                return Err(JsValue::from_str(&format!(
+                    "edge 는 bottom|right 여야 합니다: {}",
+                    other
+                )))
+            }
+        };
+        self.restore_cell_boundary_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+            cell_idx as usize,
+            edge_right,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// `mergeTableCells` 의 options object 변형 (#1413).
     ///
     /// options JSON 키: `{ sectionIdx, parentParaIdx, controlIdx, startRow, startCol,
@@ -1730,6 +1866,63 @@ impl HwpDocument {
         char_offset: u32,
     ) -> Result<String, JsValue> {
         self.insert_column_break_native(
+            section_idx as usize,
+            para_idx as usize,
+            char_offset as usize,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 변경 내용 추적 켜기/끄기 (스펙 track-changes.md)
+    #[wasm_bindgen(js_name = setTrackChanges)]
+    pub fn set_track_changes(&mut self, enabled: bool, author: &str, date: &str) {
+        self.core.set_track_changes_native(enabled, author, date);
+    }
+
+    #[wasm_bindgen(js_name = isTrackChangesEnabled)]
+    pub fn is_track_changes_enabled_api(&self) -> bool {
+        self.core.is_track_changes_enabled()
+    }
+
+    /// 변경 목록 — [{id,kind,author,date,section,para,start,end,text}]
+    #[wasm_bindgen(js_name = getTrackChanges)]
+    pub fn get_track_changes(&self) -> String {
+        self.core.get_track_changes_native()
+    }
+
+    /// 변경 적용 — Insert 는 확정(마크 해제), Delete 는 실삭제
+    #[wasm_bindgen(js_name = acceptTrackChange)]
+    pub fn accept_track_change(&mut self, tc_id: u32) -> Result<String, JsValue> {
+        self.core
+            .accept_track_change_native(tc_id)
+            .map_err(|e| e.into())
+    }
+
+    /// 변경 취소 — Insert 는 실삭제(입력 되돌림), Delete 는 마크 해제
+    #[wasm_bindgen(js_name = rejectTrackChange)]
+    pub fn reject_track_change(&mut self, tc_id: u32) -> Result<String, JsValue> {
+        self.core
+            .reject_track_change_native(tc_id)
+            .map_err(|e| e.into())
+    }
+
+    /// 모두 적용/취소
+    #[wasm_bindgen(js_name = resolveAllTrackChanges)]
+    pub fn resolve_all_track_changes(&mut self, accept: bool) -> Result<String, JsValue> {
+        self.core
+            .resolve_all_track_changes_native(accept)
+            .map_err(|e| e.into())
+    }
+
+    /// 구역 나누기 (Alt+Shift+Enter) — 커서부터 끝까지를 새 구역으로
+    #[wasm_bindgen(js_name = insertSectionBreak)]
+    pub fn insert_section_break(
+        &mut self,
+        section_idx: u32,
+        para_idx: u32,
+        char_offset: u32,
+    ) -> Result<String, JsValue> {
+        self.insert_section_break_native(
             section_idx as usize,
             para_idx as usize,
             char_offset as usize,
@@ -2447,6 +2640,15 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 구역 안의 표를 전부 열거한다(문서 전체를 훑는 검사용).
+    ///
+    /// 반환: JSON `[{"para":N,"controlIdx":N,"rowCount":N,"colCount":N}]`
+    #[wasm_bindgen(js_name = getTables)]
+    pub fn get_tables(&self, section_idx: u32) -> Result<String, JsValue> {
+        self.get_tables_native(section_idx as usize)
+            .map_err(|e| e.into())
+    }
+
     /// 표 셀의 행/열/병합 정보를 반환한다.
     ///
     /// 반환: JSON `{"row":N,"col":N,"rowSpan":N,"colSpan":N}`
@@ -2582,6 +2784,18 @@ impl HwpDocument {
     ///
     /// delta_h, delta_v: HWPUNIT 단위 이동량 (양수=오른쪽/아래, 음수=왼쪽/위)
     /// 반환: JSON `{"ok":true}`
+    /// [드래그 안정화] 어울림 재줄바꿈 훅 억제 토글 — 드래그 시작 true / 드롭 false.
+    /// false 로 되돌릴 때 확정 재배치를 1회 수행한다.
+    #[wasm_bindgen(js_name = setSquareReflowSuppressed)]
+    pub fn set_square_reflow_suppressed(&mut self, on: bool) {
+        self.core.suppress_square_reflow = on;
+        if !on {
+            self.core.reflow_paras_for_square_bands(0);
+            self.core.recompose_section(0);
+            self.core.paginate_if_needed();
+        }
+    }
+
     #[wasm_bindgen(js_name = moveTableOffset)]
     pub fn move_table_offset(
         &mut self,
@@ -2597,6 +2811,76 @@ impl HwpDocument {
             control_idx as usize,
             delta_h,
             delta_v,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// [table-width-fit] 표가 현재 본문 폭을 넘치는지 **읽기 전용**으로 조회한다.
+    ///
+    /// 왜: 표는 절대 열폭을 저장해 용지·여백·단 변경에 자동으로 안 따라온다(HWP 원본
+    /// 동작). 그동안 넘침을 알릴 신호가 없어 인쇄물이 종이 밖으로 나가도 UI가 몰랐다.
+    /// 이 질의는 좌표를 건드리지 않고 넘침 여부만 돌려준다 — 앱이 경고하거나
+    /// `fitTableToPage` 호출 여부를 결정할 수 있다.
+    /// 반환: JSON `{"ok":true,"tableWidth":..,"pageContentWidth":..,"fits":bool,"overflow":..}`
+    #[wasm_bindgen(js_name = getTableFit)]
+    pub fn get_table_fit(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+    ) -> Result<String, JsValue> {
+        self.get_table_fit_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// [table-width-fit] 표를 현재 본문 폭에 맞춰 비례 축소한다(축소 전용).
+    ///
+    /// 왜: 이제껏 이 보정 로직(`fit_table_to_page_native`)이 코어에만 있고 wasm으로
+    /// 노출되지 않아 앱/스튜디오가 넘치는 표를 고칠 방법이 실제로 없었다. 여백 확대·
+    /// 용지 축소·다단 전환 후 이 메서드를 호출하면 표가 종이 안으로 들어온다.
+    /// 이미 본문 폭 이하이면 변경하지 않는다(`changed:false`).
+    /// 반환: JSON `{"ok":true,"colCount":..,"tableWidth":..,"pageContentWidth":..,"changed":bool}`
+    #[wasm_bindgen(js_name = fitTableToPage)]
+    pub fn fit_table_to_page(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+    ) -> Result<String, JsValue> {
+        self.fit_table_to_page_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// [table-width-fit] 표의 열별 폭(HWPUNIT)을 절대값으로 설정한다.
+    ///
+    /// 왜: `resizeTableCells`의 델타는 "경계선 끌기" 의미라 표 총폭이 늘어난다(업스트림
+    /// 델타 모델·issue_1481). 다단/사용자 지정 폭처럼 총폭을 정확히 지정해야 하는 경우를
+    /// 위해 절대폭 설정 경로를 노출한다. `widths.len()`은 표의 열 수와 같아야 한다.
+    /// json: `[20000, 5000, 5000]` (열 수만큼의 HWPUNIT 폭 배열)
+    /// 반환: JSON `{"ok":true,"colCount":..,"tableWidth":..}`
+    #[wasm_bindgen(js_name = setTableColumnWidths)]
+    pub fn set_table_column_widths(
+        &mut self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+        widths_json: &str,
+    ) -> Result<String, JsValue> {
+        let widths: Vec<u32> = serde_json::from_str(widths_json)
+            .map_err(|e| JsValue::from_str(&format!("열 폭 JSON 파싱 실패: {}", e)))?;
+        self.set_table_column_widths_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+            widths,
         )
         .map_err(|e| e.into())
     }
@@ -3472,7 +3756,16 @@ impl HwpDocument {
         // 글상자는 기본적으로 treat_as_char=true (한컴 기본값)
         let default_tac = shape_type == "textbox";
         let treat_as_char = json_bool(json, "treatAsChar").unwrap_or(default_tac);
-        let text_wrap = json_str(json, "textWrap").unwrap_or_else(|| "Square".to_string());
+        // [officex] 기본값을 배치에 맞춰 분기한다. 종전엔 무조건 "Square"였는데, floating 도형의
+        // attr 리터럴(0x046A4000)은 bits21-23=3=InFrontOfText 라 **메모리 enum(Square)과 저장 attr이
+        // 태생부터 어긋나** 있었다. 재열기하면 attr 쪽이 이겨 전부 InFrontOfText 로 뒤집혔다.
+        // inline 글상자는 0x0A0210(=Square)이므로 "Square" 그대로 — Task #1280 v2 계약 유지.
+        let default_wrap = if shape_type == "textbox" && treat_as_char {
+            "Square"
+        } else {
+            "InFrontOfText"
+        };
+        let text_wrap = json_str(json, "textWrap").unwrap_or_else(|| default_wrap.to_string());
         let line_flip_x = json_bool(json, "lineFlipX").unwrap_or(false);
         let line_flip_y = json_bool(json, "lineFlipY").unwrap_or(false);
         // 다각형 꼭짓점: "polygonPoints":[{"x":N,"y":N},...]
@@ -4108,6 +4401,121 @@ impl HwpDocument {
         self.get_field_list_json()
     }
 
+    /// 구역의 바탕쪽 목록을 조회한다 (2026-07-28 신설).
+    ///
+    /// 반환: `[{index, applyTo, isExtension, overlap, text}]`
+    /// - `applyTo`: "both" | "odd" | "even"
+    /// - `text`: 바탕쪽 문단들을 개행으로 이은 것
+    #[wasm_bindgen(js_name = getMasterPages)]
+    pub fn get_master_pages(&self, section_idx: u32) -> String {
+        let Some(sec) = self.core.document.sections.get(section_idx as usize) else {
+            return "[]".to_string();
+        };
+        let out: Vec<serde_json::Value> = sec
+            .section_def
+            .master_pages
+            .iter()
+            .enumerate()
+            .map(|(i, mp)| {
+                serde_json::json!({
+                    "index": i,
+                    "applyTo": format!("{:?}", mp.apply_to).to_lowercase(),
+                    "isExtension": mp.is_extension,
+                    "overlap": mp.overlap,
+                    "text": mp.paragraphs.iter().map(|p| p.text.clone())
+                        .collect::<Vec<_>>().join("\n"),
+                })
+            })
+            .collect();
+        serde_json::to_string(&out).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    /// 바탕쪽 본문을 통째로 바꾼다 (2026-07-28 신설, 편집 v1).
+    ///
+    /// 줄바꿈(`\n`)마다 문단 1개. 빈 문자열이면 빈 문단 1개가 남는다.
+    ///
+    /// ⚠ 원본 바이트(`raw_list_header`)를 반드시 무효화한다 — 그대로 두면 문단 수가
+    /// 바뀌어도 옛 헤더가 저장돼 편집이 파일에 반영되지 않는다(조사 2026-07-28).
+    #[wasm_bindgen(js_name = setMasterPageText)]
+    pub fn set_master_page_text(
+        &mut self,
+        section_idx: u32,
+        mp_index: u32,
+        text: &str,
+    ) -> Result<String, JsValue> {
+        use crate::model::paragraph::Paragraph;
+        let Some(sec) = self.core.document.sections.get_mut(section_idx as usize) else {
+            return Ok(r#"{"ok":false,"error":"구역 없음"}"#.to_string());
+        };
+        let Some(mp) = sec.section_def.master_pages.get_mut(mp_index as usize) else {
+            return Ok(r#"{"ok":false,"error":"바탕쪽 없음"}"#.to_string());
+        };
+        let mut paragraphs = Vec::new();
+        for line in text.split('\n') {
+            let mut p = Paragraph::new_empty();
+            p.text = line.to_string();
+            p.char_count = p.text.chars().count() as u32;
+            paragraphs.push(p);
+        }
+        mp.paragraphs = paragraphs.clone();
+        // 원본 헤더는 문단 수를 담고 있어 편집과 모순된다 → 재생성하도록 비운다.
+        mp.raw_list_header.clear();
+
+        // ⚠ section_def 는 **두 곳에 산다**: Section.section_def 와 문단0의 SectionDef
+        //   컨트롤. 직렬화는 컨트롤 쪽(serializer/control.rs:323)을 읽으므로 둘 다
+        //   고쳐야 저장에 반영된다(실측 2026-07-28: 한쪽만 고치면 조용히 무시됨).
+        for para in sec.paragraphs.iter_mut() {
+            for ctrl in para.controls.iter_mut() {
+                if let crate::model::control::Control::SectionDef(sd) = ctrl {
+                    if let Some(target) = sd.master_pages.get_mut(mp_index as usize) {
+                        target.paragraphs = paragraphs.clone();
+                        target.raw_list_header.clear();
+                    }
+                }
+            }
+        }
+        Ok(r#"{"ok":true}"#.to_string())
+    }
+
+    /// 문서의 메모 목록을 조회한다 (읽기 전용, 2026-07-28 신설).
+    ///
+    /// 반환: `[{sectionIndex, paragraphIndex, charOffset, memoIndex, text}]`
+    /// - `charOffset`: 메모 앵커(필드가 놓인 글자 위치). 말풍선 연결선의 기준.
+    /// - `text`: 메모 본문 문단들을 개행으로 이은 것.
+    #[wasm_bindgen(js_name = getMemos)]
+    pub fn get_memos(&self) -> String {
+        use crate::model::control::{Control, FieldType};
+        let mut out: Vec<serde_json::Value> = Vec::new();
+        for (si, sec) in self.core.document.sections.iter().enumerate() {
+            for (pi, para) in sec.paragraphs.iter().enumerate() {
+                // 필드는 문단 내 컨트롤 순서대로 등장한다 — 앵커 글자 위치는 제어문자
+                // 위치와 대응하나, 정확한 매핑 API 가 없어 등장 순서를 offset 힌트로 준다.
+                let mut nth = 0usize;
+                for ctrl in &para.controls {
+                    if let Control::Field(f) = ctrl {
+                        if f.field_type == FieldType::Memo {
+                            let text = f
+                                .memo_paragraphs
+                                .iter()
+                                .map(|p| p.text.clone())
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            out.push(serde_json::json!({
+                                "sectionIndex": si,
+                                "paragraphIndex": pi,
+                                "charOffset": nth,
+                                "memoIndex": f.memo_index,
+                                "text": text,
+                            }));
+                        }
+                        nth += 1;
+                    }
+                }
+            }
+        }
+        serde_json::to_string(&out).unwrap_or_else(|_| "[]".to_string())
+    }
+
     /// field_id로 필드 값을 조회한다.
     ///
     /// 반환: `{ok, value}`
@@ -4177,9 +4585,21 @@ impl HwpDocument {
     #[wasm_bindgen(js_name = insertClickHereFieldEx)]
     pub fn insert_click_here_field_ex(&mut self, options_json: &str) -> Result<String, JsValue> {
         use crate::document_core::helpers::{json_bool, json_str, json_u32};
+        // [officex] 좌표 필수키 검증 — 종전엔 깨진 JSON·오타 키(sectionIDX 등)가 전부
+        // unwrap_or(0) 으로 삼켜져 (0,0) 위치에 조용히 삽입됐다. 좌표가 없으면 정직하게 거부한다.
+        // 반환은 예외가 아니라 {ok:false} 스타일 — Ex 계열의 오류 계약을 더 쪼개지 않는다.
+        let (Some(sec), Some(para)) = (
+            json_u32(options_json, "sectionIdx"),
+            json_u32(options_json, "paraIdx"),
+        ) else {
+            return Ok(
+                r#"{"ok":false,"error":"필드 오류: sectionIdx/paraIdx 필수 (깨진 JSON 또는 키 누락)"}"#
+                    .to_string(),
+            );
+        };
         self.insert_click_here_field_at(
-            json_u32(options_json, "sectionIdx").unwrap_or(0) as usize,
-            json_u32(options_json, "paraIdx").unwrap_or(0) as usize,
+            sec as usize,
+            para as usize,
             json_u32(options_json, "charOffset").unwrap_or(0) as usize,
             &json_str(options_json, "guide").unwrap_or_default(),
             &json_str(options_json, "memo").unwrap_or_default(),
@@ -5177,6 +5597,31 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 논리 좌표(인라인 컨트롤=1칸)로 본문 선택 영역을 삭제한다 — 걸친 표·그림도 함께.
+    ///
+    /// 한컴 오라클(부록2 O8): 선택 삭제는 확인 없이 표까지 지운다. 커서 오프셋은 논리
+    /// 좌표라 deleteRange(텍스트 좌표)에 그대로 넘기면 표가 남고 범위도 어긋난다.
+    /// 반환: JSON `{"ok":true,"paraIdx":N,"charOffset":N}`
+    #[wasm_bindgen(js_name = deleteRangeLogical)]
+    pub fn delete_range_logical(
+        &mut self,
+        section_idx: u32,
+        start_para_idx: u32,
+        start_logical_offset: u32,
+        end_para_idx: u32,
+        end_logical_offset: u32,
+    ) -> Result<String, JsValue> {
+        self.delete_range_logical_native(
+            section_idx as usize,
+            start_para_idx as usize,
+            start_logical_offset as usize,
+            end_para_idx as usize,
+            end_logical_offset as usize,
+            None,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// 셀 내 선택 영역을 삭제한다.
     ///
     /// 반환: JSON `{"ok":true,"paraIdx":N,"charOffset":N}`
@@ -5635,6 +6080,9 @@ impl HwpDocument {
         }
         // raw_data 무효화 (수정됨)
         style.raw_data = None;
+        // [스타일 패리티 2026-07-30] **HWP(.hwp) 저장은 doc_info raw_stream 을 재사용**하므로
+        // 이 플래그를 세우지 않으면 스타일 수정이 통째로 유실됐다(updateStyleShapes 는 이미 세운다).
+        self.core.document.doc_info.raw_stream_dirty = true;
         true
     }
 
@@ -5792,7 +6240,17 @@ impl HwpDocument {
         use crate::document_core::helpers::{json_i32, json_str};
         use crate::model::style::Style;
 
+        // 입력 방어: 이름 없는/깨진 JSON 스타일은 만들지 않는다(-1 = 실패 계약).
+        if serde_json::from_str::<serde_json::Value>(json)
+            .map(|v| !v.is_object())
+            .unwrap_or(true)
+        {
+            return -1;
+        }
         let name = json_str(json, "name").unwrap_or_default();
+        if name.trim().is_empty() {
+            return -1;
+        }
         let english_name = json_str(json, "englishName").unwrap_or_default();
         let style_type = json_i32(json, "type").unwrap_or(0) as u8;
         let next_style_id = json_i32(json, "nextStyleId").unwrap_or(0) as u8;
@@ -5860,13 +6318,25 @@ impl HwpDocument {
         }
         // 스타일 삭제 (인덱스 기반이므로 뒤의 ID가 변경됨에 주의)
         self.core.document.doc_info.styles.remove(style_id as usize);
-        // 삭제된 ID보다 큰 style_id를 가진 문단들 보정
-        for section in &mut self.core.document.sections {
-            for para in &mut section.paragraphs {
+        // 삭제된 ID보다 큰 style_id를 가진 문단들 보정.
+        // [스타일 패리티 2026-07-30] 예전엔 **본문 문단만** 순회해서 표 셀 문단의 style_id 가
+        // 한 칸씩 어긋난 채 남았다(엉뚱한 스타일을 가리킴). 셀 안 문단까지 같이 보정한다.
+        fn fix_style_ids(paras: &mut [crate::model::paragraph::Paragraph], sid: u8) {
+            for para in paras.iter_mut() {
                 if para.style_id > sid {
                     para.style_id -= 1;
                 }
+                for ctrl in &mut para.controls {
+                    if let crate::model::control::Control::Table(t) = ctrl {
+                        for cell in &mut t.cells {
+                            fix_style_ids(&mut cell.paragraphs, sid);
+                        }
+                    }
+                }
             }
+        }
+        for section in &mut self.core.document.sections {
+            fix_style_ids(&mut section.paragraphs, sid);
         }
         // next_style_id 보정
         for s in &mut self.core.document.doc_info.styles {
@@ -5876,6 +6346,9 @@ impl HwpDocument {
                 s.next_style_id -= 1;
             }
         }
+        // [스타일 패리티 2026-07-30] HWP 저장이 raw_stream 을 재사용하므로 반드시 세운다 —
+        // 없으면 스타일 삭제가 저장 파일에 반영되지 않는다.
+        self.core.document.doc_info.raw_stream_dirty = true;
         // 스타일 캐시 갱신
         self.core.styles = crate::renderer::style_resolver::resolve_styles(
             &self.core.document.doc_info,
@@ -5994,6 +6467,23 @@ impl HwpDocument {
         use crate::document_core::helpers::json_i32;
         use crate::model::style::{Numbering, NumberingHead};
 
+        // 입력 방어: 깨진 JSON이나 유효 레벨 형식이 없는 입력은 정의를 만들지 않는다(0 = 실패, id는 1-based).
+        let parsed: serde_json::Value = match serde_json::from_str(json) {
+            Ok(v) => v,
+            Err(_) => return 0,
+        };
+        let has_level_formats = parsed
+            .get("levelFormats")
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .any(|s| s.as_str().map_or(false, |s| !s.is_empty()))
+            })
+            .unwrap_or(false);
+        if !has_level_formats {
+            return 0;
+        }
+
         let mut n = Numbering::default();
 
         // levelFormats 배열 파싱
@@ -6040,8 +6530,12 @@ impl HwpDocument {
             }
         }
 
-        n.start_number = json_i32(json, "startNumber").unwrap_or(1) as u16;
-        n.level_start_numbers = [n.start_number as u32; 7];
+        // 음수·0·u16 초과 startNumber를 as u16 언더/오버플로로 뒤집지 말고 클램프한다.
+        let start_number = json_i32(json, "startNumber")
+            .unwrap_or(1)
+            .clamp(1, u16::MAX as i32) as u16;
+        n.start_number = start_number;
+        n.level_start_numbers = [start_number as u32; 7];
         self.core.document.doc_info.numberings.push(n);
         self.core.document.doc_info.numberings.len() as u16
     }
@@ -6138,15 +6632,23 @@ impl HwpDocument {
     }
 
     /// 스타일을 적용한다 (본문 문단).
+    /// `overwrite`(선택): 참이면 문단의 직접 서식까지 스타일 모양으로 덮어쓴다 —
+    /// 한컴 「본문을 [X] 스타일 모양으로 덮어 쓸까요?」의 '예'. 생략/거짓은 종전 동작(보존).
     #[wasm_bindgen(js_name = applyStyle)]
     pub fn apply_style(
         &mut self,
         sec_idx: u32,
         para_idx: u32,
         style_id: u32,
+        overwrite: Option<bool>,
     ) -> Result<String, JsValue> {
         self.core
-            .apply_style_native(sec_idx as usize, para_idx as usize, style_id as usize)
+            .apply_style_native_ex(
+                sec_idx as usize,
+                para_idx as usize,
+                style_id as usize,
+                overwrite.unwrap_or(false),
+            )
             .map_err(|e| e.into())
     }
 
@@ -6218,6 +6720,71 @@ impl HwpDocument {
                 &json_str(options_json, "formula").unwrap_or_default(),
                 json_bool(options_json, "writeResult").unwrap_or(false),
             )
+            .map_err(|e| e.into())
+    }
+
+    /// 양식 개체(명령 단추·선택 상자·콤보 상자·라디오 단추·입력 상자)를 삽입한다.
+    ///
+    /// `props_json`: `{"formType":"CheckBox","name":"...","caption":"...","groupName":"..."}`
+    /// formType 만 필수. 크기·캡션·색 기본값은 한컴 정답지(samples/form-01.hwp) 값.
+    #[wasm_bindgen(js_name = insertFormObject)]
+    pub fn insert_form_object(
+        &mut self,
+        sec_idx: usize,
+        para_idx: usize,
+        char_offset: usize,
+        props_json: &str,
+    ) -> Result<String, JsValue> {
+        self.core
+            .insert_form_object_native(sec_idx, para_idx, char_offset, props_json)
+            .map_err(|e| e.into())
+    }
+
+    /// 양식 개체 속성을 바꾼다(부분 갱신 — 온 키만).
+    #[wasm_bindgen(js_name = setFormObjectProps)]
+    pub fn set_form_object_props(
+        &mut self,
+        sec_idx: usize,
+        para_idx: usize,
+        control_idx: usize,
+        props_json: &str,
+    ) -> Result<String, JsValue> {
+        self.core
+            .set_form_object_props_native(sec_idx, para_idx, control_idx, props_json)
+            .map_err(|e| e.into())
+    }
+
+    /// 양식 개체를 텍스트 안에서 옮긴다 — {"delta":±1} 또는 {"toPara":N,"offset":M}(텍스트 좌표).
+    #[wasm_bindgen(js_name = moveFormObject)]
+    pub fn move_form_object(
+        &mut self,
+        sec_idx: usize,
+        para_idx: usize,
+        control_idx: usize,
+        props_json: &str,
+    ) -> Result<String, JsValue> {
+        self.core
+            .move_form_object_native(sec_idx, para_idx, control_idx, props_json)
+            .map_err(|e| e.into())
+    }
+
+    /// 논리 칸을 차지하는 양식 개체의 컨트롤 인덱스(없으면 -1) — Backspace/Delete 분기용.
+    #[wasm_bindgen(js_name = formControlAtLogical)]
+    pub fn form_control_at_logical(&self, sec_idx: usize, para_idx: usize, logical: usize) -> i32 {
+        self.core
+            .form_control_at_logical_native(sec_idx, para_idx, logical)
+    }
+
+    /// 양식 개체를 삭제한다(삽입의 역연산).
+    #[wasm_bindgen(js_name = deleteFormObject)]
+    pub fn delete_form_object(
+        &mut self,
+        sec_idx: usize,
+        para_idx: usize,
+        control_idx: usize,
+    ) -> Result<String, JsValue> {
+        self.core
+            .delete_form_object_native(sec_idx, para_idx, control_idx)
             .map_err(|e| e.into())
     }
 
@@ -6926,7 +7493,23 @@ impl HwpViewer {
     #[wasm_bindgen(constructor)]
     pub fn new(document: HwpDocument) -> Self {
         let page_count = document.page_count();
-        let scheduler = RenderScheduler::new(page_count);
+        let mut scheduler = RenderScheduler::new(page_count);
+        // [officex] 쪽 높이를 스케줄러에 먹인다 — 이 배선이 빠져 page_offsets 가 영원히 비었고,
+        // visible_pages 가 스크롤 위치와 무관하게 [0]만 돌려줬다(updateViewport 무반응의 뿌리).
+        // 업스트림 단위 테스트(test_scheduler_visible_pages)도 set_page_heights 를 먼저 부른다 —
+        // 설계된 사용법인데 WASM 래퍼만 이 단계를 빠뜨렸다. HwpViewer 는 문서를 소유만 하고
+        // 편집 API 가 없으므로 생성 시 1회 계산으로 충분하다.
+        let heights: Vec<f64> = (0..page_count)
+            .filter_map(|i| {
+                document
+                    .find_page(i)
+                    .ok()
+                    .map(|(pc, _, _)| pc.layout.page_height)
+            })
+            .collect();
+        if heights.len() == page_count as usize {
+            scheduler.set_page_heights(&heights);
+        }
         Self {
             document,
             scheduler,

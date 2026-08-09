@@ -369,6 +369,34 @@ impl DocumentCore {
         row_count: u16,
         col_count: u16,
     ) -> Result<String, HwpError> {
+        self.create_table_native_sized(
+            section_idx,
+            para_idx,
+            char_offset,
+            row_count,
+            col_count,
+            None,
+            None,
+        )
+    }
+
+    /// 열 폭·행 높이를 지정해 **떠 있는(비-TAC) 표**를 만든다.
+    ///
+    /// [2026-07-30] createTableEx 의 colWidths/rowHeights 가 `treat_as_char=false` 경로에서
+    /// 통째로 버려지고 있었다 — create_table_ex_native 가 인자 없이 create_table_native 로
+    /// 위임했기 때문(전폭 균등 분할 고정). 어울림/자리차지 표의 폭을 지정할 수단이 아예
+    /// 없어서 테스트조차 "칸 지우기"로 폭을 흉내내야 했다(부록4 잔여 항목).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_table_native_sized(
+        &mut self,
+        section_idx: usize,
+        para_idx: usize,
+        char_offset: usize,
+        row_count: u16,
+        col_count: u16,
+        col_widths_hu: Option<&[u32]>,
+        row_heights_hu: Option<&[u32]>,
+    ) -> Result<String, HwpError> {
         use crate::model::paragraph::{CharShapeRef, LineSeg};
         use crate::model::style::{
             BorderFill, BorderLine, BorderLineType, CenterLine, DiagonalLine, Fill,
@@ -404,7 +432,25 @@ impl DocumentCore {
                 .max(7200) as u32;
 
         // --- 2. 한컴 기본값 기반 셀 생성 (blank_h_saved.hwp 참조) ---
-        let col_width = content_width / col_count as u32;
+        // 지정 폭이 있으면 그대로, 없으면 단 폭 균등 분할.
+        if let Some(widths) = col_widths_hu {
+            if widths.len() != col_count as usize {
+                return Err(HwpError::InvalidField(format!(
+                    "colWidths 길이 {}가 열 수 {}와 다릅니다",
+                    widths.len(),
+                    col_count
+                )));
+            }
+            if widths.iter().any(|&w| w < 200) {
+                return Err(HwpError::InvalidField(
+                    "colWidths에 0 또는 최소폭(200HU) 미만 값이 있습니다".into(),
+                ));
+            }
+        }
+        let col_ws: Vec<u32> = col_widths_hu
+            .map(|w| w.to_vec())
+            .unwrap_or_else(|| vec![content_width / col_count as u32; col_count as usize]);
+        let col_width = col_ws[0];
         // 한컴 기본: 셀 패딩 L=510 R=510 T=141 B=141
         let cell_pad = crate::model::Padding {
             left: 510,
@@ -416,8 +462,15 @@ impl DocumentCore {
         let cell_height: u32 = (cell_pad.top + cell_pad.bottom) as u32;
         // 한컴 기본: 행 렌더링 높이 = padding_top + line_height(1000) + padding_bottom
         let rendered_row_height: u32 = cell_pad.top as u32 + 1000 + cell_pad.bottom as u32;
-        let total_width = col_width * col_count as u32;
-        let total_height = rendered_row_height * row_count as u32;
+        let total_width: u32 = col_ws.iter().sum();
+        let row_hs: Vec<u32> = row_heights_hu
+            .map(|h| {
+                h.iter()
+                    .map(|&x| x.max(rendered_row_height))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| vec![rendered_row_height; row_count as usize]);
+        let total_height: u32 = row_hs.iter().sum();
 
         // BorderFill: 실선 테두리가 있는 기존 항목 재사용, 없으면 새로 생성
         let cell_border_fill_id = {
@@ -463,6 +516,8 @@ impl DocumentCore {
         let mut cells = Vec::with_capacity((row_count as usize) * (col_count as usize));
         for r in 0..row_count {
             for c in 0..col_count {
+                // 열마다 지정 폭(없으면 균등) — 종전엔 col_width 하나로 고정이었다.
+                let col_width = col_ws[c as usize];
                 let mut cell = Cell::new_empty(c, r, col_width, cell_height, cell_border_fill_id);
                 cell.padding = cell_pad;
                 cell.vertical_align = crate::model::table::VerticalAlign::Center; // 한컴 기본값
@@ -805,12 +860,16 @@ impl DocumentCore {
         }
 
         if !treat_as_char {
-            return self.create_table_native(
+            // [2026-07-30] 종전엔 폭·높이 인자를 버리고 위임해 떠 있는 표의 colWidths 가
+            // 통째로 무시됐다(전폭 균등 고정). 지정값을 그대로 넘긴다.
+            return self.create_table_native_sized(
                 section_idx,
                 para_idx,
                 char_offset,
                 row_count,
                 col_count,
+                col_widths_hu,
+                row_heights_hu,
             );
         }
 
@@ -822,6 +881,22 @@ impl DocumentCore {
         let content_width =
             (pd.width as i32 - pd.margin_left as i32 - pd.margin_right as i32 - outer_margin_lr)
                 .max(7200) as u32;
+
+        // 입력 방어: colWidths가 열 수와 다르거나 0/최소폭 미만이면 균등 폴백으로 삼키지 않고 거부한다.
+        if let Some(widths) = col_widths_hu {
+            if widths.len() != col_count as usize {
+                return Err(HwpError::InvalidField(format!(
+                    "colWidths 길이 {}가 열 수 {}와 다릅니다",
+                    widths.len(),
+                    col_count
+                )));
+            }
+            if widths.iter().any(|&w| w < 200) {
+                return Err(HwpError::InvalidField(
+                    "colWidths에 0 또는 최소폭(200HU) 미만 값이 있습니다".into(),
+                ));
+            }
+        }
 
         // 열 폭 결정
         let col_ws: Vec<u32> = if let Some(widths) = col_widths_hu {
@@ -969,7 +1044,13 @@ impl DocumentCore {
         raw_ctrl_data[common_obj_offsets::INSTANCE_ID].copy_from_slice(&instance_id.to_le_bytes());
 
         let mut table = Table {
-            attr: 0x04000006,
+            // Table.attr 는 CommonObjAttr FLAGS 의 미러다(parser/control.rs:161
+            // `table.attr = table.common.attr`, table_ops.rs:2875 가 이 값을
+            // raw_ctrl_data FLAGS 에 그대로 되쓴다). 여기에 TABLE 레코드 attr
+            // (0x04000006)을 넣어 두면 bit0(글자처럼취급)이 0 이라 조판 라우터
+            // (paragraph_has_table)가 인라인 TAC 표를 블록 표로 오판해 표를
+            // 자기 줄로 내려 그린다.
+            attr: flags,
             row_count,
             col_count,
             cell_spacing: 0,
@@ -1044,15 +1125,11 @@ impl DocumentCore {
         // char_count 갱신 (확장 제어문자 8 + 기존)
         para.char_count += 8;
 
-        // LINE_SEG 갱신: 표 높이를 반영
-        if let Some(seg) = para.line_segs.first_mut() {
-            let new_lh = (total_height as i32).max(seg.line_height);
-            if new_lh > seg.line_height {
-                seg.line_height = new_lh;
-                seg.text_height = new_lh;
-                seg.baseline_distance = (new_lh as f64 * 0.85) as i32;
-            }
-        }
+        // LINE_SEG 갱신: reflow(line_breaking)가 유일한 생산자다 — 개체가 놓인 줄의
+        // 높이 범프도, 폭 초과 시의 줄 분리도 그 안의 한 규칙(`BreakToken::Object`)에서
+        // 나온다. 종전의 수동 "첫 seg 높이 범프"는 표가 둘째 줄로 밀리는 문단에서
+        // 엉뚱한 줄을 키웠다.
+        self.reflow_paragraph(section_idx, para_idx);
 
         // rebuild
         self.rebuild_section(section_idx);
@@ -1176,6 +1253,27 @@ impl DocumentCore {
         page_hint: usize,
     ) -> Result<String, HwpError> {
         use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+
+        // [table-structure/조회 일관성] 형제 API(getTableDimensions·getTableProperties)는
+        // 표 아닌 컨트롤(또는 범위 밖 control_idx)을 물으면 "지정된 컨트롤이 표가 아닙니다"로
+        // 던지는데, 여기만 렌더 트리에서 못 찾아 조용히 []를 돌려주면 호출부가 "셀 0개"와
+        // "표 아님"을 구분하지 못한다. 렌더 트리 탐색 전에 컨트롤이 실제 표인지 먼저 검증해
+        // 세 API가 같은 방식으로 거부하도록 맞춘다.
+        let para = self
+            .document
+            .sections
+            .get(section_idx)
+            .ok_or_else(|| HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx)))?
+            .paragraphs
+            .get(parent_para_idx)
+            .ok_or_else(|| {
+                HwpError::RenderError(format!("문단 인덱스 {} 범위 초과", parent_para_idx))
+            })?;
+        if !matches!(para.controls.get(control_idx), Some(Control::Table(_))) {
+            return Err(HwpError::RenderError(
+                "지정된 컨트롤이 표가 아닙니다".to_string(),
+            ));
+        }
 
         // 렌더 트리에서 해당 표 노드를 찾아 셀 bbox를 수집
         fn find_table_cells(

@@ -144,7 +144,11 @@ fn clickhere_hwp_sample_cursor_rects_follow_visible_value() {
 }
 
 #[test]
-fn removing_clickhere_removes_field_text_and_control() {
+// [계약 정산 2026-07-26] 82e91e8e(2026-07-23)가 removeFieldAt 를 "값 보존"으로 바꿨다 —
+// 필드 안 글자까지 지우면 사용자가 입력한 값이 되돌릴 수 없이 사라지는 실사고. 이 테스트는
+// 옛 계약(글자 삭제)을 고정한 채 남아 선재 실패였고, 여기서 새 계약으로 정산한다:
+// 누름틀 제거 = 컨트롤·범위만 해제, 본문 글자는 남는다.
+fn removing_clickhere_keeps_value_text_and_removes_control() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let bytes = fs::read(repo_root.join("samples/누름틀-2024.hwp")).expect("read clickhere sample");
     let mut core = DocumentCore::from_bytes(&bytes).expect("parse clickhere sample");
@@ -158,7 +162,7 @@ fn removing_clickhere_removes_field_text_and_control() {
         .expect("remove first clickhere");
 
     let para_after = &core.document().sections[0].paragraphs[0];
-    assert_eq!(para_after.text, "");
+    assert_eq!(para_after.text, "11223344", "필드 값(본문 글자)은 보존된다");
     assert_eq!(
         para_after.field_ranges.len(),
         0,
@@ -169,7 +173,8 @@ fn removing_clickhere_removes_field_text_and_control() {
         2,
         "ClickHere control should be removed while SectionDef/ColumnDef remain"
     );
-    assert_eq!(para_after.char_offsets, Vec::<u32>::new());
+    // 남은 컨트롤 2개(SectionDef·ColumnDef)가 텍스트 앞 — 글자 8자의 오프셋은 16부터.
+    assert_eq!(para_after.char_offsets, (16u32..24).collect::<Vec<u32>>());
 
     let fields = core.collect_all_fields();
     let click_fields: Vec<_> = fields
@@ -614,7 +619,9 @@ fn copying_adjacent_clickheres_preserves_separate_pasted_fields() {
         .collect();
     assert_eq!(remaining_fields.len(), 1);
     assert_eq!(remaining_fields[0].value, "123");
-    assert_eq!(core.document().sections[0].paragraphs[1].text, "123");
+    // [계약 정산 2026-07-26] removeFieldAt 는 값을 보존한다(82e91e8e) — 앞 필드의
+    // 글자 "123"도 본문에 남고, 필드 래퍼만 풀린다.
+    assert_eq!(core.document().sections[0].paragraphs[1].text, "123123");
 }
 
 #[test]

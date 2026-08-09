@@ -10,6 +10,33 @@ use crate::model::event::DocumentEvent;
 use crate::model::path::{path_from_flat, PathSegment};
 use crate::model::shape::common_obj_offsets;
 
+/// 과거 어울림 좁힘 흔적 판정 — 전폭(=단 폭) segment_width 는 흔적이 아니다.
+/// column_start 가 있거나, sw 가 전폭보다 800HU(≈10.7px) 넘게 좁을 때만 흔적.
+/// 조기 탈출(:123)과 재줄바꿈 대상 선정(had_narrow)이 같은 판정을 공유한다.
+/// pub: 편집 훅 비용 핀(tests/officex_square_edit_hook.rs)이 직접 단위검증한다.
+pub fn paragraph_has_narrow_trace(para: &crate::model::paragraph::Paragraph, full_hu: i32) -> bool {
+    para.line_segs
+        .iter()
+        .any(|ls| ls.column_start > 0 || (ls.segment_width > 0 && ls.segment_width < full_hu - 800))
+}
+
+/// [훅 일반화 2026-08-05] 어울림 밴드 host 자격이 있는 float 개체의 공통 속성.
+/// Table·Picture·Shape(그리기 개체 전반)·Equation 이 대상 — treat_as_char/wrap/rel
+/// 판정은 호출부. [트랙4 ④] Equation arm 은 `Equation.common.text_wrap` 의 첫 실소비:
+/// 비-TAC Square 수식도 밴드 host 가 되어 옆 문단이 수식 상자를 피해 재줄바꿈된다
+/// (렌더 자체는 여전히 인라인 강등 — 수식 상자 y 는 host 흐름 위치).
+pub(crate) fn square_band_float_common(
+    ctrl: &Control,
+) -> Option<&crate::model::shape::CommonObjAttr> {
+    match ctrl {
+        Control::Table(t) => Some(&t.common),
+        Control::Picture(p) => Some(&p.common),
+        Control::Shape(s) => Some(s.common()),
+        Control::Equation(e) => Some(&e.common),
+        _ => None,
+    }
+}
+
 impl DocumentCore {
     pub(crate) fn get_table_mut(
         &mut self,
@@ -38,6 +65,425 @@ impl DocumentCore {
     }
 
     /// 표에 행을 삽입한다 (네이티브).
+    /// [app-workflow/TAC 재열기] 표 기하 변형 후 host 문단의 LINE_SEG 를 재생성한다.
+    ///
+    /// 종전엔 표(행 추가 등)만 바뀌고 host 의 저장 lh 는 옛 값으로 박제됐다. typeset 의
+    /// TAC fit 은 저장 lineseg 를 신뢰하므로(#2319 보정은 lineseg 부재 문단만 구제),
+    /// 저장→재열기하면 91600HU 표를 lh=3600HU 로 계상해 넘친 표가 영영 1쪽에 갇혔다
+    /// (qa:rhwp 앱 통합 워크플로 결함 — 실측: tall.hwp pi3 rows=42, segs lh=3600).
+    /// reflow_line_segs 는 인라인 컨트롤 높이를 host 줄에 반영하므로(insert_text 경로와
+    /// 동일 기계) 변형 직후 한 번 돌리면 저장이 진실을 쓴다.
+    /// [officex/어울림 본편] 어울림 개체 편집 뒤 — 옆 문단 줄바꿈을 개체 상자 기준으로
+    /// 재계산한다(2-패스). 좌표는 vpos(저장 축)가 아니라 **렌더트리**에서 뽑는다:
+    /// 이 케이스에서 vpos 축은 float 개체의 흐름 소비를 반영하지 않아 렌더와
+    /// 어긋난다(실측 34px). 렌더트리 1회 조회 비용은 편집당 조판 1회 추가 — 수용.
+    /// 밴드에서 벗어난 문단은 전폭으로 자동 원복(빈 겹침 = 전폭 기록).
+    /// [편집 훅 단일화 2026-08-05] 개별 명령 배선을 걷고 paginate() 단일 소비로 —
+    /// square_reflow_pending 을 recompose_section·mark_section_dirty 가 세운다.
+    /// 값싼 조기 탈출(어울림 host 도 좁힘 흔적도 없으면 즉시 반환)이 앞단에 있어
+    /// 평범한 문서의 타이핑에는 비용이 붙지 않는다. 반환: line_segs 를 바꿨는지.
+    pub(crate) fn reflow_paras_for_square_bands(&mut self, section_idx: usize) -> bool {
+        if self.suppress_square_reflow {
+            return false;
+        }
+        // [어울림 수렴 2026-07-30] 좁힘 결정은 "현재 렌더 위치" 기준인데, 좁힌 결과가
+        // 문단을 표 옆으로 되돌려 최종 배치가 결정 시점과 어긋난다(닭-달걀 — 특히 표를
+        // **위로** 끌어 앞 문단들과 겹치는 케이스에서 좁힘이 엉뚱한 줄에 붙고 정작 밴드
+        // 안 줄이 전폭으로 남았다, 실측). 고정점까지 최대 3회 반복 — 각 패스가 line_segs
+        // 를 실제로 바꿨을 때만 계속한다(대부분 1회, 겹침 케이스 2회 수렴).
+        let mut any = false;
+        for _ in 0..3 {
+            if !self.reflow_paras_for_square_bands_once(section_idx) {
+                break;
+            }
+            any = true;
+        }
+        any
+    }
+
+    fn reflow_paras_for_square_bands_once(&mut self, section_idx: usize) -> bool {
+        use crate::model::shape::{HorzRelTo, TextWrap, VertRelTo};
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+        let dpi = self.dpi;
+        let styles = self.styles.clone();
+
+        // 섹션에 "빈 host Square 가족(Para 기준)" float 개체(표·그림·도형)가 있는지 —
+        // 없으면(과거 좁힘 흔적도 없으면) 아무것도 안 한다. 흔적 원복을 위해 흔적
+        // 여부는 아래에서 함께 본다. host 는 (문단, 컨트롤) 쌍 — 다개체 페어링의 키.
+        let square_hosts: Vec<(usize, usize)> = {
+            let Some(section) = self.document.sections.get(section_idx) else {
+                return false;
+            };
+            let mut hosts = Vec::new();
+            for (pi, para) in section.paragraphs.iter().enumerate() {
+                let para_has_text = para.text.chars().any(|ch| !ch.is_whitespace());
+                for (ci, ctrl) in para.controls.iter().enumerate() {
+                    let Some(common) = square_band_float_common(ctrl) else {
+                        continue;
+                    };
+                    // [phase A 2026-08-05] 그림/도형 host 는 텍스트 허용 — host 문단
+                    // 자신도 아래 재줄바꿈 대상에 들어가 자기 밴드로 좁혀진다. typeset
+                    // 그림 앵커 arming 은 host line_segs 의 cs/sw 를 읽으므로 훅이
+                    // 재생성한 segs 와 자기정합.
+                    // [트랙3 2026-08-05] 표 host 는 "공백뿐 문단"에서 "앵커선행"(해당
+                    // 컨트롤 앞이 공백뿐)으로 완화 — layout 의 옆흐름 계약이 같은
+                    // 판정(text_is_blank_before_control)으로 확장돼 자기정합.
+                    // 앵커 앞에 본문 텍스트가 있는 표 host 는 여전히 대상 밖(v2).
+                    if para_has_text
+                        && matches!(ctrl, Control::Table(_))
+                        && !para.text_is_blank_before_control(ci)
+                    {
+                        continue;
+                    }
+                    // [2026-07-30] 가로·세로 기준은 무엇이든 무방 — 밴드 좌표는
+                    // 렌더 트리 bbox(x 는 단 로컬, y 는 절대 흐름)에서 뽑으므로
+                    // 기준 무관하게 정확하다. 가로를 종이(Paper)로 저장하는
+                    // 배치 UX 때문에 rewrap 이 통째로 죽은 실사고를 먼저 고쳤고,
+                    // 세로도 같은 계통임을 실측으로 확인했다: 표를 같은 위치
+                    // (y≈180)에 두어도 vertRelTo=Paper/Page 면 2조각이 0이 되어
+                    // 텍스트가 표 밑에 깔렸다(부록4 갭 #5).
+                    if !common.treat_as_char
+                        && matches!(
+                            common.text_wrap,
+                            TextWrap::Square | TextWrap::Tight | TextWrap::Through
+                        )
+                        && matches!(
+                            common.vert_rel_to,
+                            VertRelTo::Para | VertRelTo::Paper | VertRelTo::Page
+                        )
+                        && matches!(
+                            common.horz_rel_to,
+                            HorzRelTo::Column
+                                | HorzRelTo::Para
+                                | HorzRelTo::Paper
+                                | HorzRelTo::Page
+                        )
+                    {
+                        hosts.push((pi, ci));
+                    }
+                }
+            }
+            hosts
+        };
+
+        // [편집 훅 2026-08-04] 값싼 조기 탈출 — 어울림 host 도 없고 과거 좁힘 흔적도
+        // 없으면 렌더트리를 돌 이유가 없다. 이게 없으면 평범한 문서의 글자 입력마다
+        // 전 페이지 조판이 한 번씩 더 붙는다(편집 훅 배선의 전제).
+        // [개선 트랙2 선행 2026-08-05] 흔적 판정은 아래 had_narrow(:271)와 같은 어법 —
+        // 전폭 segment_width 는 흔적이 아니다. 저장 lineseg 문서는 전 줄에 sw 가
+        // 채워져 있어 종전 `sw > 0` 판정은 조기 탈출을 사실상 죽였다.
+        // 렌더트리 없이 전폭(HU) 계산 — 로드 보정(reflow_zero_height_paragraphs)과
+        // 동일 레시피. 조기 탈출과 아래 페이지 집합 산출이 공유한다.
+        let model_full_hu = {
+            let Some(sec) = self.document.sections.get(section_idx) else {
+                return false;
+            };
+            let column_def = Self::find_initial_column_def(&sec.paragraphs);
+            let layout = crate::renderer::page_layout::PageLayoutInfo::from_page_def(
+                &sec.section_def.page_def,
+                &column_def,
+                self.dpi,
+            );
+            let col_w = layout
+                .column_areas
+                .first()
+                .map(|a| a.width)
+                .unwrap_or(layout.body_area.width);
+            crate::renderer::px_to_hwpunit(col_w, self.dpi)
+        };
+        // 좁힘 흔적 문단 목록 — 조기 탈출(호스트도 흔적도 없으면 반환)과 전폭 원복
+        // 경로의 페이지 집합에 쓴다.
+        let trace_paras: Vec<usize> = self
+            .document
+            .sections
+            .get(section_idx)
+            .map(|sec| {
+                sec.paragraphs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| paragraph_has_narrow_trace(p, model_full_hu))
+                    .map(|(pi, _)| pi)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if square_hosts.is_empty() && trace_paras.is_empty() {
+            return false;
+        }
+
+        // [훅 비용 축소 2026-08-05] 페이지 전수 순회 대신 'host 문단 페이지 ∪ 좁힘 흔적
+        // 문단 페이지' 집합만 걷는다. 흔적 페이지를 포함해야 밴드 빈 페이지의 전폭 원복
+        // 경로가 산다. 밴드 옆 후보 문단들은 host 개체와 같은 페이지에 있으므로 host
+        // 페이지가 덮는다.
+        // ponytail: 밴드 존재 캐시 구조체는 두지 않는다 — 모델 스캔은 O(문단) 수준.
+        //           프로파일링에서 걸리면 구역별 host 캐시로 승급.
+        let visit_pages: std::collections::BTreeSet<usize> = {
+            let mut set = std::collections::BTreeSet::new();
+            for pi in square_hosts
+                .iter()
+                .map(|&(pi, _)| pi)
+                .chain(trace_paras.iter().copied())
+            {
+                if let Ok(pages) = self.find_pages_for_paragraph(section_idx, pi) {
+                    set.extend(pages.into_iter().map(|p| p as usize));
+                }
+            }
+            set
+        };
+        struct Probe {
+            // (page, host (pi,ci), band) — host 키를 함께 담아 flow 페어링이 어긋나지 않는다
+            bands: Vec<(usize, (usize, usize), crate::renderer::composer::ReflowBand)>,
+            para_tops: std::collections::HashMap<usize, (usize, f64)>, // pi -> (page, top)
+            col_x: f64,
+            col_w: f64,
+        }
+        let mut probe = Probe {
+            bands: Vec::new(),
+            para_tops: std::collections::HashMap::new(),
+            col_x: 0.0,
+            col_w: 0.0,
+        };
+        fn walk(n: &RenderNode, page: usize, square_hosts: &[(usize, usize)], probe: &mut Probe) {
+            // host (pi,ci) 매치 시 개체 bbox 를 밴드로 등록 — true 반환(하위 미탐색 지시).
+            fn push_host_band(
+                n: &RenderNode,
+                page: usize,
+                pi: Option<usize>,
+                ci: Option<usize>,
+                square_hosts: &[(usize, usize)],
+                probe: &mut Probe,
+            ) -> bool {
+                let (Some(pi), Some(ci)) = (pi, ci) else {
+                    return false;
+                };
+                if !square_hosts.contains(&(pi, ci)) {
+                    return false;
+                }
+                probe.bands.push((
+                    page,
+                    (pi, ci),
+                    crate::renderer::composer::ReflowBand {
+                        top_px: n.bbox.y,
+                        bottom_px: n.bbox.y + n.bbox.height,
+                        x0_px: n.bbox.x - probe.col_x,
+                        x1_px: n.bbox.x + n.bbox.width - probe.col_x,
+                        // 본문위치는 아래에서 host 개체 모델로 보강한다
+                        flow: crate::model::shape::TextFlow::LargestOnly,
+                    },
+                ));
+                true
+            }
+            match &n.node_type {
+                RenderNodeType::Column { .. } => {
+                    // 첫 컬럼 기하 채택(다단 문서의 옆 흐름은 v2)
+                    if probe.col_w == 0.0 {
+                        probe.col_x = n.bbox.x;
+                        probe.col_w = n.bbox.width;
+                    }
+                }
+                RenderNodeType::Table(t) => {
+                    push_host_band(n, page, t.para_index, t.control_index, square_hosts, probe);
+                    // 셀 내부 줄은 본문이 아니다
+                    return;
+                }
+                RenderNodeType::Image(v) => {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe) {
+                        return;
+                    }
+                }
+                RenderNodeType::Line(v) => {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe) {
+                        return;
+                    }
+                }
+                RenderNodeType::Rectangle(v) => {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe) {
+                        return;
+                    }
+                }
+                RenderNodeType::Ellipse(v) => {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe) {
+                        return;
+                    }
+                }
+                RenderNodeType::Path(v) => {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe) {
+                        return;
+                    }
+                }
+                RenderNodeType::Group(v) => {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe) {
+                        return;
+                    }
+                }
+                // [트랙4 ④] 비-TAC Square 수식 — 셀/글상자 안 수식은 Table/TextBox
+                // 조기 return 이 걸러 여기 오는 것은 본문 수식뿐이다.
+                RenderNodeType::Equation(v) => {
+                    if push_host_band(n, page, v.para_index, v.control_index, square_hosts, probe) {
+                        return;
+                    }
+                }
+                // 글상자 내부 TextLine 은 본문이 아니다 — para_tops 오염 차단.
+                RenderNodeType::TextBox => return,
+                // 머리말/꼬리말/각주 내부의 para_index 는 내부 문단 기준 — 본문과 충돌.
+                RenderNodeType::Header
+                | RenderNodeType::Footer
+                | RenderNodeType::FootnoteArea
+                | RenderNodeType::MasterPage => return,
+                RenderNodeType::TextLine(tl) => {
+                    if let (Some(pi), Some(0)) = (tl.para_index, tl.line_index) {
+                        probe.para_tops.entry(pi).or_insert((page, n.bbox.y));
+                    }
+                }
+                _ => {}
+            }
+            for c in &n.children {
+                walk(c, page, square_hosts, probe);
+            }
+        }
+        for pg in visit_pages {
+            if let Ok(tree) = self.build_page_render_tree(pg as u32) {
+                walk(&tree.root, pg, &square_hosts, &mut probe);
+            }
+        }
+        if probe.col_w <= 0.0 {
+            return false;
+        }
+        // 밴드 flow 보강: host (pi,ci) 키로 개체 모델의 본문위치를 읽는다 — index 병렬
+        // 페어링(flows[i])은 다개체·이종개체 혼재 시 어긋나므로 키 매칭으로 푼다.
+        {
+            let Some(section) = self.document.sections.get(section_idx) else {
+                return false;
+            };
+            let mut flows: std::collections::HashMap<
+                (usize, usize),
+                crate::model::shape::TextFlow,
+            > = std::collections::HashMap::new();
+            for &(pi, ci) in &square_hosts {
+                if let Some(common) = section
+                    .paragraphs
+                    .get(pi)
+                    .and_then(|p| p.controls.get(ci))
+                    .and_then(square_band_float_common)
+                {
+                    flows.insert((pi, ci), common.text_flow);
+                }
+            }
+            for (_, key, band) in probe.bands.iter_mut() {
+                if let Some(f) = flows.get(key) {
+                    band.flow = *f;
+                }
+            }
+        }
+
+        let Some(section) = self.document.sections.get_mut(section_idx) else {
+            return false;
+        };
+        let full_hu = (probe.col_w * 7200.0 / dpi) as i32;
+        let mut changed = false;
+        let para_count = section.paragraphs.len();
+        for pi in 0..para_count {
+            let para = &section.paragraphs[pi];
+            // float 표 보유 문단만 생산자 전용으로 스킵 — 그림/도형 float 보유 문단은
+            // [phase A] 자기 밴드로 재줄바꿈되는 대상이다(TAC 개체 보유 문단도 대상).
+            // [트랙3] 단, square_hosts 에 든 앵커선행 표 host 는 자기 밴드로 좁혀지는
+            // 대상 — reflow_line_segs_with_bands 가 비-TAC 표를 폭 0 으로 통과시키므로
+            // (line_breaking inline_control_dims 는 TAC 만 매치) 앵커는 자연 통과한다.
+            if para.text.is_empty()
+                || para.controls.iter().enumerate().any(|(ci, c)| {
+                    matches!(c, Control::Table(t) if !t.common.treat_as_char)
+                        && !square_hosts.contains(&(pi, ci))
+                })
+            {
+                continue;
+            }
+            let Some(&(page, ptop)) = probe.para_tops.get(&pi) else {
+                continue;
+            };
+            let bands: Vec<crate::renderer::composer::ReflowBand> = probe
+                .bands
+                .iter()
+                .filter(|(bpage, _, _)| *bpage == page)
+                .map(|(_, _, b)| *b)
+                .collect();
+            let pheight: f64 = para
+                .line_segs
+                .iter()
+                .map(|s| (s.line_height + s.line_spacing) as f64 / 7200.0 * dpi)
+                .sum();
+            // 아래쪽 여유 = 밴드 높이 + 2줄: 옆 흐름이 켜지면 밴드 "아래"에 있던 문단이
+            // 위로 올라와 밴드와 겹치게 된다(닭-달걀). 현재 렌더 위치 기준으로는 그
+            // 후보들이 밴드 아래 최대 밴드높이만큼에 있으므로 그 범위를 대상에 넣는다.
+            let overlaps = bands.iter().any(|b| {
+                let band_h = b.bottom_px - b.top_px;
+                ptop + pheight > b.top_px - 25.0 && ptop < b.bottom_px + band_h + 50.0
+            });
+            let had_narrow = paragraph_has_narrow_trace(para, full_hu);
+            if !overlaps && !had_narrow {
+                continue;
+            }
+            if std::env::var("RHWP_SIDE_DEBUG").is_ok() {
+                eprintln!(
+                    "[side-reflow] para {pi} ({:?}) ptop={ptop:.0} bands={:?}",
+                    para.text.chars().take(6).collect::<String>(),
+                    bands
+                        .iter()
+                        .map(|b| (
+                            b.top_px as i32,
+                            b.bottom_px as i32,
+                            b.x0_px as i32,
+                            b.x1_px as i32
+                        ))
+                        .collect::<Vec<_>>()
+                );
+            }
+            let para = &mut section.paragraphs[pi];
+            let para_style = styles.para_styles.get(para.para_shape_id as usize);
+            let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
+            let margin_right = para_style.map(|s| s.margin_right).unwrap_or(0.0);
+            let available_width = (probe.col_w - margin_left - margin_right).max(1.0);
+            let before: Vec<(u32, i32, i32)> = para
+                .line_segs
+                .iter()
+                .map(|s| (s.text_start, s.column_start, s.segment_width))
+                .collect();
+            let orig_segs = para.line_segs.clone();
+            crate::renderer::composer::reflow_line_segs_with_bands(
+                para,
+                available_width,
+                &styles,
+                dpi,
+                ptop,
+                &bands,
+            );
+            // [phase A 게이트 2026-08-05] 전폭→전폭 재줄바꿈은 무변경으로 되돌린다:
+            // 닭-달걀 윈도(밴드 아래 band_h+50px)로 들어왔지만 결과에 좁힘이 전혀 없는
+            // 문단은 시각 배치가 그대로인데 저장 lineseg 만 합성본으로 갈린다 —
+            // 저장 문서(파일 실측 줄바꿈)의 줄 경계를 보존한다(#2027 앵커 왕복 핀).
+            let now_narrow = paragraph_has_narrow_trace(para, full_hu);
+            if !had_narrow && !now_narrow {
+                para.line_segs = orig_segs;
+                continue;
+            }
+            let after: Vec<(u32, i32, i32)> = para
+                .line_segs
+                .iter()
+                .map(|s| (s.text_start, s.column_start, s.segment_width))
+                .collect();
+            if before != after {
+                changed = true;
+            }
+        }
+        if changed {
+            self.document.sections[section_idx].raw_stream = None;
+            self.recompose_section(section_idx);
+        }
+        changed
+    }
+
+    fn refresh_table_host_line_segs(&mut self, section_idx: usize, parent_para_idx: usize) {
+        self.reflow_paragraph(section_idx, parent_para_idx);
+    }
+
     pub fn insert_table_row_native(
         &mut self,
         section_idx: usize,
@@ -56,6 +502,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::TableRowInserted {
@@ -88,6 +535,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::TableColumnInserted {
@@ -119,6 +567,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::TableRowDeleted {
@@ -150,6 +599,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::TableColumnDeleted {
@@ -183,6 +633,73 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
+        self.paginate_if_needed();
+
+        self.event_log.push(DocumentEvent::CellsMerged {
+            section: section_idx,
+            para: parent_para_idx,
+            ctrl: control_idx,
+        });
+        Ok(super::super::helpers::json_ok_with(&format!(
+            "\"cellCount\":{}",
+            cell_count
+        )))
+    }
+
+    /// [경계선 재설계 2026-08-04] 한 칸 경계 어긋내기 — 격자 재구성(분할+병합) 정본.
+    /// docs 는 model `Table::offset_cell_boundary` 참조. edge_right: false=아래, true=오른쪽.
+    pub fn offset_cell_boundary_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: usize,
+        edge_right: bool,
+        delta: i32,
+    ) -> Result<String, HwpError> {
+        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+        table
+            .offset_cell_boundary(cell_idx, edge_right, delta)
+            .map_err(HwpError::RenderError)?;
+        table.dirty = true;
+        let cell_count = table.cells.len();
+
+        self.document.sections[section_idx].raw_stream = None;
+        self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
+        self.paginate_if_needed();
+
+        self.event_log.push(DocumentEvent::CellsMerged {
+            section: section_idx,
+            para: parent_para_idx,
+            ctrl: control_idx,
+        });
+        Ok(super::super::helpers::json_ok_with(&format!(
+            "\"cellCount\":{}",
+            cell_count
+        )))
+    }
+
+    /// [경계선 재설계 2026-08-04] 어긋난 경계 복원(치유) — 스냅 캐치 시 호출.
+    pub fn restore_cell_boundary_native(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        cell_idx: usize,
+        edge_right: bool,
+    ) -> Result<String, HwpError> {
+        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+        table
+            .restore_cell_boundary(cell_idx, edge_right)
+            .map_err(HwpError::RenderError)?;
+        table.dirty = true;
+        let cell_count = table.cells.len();
+
+        self.document.sections[section_idx].raw_stream = None;
+        self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::CellsMerged {
@@ -213,6 +730,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::CellSplit {
@@ -248,6 +766,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::CellSplit {
@@ -292,6 +811,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::CellSplit {
@@ -478,6 +998,29 @@ impl DocumentCore {
     /// 행/열 바꿈 복사 버퍼 보유 여부.
     pub fn has_table_transpose_clipboard_native(&self) -> bool {
         self.table_transpose_clipboard.is_some()
+    }
+
+    /// 한 구역의 표를 전부 열거한다 — `[{"para":N,"controlIdx":N,"rowCount":N,"colCount":N}]`
+    ///
+    /// 왜 필요한가: 형제 API(getTableDimensions·getTableCellBboxes)는 **표 위치를 이미 알 때**
+    /// 쓰는 것들이라, 문서 전체를 훑는 쪽(서식 규정 검사 등)은 문단×컨트롤을 무작정 찔러
+    /// 예외로 판별해야 했다 — 느리고, "표 아님"과 "범위 초과"를 구분하지 못한다.
+    pub fn get_tables_native(&self, section_idx: usize) -> Result<String, HwpError> {
+        let section = self.document.sections.get(section_idx).ok_or_else(|| {
+            HwpError::RenderError(format!("구역 인덱스 {} 범위 초과", section_idx))
+        })?;
+        let mut out: Vec<String> = Vec::new();
+        for (pi, para) in section.paragraphs.iter().enumerate() {
+            for (ci, ctrl) in para.controls.iter().enumerate() {
+                if let Control::Table(t) = ctrl {
+                    out.push(format!(
+                        "{{\"para\":{},\"controlIdx\":{},\"rowCount\":{},\"colCount\":{}}}",
+                        pi, ci, t.row_count, t.col_count
+                    ));
+                }
+            }
+        }
+        Ok(format!("[{}]", out.join(",")))
     }
 
     pub(crate) fn get_table_dimensions_native(
@@ -970,6 +1513,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         Ok("{\"ok\":true}".to_string())
@@ -1208,6 +1752,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         Ok(format!(
@@ -1389,6 +1934,24 @@ impl DocumentCore {
                     depth -= 1;
                     if depth == 0 {
                         let obj = &inner[start..=i];
+                        // [officex] 혼동 키 방어: 이 API 는 **델타**(widthDelta/heightDelta)와
+                        // 절대 렌더 힌트(renderWidth/renderHeight)만 받는다. 절대 폭을 뜻하는
+                        // "width"/"height" 를 보내면 종전엔 조용히 0 델타로 접혀 아무 일도 안
+                        // 일어나는데 {ok:true} 가 나갔다 — 호출자는 "리사이즈가 안 먹는다"로만
+                        // 보였다(capability-map §3 의 "no-op(불확정)" 정체). 조용한 무동작 대신
+                        // 규약을 말해주고 거부한다. 정상 호출자(studio 드래그·균등화, sc- 일지)는
+                        // 이 키를 쓰지 않으므로 영향 없다.
+                        for bad_key in ["width", "height"] {
+                            if obj.contains(&format!("\"{bad_key}\":")) {
+                                return Err(HwpError::InvalidField(format!(
+                                    "resizeTableCells 는 '{bad_key}' 키를 받지 않습니다 — \
+                                     상대 변화는 '{bad_key}Delta', 절대 렌더 크기는 \
+                                     'render{}{}' 를 쓰세요",
+                                    bad_key[..1].to_uppercase(),
+                                    &bad_key[1..],
+                                )));
+                            }
+                        }
                         // cellIdx 파싱
                         let cell_idx = Self::parse_json_i32(obj, "cellIdx").unwrap_or(-1);
                         if cell_idx < 0 {
@@ -1423,6 +1986,21 @@ impl DocumentCore {
 
         // 셀 업데이트 적용
         let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+        // 입력 방어: 범위 밖 cellIdx를 조용히 건너뛰지 않고 거부한다.
+        let cell_count = table.cells.len();
+        if let Some(bad) = updates.iter().find(|u| u.cell_idx >= cell_count) {
+            return Err(HwpError::InvalidField(format!(
+                "셀 인덱스 {} 범위 초과 (총 {}셀)",
+                bad.cell_idx, cell_count
+            )));
+        }
+        // [officex] 최소 크기 아래 델타는 **클램프**한다(거부하지 않는다).
+        // 한때 거부로 바꿨다가 되돌렸다(2026-07-26). 거부 근거였던 "셀 폭 합 != 표 폭 = 자기모순"이
+        // 오진이었기 때문이다 — 열 폭은 그 열 셀들의 **최댓값**으로 유도되는 것이 정의된 계약이라
+        // (get_column_widths / resolve_column_widths 둘 다 max), 한 셀만 깎이면 합이 안 맞는 게 정상이다.
+        // 게다가 거부는 실사용을 깼다: 운영일지가 셀 3(폭 3192)에 -3000을 주는 정상 경로에서
+        // 결과 192가 최소값 200에 8 모자란다는 이유로 배치 전체가 실패했다.
+        // 남은 진짜 위험은 산술 오버플로뿐이라 아래 루프에서 i64로 계산해 막는다.
         let original_width = table.common.width;
         let original_height = table.common.height;
         let original_row_height_sum: u32 = table.get_row_heights().iter().sum();
@@ -1436,8 +2014,10 @@ impl DocumentCore {
             if let Some(cell) = table.cells.get_mut(upd.cell_idx) {
                 if upd.width_delta != 0 {
                     let old_w = cell.width;
-                    let new_w =
-                        (cell.width as i32 + upd.width_delta).max(MIN_CELL_SIZE as i32) as u32;
+                    // [officex] i32 덧셈은 극단 양수에서 panic(debug)/랩어라운드(release) — i64로 올린다.
+                    let new_w = (cell.width as i64 + upd.width_delta as i64)
+                        .clamp(MIN_CELL_SIZE as i64, u32::MAX as i64)
+                        as u32;
                     cell.width = new_w;
                     let actual_delta = new_w as i64 - old_w as i64;
                     applied_width_delta += actual_delta;
@@ -1447,8 +2027,9 @@ impl DocumentCore {
                 }
                 if upd.height_delta != 0 {
                     let old_h = cell.height;
-                    let new_h =
-                        (cell.height as i32 + upd.height_delta).max(MIN_CELL_SIZE as i32) as u32;
+                    let new_h = (cell.height as i64 + upd.height_delta as i64)
+                        .clamp(MIN_CELL_SIZE as i64, u32::MAX as i64)
+                        as u32;
                     cell.height = new_h;
                     let actual_delta = new_h as i64 - old_h as i64;
                     applied_height_delta += actual_delta;
@@ -1498,19 +2079,20 @@ impl DocumentCore {
                 table.local_resize_cols.push(col);
             }
         }
-        for (row, (count, delta_sum)) in width_delta_by_row {
-            if count >= 2
-                && (delta_sum == 0 || force_local_resize)
-                && !table.local_resize_rows.contains(&row)
-            {
+        for (row, (count, _delta_sum)) in width_delta_by_row {
+            // ⚠ 종전 조건은 `delta_sum == 0 || force_local_resize` 였다 —
+            //   그런데 **정상 열 드래그가 바로 합 0**이다(표 폭을 지키려고 +d/−d 를
+            //   짝으로 보낸다). 그래서 모든 행이 '독립 폭'으로 등록됐고,
+            //   resolve_column_widths 가 그런 행을 열 폭 계산에서 통째로 빼는 바람에
+            //   열이 0에서 출발해 격자가 붕괴했다(2026-08-01 실측 187→24px).
+            //   독립 폭은 **호출자가 localResize 로 요청할 때만**이다(Shift 드래그).
+            if count >= 2 && force_local_resize && !table.local_resize_rows.contains(&row) {
                 table.local_resize_rows.push(row);
             }
         }
-        for (col, (count, delta_sum)) in height_delta_by_col {
-            if count >= 2
-                && (delta_sum == 0 || force_local_resize)
-                && !table.local_resize_cols.contains(&col)
-            {
+        for (col, (count, _delta_sum)) in height_delta_by_col {
+            // 세로도 같은 이유 — 행 경계선 드래그의 합 0 은 정상이다
+            if count >= 2 && force_local_resize && !table.local_resize_cols.contains(&col) {
                 table.local_resize_cols.push(col);
             }
         }
@@ -1586,6 +2168,7 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         Ok("{\"ok\":true}".to_string())
@@ -1638,11 +2221,94 @@ impl DocumentCore {
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         Ok(super::super::helpers::json_ok_with(&format!(
             "\"colCount\":{},\"tableWidth\":{}",
             col_count, total
+        )))
+    }
+
+    /// [table-width-fit/결함(page-section: 용지 줄이면 넘침 신호 없음)] 표가 현재 본문
+    /// 폭을 넘치는지 **읽기 전용**으로 검사한다. 좌표·모델을 전혀 건드리지 않는다.
+    ///
+    /// 왜: 표는 절대 열폭을 저장하고 용지·여백·단 변경에 자동으로 안 따라온다(HWP 원본
+    /// 동작·골든 회귀 방지 — 자동 refit은 하지 않는다). 그 결과 여백을 키우거나 용지를
+    /// 줄이면 표가 종이 밖으로 삐져나가는데 그동안 이를 알릴 신호가 어디에도 없었다.
+    /// 이 질의로 앱/스튜디오가 넘침을 감지해 사용자에게 경고하거나 `fit_table_to_page`
+    /// 를 호출할지 판단할 수 있다(감지와 보정을 분리 — 무단 축소를 강요하지 않음).
+    /// [officex] 표 넘침 감지·보정의 목표 폭(HWPUNIT).
+    ///
+    /// 기본은 1단 본문 폭 − 표 바깥 좌우 여백. **다단(column_count > 1)이고 표의 가로 기준이
+    /// 단/문단(Column|Para)일 때만 첫 단 폭**을 목표로 쓴다 — 종전엔 fit 계산이 다단을 몰라
+    /// 2단 문서에서 실제 단 폭 20693HU 대신 41954HU(1단 본문 폭)를 목표로 삼아, 두 단을
+    /// 가로지르는 표를 fits:true 로 거짓 보고했다(넘침 안전망이 조용히 꺼져 있었다).
+    /// get/fit 두 경로가 반드시 같은 값을 써야 fits:false → fit → fits:true 루프가 닫힌다.
+    fn table_fit_target_hu(
+        &self,
+        section_idx: usize,
+        outer_lr: u32,
+        horz_rel_to: crate::model::shape::HorzRelTo,
+    ) -> u32 {
+        use crate::model::shape::HorzRelTo;
+        let section = &self.document.sections[section_idx];
+        let page_def = &section.section_def.page_def;
+        let body = crate::model::page::PageAreas::from_page_def(page_def).body_area;
+        let body_w = (body.right - body.left).max(0) as u32;
+        let column_def = Self::find_initial_column_def(&section.paragraphs);
+        if column_def.column_count > 1 && matches!(horz_rel_to, HorzRelTo::Column | HorzRelTo::Para)
+        {
+            let layout = crate::renderer::page_layout::PageLayoutInfo::from_page_def(
+                page_def,
+                &column_def,
+                self.dpi,
+            );
+            if let Some(col) = layout.column_areas.first() {
+                let col_hu = crate::renderer::px_to_hwpunit(col.width, self.dpi).max(0) as u32;
+                return col_hu.saturating_sub(outer_lr);
+            }
+        }
+        body_w.saturating_sub(outer_lr)
+    }
+
+    pub fn get_table_fit_native(
+        &self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+    ) -> Result<String, HwpError> {
+        let table = self
+            .document
+            .sections
+            .get(section_idx)
+            .and_then(|s| s.paragraphs.get(parent_para_idx))
+            .and_then(|p| p.controls.get(control_idx))
+            .and_then(|c| match c {
+                Control::Table(t) => Some(t),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                HwpError::RenderError(format!(
+                    "지정된 컨트롤이 표가 아닙니다 (sec={}, ppi={}, ci={})",
+                    section_idx, parent_para_idx, control_idx
+                ))
+            })?;
+
+        let outer =
+            (table.outer_margin_left as i64 + table.outer_margin_right as i64).max(0) as u32;
+        let total: u32 = table.get_column_widths().iter().sum();
+        let horz_rel_to = table.common.horz_rel_to;
+
+        let target = self.table_fit_target_hu(section_idx, outer, horz_rel_to);
+
+        let overflow = total.saturating_sub(target);
+        Ok(super::super::helpers::json_ok_with(&format!(
+            "\"tableWidth\":{},\"pageContentWidth\":{},\"fits\":{},\"overflow\":{}",
+            total,
+            target,
+            overflow == 0,
+            overflow
         )))
     }
 
@@ -1660,18 +2326,19 @@ impl DocumentCore {
         const MIN_COL: u32 = 200; // 최소 열 폭 (HWPUNIT)
 
         // 현재 열 폭과 표 바깥 좌우 여백을 읽는다.
-        let (widths, outer_lr) = {
+        let (widths, outer_lr, horz_rel_to) = {
             let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
             let outer = table.outer_margin_left as i64 + table.outer_margin_right as i64;
-            (table.get_column_widths(), outer.max(0) as u32)
+            (
+                table.get_column_widths(),
+                outer.max(0) as u32,
+                table.common.horz_rel_to,
+            )
         };
         let total: u32 = widths.iter().sum();
 
-        // 본문(텍스트) 폭 = 페이지 본문 영역 폭 − 표 바깥 좌우 여백.
-        let page_def = &self.document.sections[section_idx].section_def.page_def;
-        let body = crate::model::page::PageAreas::from_page_def(page_def).body_area;
-        let body_w = (body.right - body.left).max(0) as u32;
-        let target = body_w.saturating_sub(outer_lr);
+        // 목표 폭 — 다단이면 단 폭(위 table_fit_target_hu 참조). get 경로와 반드시 동일해야 한다.
+        let target = self.table_fit_target_hu(section_idx, outer_lr, horz_rel_to);
 
         if total == 0 || target == 0 || total <= target {
             // 이미 페이지 폭 안에 들어옴 — 변경 없음.
@@ -1741,91 +2408,50 @@ impl DocumentCore {
     ) -> Result<String, HwpError> {
         let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
 
-        // CommonObjAttr 바이트 레이아웃: flags/v_offset/h_offset
-        while table.raw_ctrl_data.len() < common_obj_offsets::H_OFFSET.end {
-            table.raw_ctrl_data.push(0);
+        // 오프셋 정본은 물리(`common.*_offset`)다. raw_ctrl_data 는 HWP5 파스본의
+        // 원본 바이트 사본이므로 **있을 때만** 갱신한다 — 종전엔 `while push(0)` 로
+        // 12바이트 토막을 만들어, HWPX 로드 표를 한 번 드래그하면 저장 시 어댑터의
+        // CommonObjAttr 전체 합성이 건너뛰어져 배치가 통째로 유실됐다.
+        let has_raw_offsets = table.raw_ctrl_data.len() >= common_obj_offsets::H_OFFSET.end;
+
+        let is_treat_as_char = table.common.treat_as_char;
+
+        // [2026-07-30 사용자 결정] 글자처럼취급 표는 드래그 이동 불가 — 한컴에 없는 기능.
+        // 종전엔 v_offset 누적 + 문단 경계에서 paragraphs.swap 으로 "문단 사이 이동"을
+        // 흉내냈지만(구 다중 경계 루프), 한컴은 인라인 표를 드래그로 재배치하지 않는다.
+        // 오프셋도 건드리지 않는 완전 무동작으로 통일한다(위치를 바꾸려면 글자취급 해제).
+        if is_treat_as_char {
+            return Ok(format!(
+                "{{\"ok\":true,\"ppi\":{},\"ci\":{}}}",
+                parent_para_idx, control_idx
+            ));
         }
 
-        let is_treat_as_char = (table.attr & 0x01) != 0;
-
         // vertical_offset: CommonObjAttr::V_OFFSET (i32 LE)
-        let mut new_v = if delta_v != 0 {
-            let cur_v = i32::from_le_bytes(
-                table.raw_ctrl_data[common_obj_offsets::V_OFFSET]
-                    .try_into()
-                    .unwrap(),
-            );
-            let nv = cur_v.wrapping_add(delta_v);
-            table.raw_ctrl_data[common_obj_offsets::V_OFFSET].copy_from_slice(&nv.to_le_bytes());
+        if delta_v != 0 {
+            let nv = (table.common.vertical_offset as i32).wrapping_add(delta_v);
             table.common.vertical_offset = nv as u32;
-            nv
-        } else {
-            i32::from_le_bytes(
+            if has_raw_offsets {
                 table.raw_ctrl_data[common_obj_offsets::V_OFFSET]
-                    .try_into()
-                    .unwrap(),
-            )
-        };
+                    .copy_from_slice(&nv.to_le_bytes());
+            }
+        }
 
         // horizontal_offset: CommonObjAttr::H_OFFSET (i32 LE)
         if delta_h != 0 {
-            let cur_h = i32::from_le_bytes(
-                table.raw_ctrl_data[common_obj_offsets::H_OFFSET]
-                    .try_into()
-                    .unwrap(),
-            );
-            let new_h = cur_h.wrapping_add(delta_h);
-            table.raw_ctrl_data[common_obj_offsets::H_OFFSET].copy_from_slice(&new_h.to_le_bytes());
+            let new_h = (table.common.horizontal_offset as i32).wrapping_add(delta_h);
             table.common.horizontal_offset = new_h as u32;
-        }
-
-        // treat_as_char 표: 문단 경계를 넘으면 문단 이동 (다중 경계 루프)
-        let mut result_ppi = parent_para_idx;
-        if is_treat_as_char && delta_v != 0 {
-            let para_count = self.document.sections[section_idx].paragraphs.len();
-
-            // 아래로: v_offset >= line_height이면 반복적으로 다음 문단과 교환
-            while result_ppi + 1 < para_count {
-                let lh = self.document.sections[section_idx].paragraphs[result_ppi]
-                    .line_segs
-                    .first()
-                    .map(|ls| ls.line_height)
-                    .unwrap_or(1000);
-                if new_v < lh {
-                    break;
-                }
-                new_v -= lh;
-                self.document.sections[section_idx]
-                    .paragraphs
-                    .swap(result_ppi, result_ppi + 1);
-                result_ppi += 1;
-            }
-
-            // 위로: v_offset < 0이면 반복적으로 이전 문단과 교환
-            while new_v < 0 && result_ppi > 0 {
-                let prev_lh = self.document.sections[section_idx].paragraphs[result_ppi - 1]
-                    .line_segs
-                    .first()
-                    .map(|ls| ls.line_height)
-                    .unwrap_or(1000);
-                new_v += prev_lh;
-                self.document.sections[section_idx]
-                    .paragraphs
-                    .swap(result_ppi - 1, result_ppi);
-                result_ppi -= 1;
-            }
-
-            // 최종 v_offset 갱신
-            if result_ppi != parent_para_idx {
-                let tbl = self.get_table_mut(section_idx, result_ppi, control_idx)?;
-                tbl.raw_ctrl_data[common_obj_offsets::V_OFFSET]
-                    .copy_from_slice(&new_v.to_le_bytes());
-                tbl.common.vertical_offset = new_v as u32;
+            if has_raw_offsets {
+                table.raw_ctrl_data[common_obj_offsets::H_OFFSET]
+                    .copy_from_slice(&new_h.to_le_bytes());
             }
         }
+
+        let result_ppi = parent_para_idx;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         Ok(format!(
@@ -1869,41 +2495,16 @@ impl DocumentCore {
 
         let bf_json = self.build_border_fill_json_by_id(table.border_fill_id);
 
-        // raw_ctrl_data에서 표 크기 & 바깥 여백 추출 (parse_common_obj_attr 정합)
-        // [0..4]=flags, [4..8]=v_offset, [8..12]=h_offset, [12..16]=width, [16..20]=height
-        let rd = &table.raw_ctrl_data;
-        let table_width = if rd.len() >= common_obj_offsets::WIDTH.end {
-            u32::from_le_bytes(rd[common_obj_offsets::WIDTH].try_into().unwrap())
-        } else {
-            0
-        };
-        let table_height = if rd.len() >= common_obj_offsets::HEIGHT.end {
-            u32::from_le_bytes(rd[common_obj_offsets::HEIGHT].try_into().unwrap())
-        } else {
-            0
-        };
-        // outer_margin: [24..32] (parse_common_obj_attr 정합)
-        // [20..24]=z_order, [24..26]=left, [26..28]=right, [28..30]=top, [30..32]=bottom
-        let outer_left = if rd.len() >= common_obj_offsets::MARGIN_LEFT.end {
-            i16::from_le_bytes(rd[common_obj_offsets::MARGIN_LEFT].try_into().unwrap())
-        } else {
-            0
-        };
-        let outer_right = if rd.len() >= common_obj_offsets::MARGIN_RIGHT.end {
-            i16::from_le_bytes(rd[common_obj_offsets::MARGIN_RIGHT].try_into().unwrap())
-        } else {
-            0
-        };
-        let outer_top = if rd.len() >= common_obj_offsets::MARGIN_TOP.end {
-            i16::from_le_bytes(rd[common_obj_offsets::MARGIN_TOP].try_into().unwrap())
-        } else {
-            0
-        };
-        let outer_bottom = if rd.len() >= common_obj_offsets::MARGIN_BOTTOM.end {
-            i16::from_le_bytes(rd[common_obj_offsets::MARGIN_BOTTOM].try_into().unwrap())
-        } else {
-            0
-        };
+        // 물리(`table.common`)를 읽는다 — `raw_ctrl_data` 는 HWP5 파스본의 원본 바이트
+        // 사본이라 HWPX 로드 표에서는 비어 있고, 그 시절엔 표 크기·바깥 여백이 전부
+        // 0 으로 보고돼 스튜디오 속성 패널이 거짓을 표시했다. 파서는 같은 바이트에서
+        // common 을 채우므로 HWP5 문서에서는 동일 값이다. (법칙 2)
+        let table_width = table.common.width;
+        let table_height = table.common.height;
+        let outer_left = table.common.margin.left;
+        let outer_right = table.common.margin.right;
+        let outer_top = table.common.margin.top;
+        let outer_bottom = table.common.margin.bottom;
 
         // 캡션 정보
         let caption_json = if let Some(ref cap) = table.caption {
@@ -1928,8 +2529,11 @@ impl DocumentCore {
         let treat_as_char = table.common.treat_as_char;
         let text_wrap = match table.common.text_wrap {
             crate::model::shape::TextWrap::Square => "Square",
-            crate::model::shape::TextWrap::Tight => "Square",
-            crate::model::shape::TextWrap::Through => "Square",
+            // [officex] 종전엔 둘 다 "Square"로 접어 보고했다 — 모델이 Tight를 들고 있어도
+            // 호출자는 Square로 읽어 "지정이 안 먹었다"로 보였다. 파서는 이미 4/5를 읽고
+            // (parser/control/shape.rs:397-398) 직렬화기도 4/5를 쓰는데 여기만 접혔다.
+            crate::model::shape::TextWrap::Tight => "Tight",
+            crate::model::shape::TextWrap::Through => "Through",
             crate::model::shape::TextWrap::TopAndBottom => "TopAndBottom",
             crate::model::shape::TextWrap::BehindText => "BehindText",
             crate::model::shape::TextWrap::InFrontOfText => "InFrontOfText",
@@ -1959,32 +2563,18 @@ impl DocumentCore {
             crate::model::shape::HorzAlign::Inside => "Inside",
             crate::model::shape::HorzAlign::Outside => "Outside",
         };
-        // CommonObjAttr: flags/v_offset/h_offset
-        let vert_offset = if rd.len() >= common_obj_offsets::V_OFFSET.end {
-            i32::from_le_bytes(rd[common_obj_offsets::V_OFFSET].try_into().unwrap())
-        } else {
-            0
-        };
-        let horz_offset = if rd.len() >= common_obj_offsets::H_OFFSET.end {
-            i32::from_le_bytes(rd[common_obj_offsets::H_OFFSET].try_into().unwrap())
-        } else {
-            0
-        };
-        let restrict_in_page = (table.attr >> 13) & 0x01 != 0;
-        let allow_overlap = (table.attr >> 14) & 0x01 != 0;
-        // prevent_page_break: CommonObjAttr::PREVENT_PAGE_BREAK
-        let keep_with_anchor = if rd.len() >= common_obj_offsets::PREVENT_PAGE_BREAK.end {
-            i32::from_le_bytes(
-                rd[common_obj_offsets::PREVENT_PAGE_BREAK]
-                    .try_into()
-                    .unwrap(),
-            ) != 0
-        } else {
-            false
-        };
+        let vert_offset = table.common.vertical_offset as i32;
+        let horz_offset = table.common.horizontal_offset as i32;
+        // 물리를 읽는다 — `table.attr` 은 HWP5 저장 attr 의 미러이고 HWPX 로드
+        // 문서에서는 bit0 만 채워지므로(parser/hwpx/section.rs), 미러에서 bit13/14 를
+        // 읽으면 HWPX 문서의 restrictInPage·allowOverlap 이 항상 false 로 보고돼
+        // 스튜디오 속성 패널이 거짓을 표시한다. (법칙 2: 같은 값 두 경로 계산 금지)
+        let restrict_in_page = table.common.flow_with_text;
+        let allow_overlap = table.common.allow_overlap;
+        let keep_with_anchor = table.common.prevent_page_break != 0;
 
         Ok(format!(
-            "{{\"cellSpacing\":{},\"paddingLeft\":{},\"paddingRight\":{},\"paddingTop\":{},\"paddingBottom\":{},\"pageBreak\":{},\"repeatHeader\":{},{},\"tableWidth\":{},\"tableHeight\":{},\"outerLeft\":{},\"outerRight\":{},\"outerTop\":{},\"outerBottom\":{}{},\"treatAsChar\":{},\"textWrap\":\"{}\",\"vertRelTo\":\"{}\",\"vertAlign\":\"{}\",\"horzRelTo\":\"{}\",\"horzAlign\":\"{}\",\"vertOffset\":{},\"horzOffset\":{},\"restrictInPage\":{},\"allowOverlap\":{},\"keepWithAnchor\":{}}}",
+            "{{\"cellSpacing\":{},\"paddingLeft\":{},\"paddingRight\":{},\"paddingTop\":{},\"paddingBottom\":{},\"pageBreak\":{},\"repeatHeader\":{},{},\"tableWidth\":{},\"tableHeight\":{},\"outerLeft\":{},\"outerRight\":{},\"outerTop\":{},\"outerBottom\":{}{},\"treatAsChar\":{},\"textWrap\":\"{}\",\"vertRelTo\":\"{}\",\"vertAlign\":\"{}\",\"horzRelTo\":\"{}\",\"horzAlign\":\"{}\",\"vertOffset\":{},\"horzOffset\":{},\"textFlow\":\"{}\",\"restrictInPage\":{},\"allowOverlap\":{},\"keepWithAnchor\":{}}}",
             table.cell_spacing,
             table.padding.left, table.padding.right, table.padding.top, table.padding.bottom,
             pb, table.repeat_header,
@@ -1995,6 +2585,12 @@ impl DocumentCore {
             treat_as_char,
             text_wrap, vert_rel_to, vert_align, horz_rel_to, horz_align,
             vert_offset, horz_offset,
+            match table.common.text_flow {
+                crate::model::shape::TextFlow::BothSides => "BothSides",
+                crate::model::shape::TextFlow::LeftOnly => "LeftOnly",
+                crate::model::shape::TextFlow::RightOnly => "RightOnly",
+                crate::model::shape::TextFlow::LargestOnly => "LargestOnly",
+            },
             restrict_in_page, allow_overlap, keep_with_anchor,
         ))
     }
@@ -2008,6 +2604,22 @@ impl DocumentCore {
         json: &str,
     ) -> Result<String, HwpError> {
         use super::super::helpers::{json_bool, json_i16, json_i32, json_str, json_u32, json_u8};
+
+        // [개선 트랙1] 기준계/정렬 전환 rebase — mutation 전에 실측 프로브.
+        let dpi = self.dpi;
+        let rebase_plan = self
+            .document
+            .sections
+            .get(section_idx)
+            .and_then(|s| s.paragraphs.get(parent_para_idx))
+            .and_then(|p| p.controls.get(control_idx))
+            .and_then(|c| match c {
+                Control::Table(t) => Some(t.common.clone()),
+                _ => None,
+            })
+            .and_then(|old| {
+                self.plan_object_rebase(section_idx, parent_para_idx, control_idx, json, &old)
+            });
 
         let caption_style = self
             .document
@@ -2047,29 +2659,37 @@ impl DocumentCore {
         if let Some(v) = json_bool(json, "repeatHeader") {
             table.repeat_header = v;
         }
+        // [법칙 1·2] 아래 배치 속성은 **물리(`table.common.*`)만** 쓴다. `table.attr` 과
+        // `table.common.attr` 은 물리의 비트 표현이므로 이 함수 끝에서 한 번 재팩한다
+        // (종전에는 각 분기가 미러 `table.attr` 을 손으로 twiddle 하고
+        // `table.common.attr = table.attr` 로 역방향 덮어써서, 미러가 bit0 만 채워지는
+        // HWPX 로드 표의 정상 패킹을 파괴했다).
         if let Some(v) = json_bool(json, "treatAsChar") {
-            if v {
-                table.attr |= 0x01;
-            } else {
-                table.attr &= !0x01;
-            }
             table.common.treat_as_char = v;
         }
 
         // 위치 속성: attr 비트 필드
         if let Some(v) = json_str(json, "textWrap") {
+            // [officex] 내부 배치 코드 — parser/control/shape.rs:395-403 과 짝이다.
+            // ⚠ 명세(표 69)의 값 번호와 다르다: 여기 4/5 는 Tight/Through 왕복 보존 슬롯이다.
+            // 종전엔 "Tight"/"Through" 가 `_ => 0`(Square)으로 접혀, 명세가 정의한 합법 값을
+            // {"ok":true} 로 받고 조용히 다른 값으로 바꿔 썼다(자기 직렬화기는 4/5를 내보내는데
+            // 자기 세터가 거부하는 자기모순).
             let bits: u32 = match v.as_str() {
                 "Square" => 0,
                 "TopAndBottom" => 1,
                 "BehindText" => 2,
                 "InFrontOfText" => 3,
+                "Tight" => 4,
+                "Through" => 5,
                 _ => 0,
             };
-            table.attr = (table.attr & !(0x07 << 21)) | (bits << 21);
             table.common.text_wrap = match bits {
                 1 => crate::model::shape::TextWrap::TopAndBottom,
                 2 => crate::model::shape::TextWrap::BehindText,
                 3 => crate::model::shape::TextWrap::InFrontOfText,
+                4 => crate::model::shape::TextWrap::Tight,
+                5 => crate::model::shape::TextWrap::Through,
                 _ => crate::model::shape::TextWrap::Square,
             };
         }
@@ -2080,7 +2700,6 @@ impl DocumentCore {
                 "Para" => 2,
                 _ => 0,
             };
-            table.attr = (table.attr & !(0x03 << 3)) | (bits << 3);
             table.common.vert_rel_to = match bits {
                 1 => crate::model::shape::VertRelTo::Page,
                 2 => crate::model::shape::VertRelTo::Para,
@@ -2096,7 +2715,6 @@ impl DocumentCore {
                 "Outside" => 4,
                 _ => 0,
             };
-            table.attr = (table.attr & !(0x07 << 5)) | (bits << 5);
             table.common.vert_align = match bits {
                 1 => crate::model::shape::VertAlign::Center,
                 2 => crate::model::shape::VertAlign::Bottom,
@@ -2113,7 +2731,6 @@ impl DocumentCore {
                 "Para" => 3,
                 _ => 0,
             };
-            table.attr = (table.attr & !(0x03 << 8)) | (bits << 8);
             table.common.horz_rel_to = match bits {
                 1 => crate::model::shape::HorzRelTo::Page,
                 2 => crate::model::shape::HorzRelTo::Column,
@@ -2130,7 +2747,6 @@ impl DocumentCore {
                 "Outside" => 4,
                 _ => 0,
             };
-            table.attr = (table.attr & !(0x07 << 10)) | (bits << 10);
             table.common.horz_align = match bits {
                 1 => crate::model::shape::HorzAlign::Center,
                 2 => crate::model::shape::HorzAlign::Right,
@@ -2139,81 +2755,87 @@ impl DocumentCore {
                 _ => crate::model::shape::HorzAlign::Left,
             };
         }
-        table.common.attr = table.attr;
-        // 위치 오프셋: CommonObjAttr [0..4]=flags, [4..8]=v_offset, [8..12]=h_offset
-        while table.raw_ctrl_data.len() < common_obj_offsets::H_OFFSET.end {
-            table.raw_ctrl_data.push(0);
-        }
+        // 위치 오프셋: 물리를 쓰고, HWP5 원본 바이트가 있을 때만 그 사본을 갱신한다.
+        // (종전엔 `while push(0)` 로 12바이트 토막을 만들어 HWPX 표의 저장을 망쳤다 —
+        //  아래 FLAGS 재팩 주석 참고.)
+        let has_raw_offsets = table.raw_ctrl_data.len() >= common_obj_offsets::H_OFFSET.end;
         if let Some(v) = json_i32(json, "vertOffset") {
-            table.raw_ctrl_data[common_obj_offsets::V_OFFSET].copy_from_slice(&v.to_le_bytes());
             table.common.vertical_offset = v as u32;
+            if has_raw_offsets {
+                table.raw_ctrl_data[common_obj_offsets::V_OFFSET].copy_from_slice(&v.to_le_bytes());
+            }
         }
         if let Some(v) = json_i32(json, "horzOffset") {
-            table.raw_ctrl_data[common_obj_offsets::H_OFFSET].copy_from_slice(&v.to_le_bytes());
             table.common.horizontal_offset = v as u32;
+            if has_raw_offsets {
+                table.raw_ctrl_data[common_obj_offsets::H_OFFSET].copy_from_slice(&v.to_le_bytes());
+            }
         }
         // restrictInPage → attr bit 13
         if let Some(v) = json_bool(json, "restrictInPage") {
-            if v {
-                table.attr |= 1 << 13;
-                table.common.flow_with_text = true;
-            } else {
-                table.attr &= !(1 << 13);
-                table.common.flow_with_text = false;
-            }
-            table.common.attr = table.attr;
+            table.common.flow_with_text = v;
         }
         // allowOverlap → attr bit 14
         if let Some(v) = json_bool(json, "allowOverlap") {
-            if v {
-                table.attr |= 1 << 14;
-                table.common.allow_overlap = true;
-            } else {
-                table.attr &= !(1 << 14);
-                table.common.allow_overlap = false;
-            }
-            table.common.attr = table.attr;
+            table.common.allow_overlap = v;
         }
-        // attr 비트 변경을 raw_ctrl_data FLAGS(0..4)에도 반영. HWP5 직렬화기
-        // (serialize_table)는 raw_ctrl_data 가 있으면 그대로 기록하므로, 여기
-        // 반영하지 않으면 글자처럼 취급/배치/기준/정렬/쪽영역제한/겹침 변경이
-        // 저장 파일에서 통째로 유실되고 재로드 시 원복된다. V_OFFSET/H_OFFSET/
-        // PREVENT_PAGE_BREAK/MARGIN_* 패치와 동일 규칙 (미변경 시에는 파싱
-        // 원본 attr 를 그대로 다시 쓰는 항등 연산이라 무해).
-        table.raw_ctrl_data[common_obj_offsets::FLAGS].copy_from_slice(&table.attr.to_le_bytes());
+        // [officex/본문위치] 어울림일 때 글이 개체의 어느 쪽에 흐르는가(한컴 "본문 위치":
+        // 양쪽/왼쪽/오른쪽/큰 쪽 — attr bit 24-25). 파서·직렬화는 이미 왕복 보존하고
+        // 있었고 setter 와 조판 소비(side_pick_for_band)만 비어 있었다.
+        if let Some(v) = super::super::helpers::json_str(json, "textFlow") {
+            use crate::model::shape::TextFlow;
+            let flow = match v.as_str() {
+                "BothSides" => Some(TextFlow::BothSides),
+                "LeftOnly" => Some(TextFlow::LeftOnly),
+                "RightOnly" => Some(TextFlow::RightOnly),
+                "LargestOnly" => Some(TextFlow::LargestOnly),
+                _ => None,
+            };
+            if let Some(flow) = flow {
+                table.common.text_flow = flow;
+            }
+        }
         // keepWithAnchor → prevent_page_break
         // CommonObjAttr::PREVENT_PAGE_BREAK (parse_common_obj_attr 정합)
         if let Some(v) = json_bool(json, "keepWithAnchor") {
-            while table.raw_ctrl_data.len() < common_obj_offsets::PREVENT_PAGE_BREAK.end {
-                table.raw_ctrl_data.push(0);
-            }
             let val: i32 = if v { 1 } else { 0 };
-            table.raw_ctrl_data[common_obj_offsets::PREVENT_PAGE_BREAK]
-                .copy_from_slice(&val.to_le_bytes());
             table.common.prevent_page_break = val;
+            if table.raw_ctrl_data.len() >= common_obj_offsets::PREVENT_PAGE_BREAK.end {
+                table.raw_ctrl_data[common_obj_offsets::PREVENT_PAGE_BREAK]
+                    .copy_from_slice(&val.to_le_bytes());
+            }
         }
 
-        // 바깥 여백 (CommonObjAttr margin ranges, parse_common_obj_attr 정합)
-        if table.raw_ctrl_data.len() >= common_obj_offsets::MARGIN_BOTTOM.end {
-            if let Some(v) = json_i16(json, "outerLeft") {
+        // 바깥 여백 (CommonObjAttr margin ranges, parse_common_obj_attr 정합).
+        // 물리를 먼저 쓴다 — 종전엔 바이트 길이 가드가 물리 대입까지 감싸서 HWPX
+        // 로드 표(raw_ctrl_data 비어 있음)의 바깥 여백 지정이 조용히 무시됐다.
+        let has_raw_margins = table.raw_ctrl_data.len() >= common_obj_offsets::MARGIN_BOTTOM.end;
+        if let Some(v) = json_i16(json, "outerLeft") {
+            table.common.margin.left = v;
+            if has_raw_margins {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_LEFT]
                     .copy_from_slice(&v.to_le_bytes());
-                table.common.margin.left = v;
             }
-            if let Some(v) = json_i16(json, "outerRight") {
+        }
+        if let Some(v) = json_i16(json, "outerRight") {
+            table.common.margin.right = v;
+            if has_raw_margins {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_RIGHT]
                     .copy_from_slice(&v.to_le_bytes());
-                table.common.margin.right = v;
             }
-            if let Some(v) = json_i16(json, "outerTop") {
+        }
+        if let Some(v) = json_i16(json, "outerTop") {
+            table.common.margin.top = v;
+            if has_raw_margins {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_TOP]
                     .copy_from_slice(&v.to_le_bytes());
-                table.common.margin.top = v;
             }
-            if let Some(v) = json_i16(json, "outerBottom") {
+        }
+        if let Some(v) = json_i16(json, "outerBottom") {
+            table.common.margin.bottom = v;
+            if has_raw_margins {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_BOTTOM]
                     .copy_from_slice(&v.to_le_bytes());
-                table.common.margin.bottom = v;
             }
         }
 
@@ -2262,15 +2884,13 @@ impl DocumentCore {
                 cap.spacing = 850; // 약 3mm
                 table.caption = Some(cap);
                 caption_created = true;
-                // attr bit 29: 캡션 존재 플래그 (한컴 호환성)
-                table.attr |= 1 << 29;
-                table.common.attr = table.attr;
-                table.raw_table_record_attr = table.attr;
+                // attr bit 29: 캡션 존재 플래그 (한컴 호환성) — CommonObjAttr FLAGS 비트다.
+                // 종전엔 이 값을 `raw_table_record_attr`(HWPTAG_TABLE 레코드 attr —
+                // 쪽나눔/제목반복/여백지정 비트) 에도 대입해 표 레코드를 오염시켰다.
+                table.common.attr |= 1 << 29;
             } else if !has_cap && table.caption.is_some() {
                 table.caption = None;
-                table.attr &= !(1 << 29);
-                table.common.attr = table.attr;
-                table.raw_table_record_attr = table.attr;
+                table.common.attr &= !(1 << 29);
                 caption_changed = true;
             }
         }
@@ -2304,6 +2924,22 @@ impl DocumentCore {
         }
         if caption_changed || caption_created {
             table.dirty = true;
+        }
+
+        // ── 여기서 한 번만 비트를 재팩한다 (법칙 2: 같은 값 두 경로 금지) ──
+        // `common.attr` 은 물리의 비트 표현이므로 물리에서 패킹하고 미지 비트는 보존한다.
+        // `table.attr` 은 HWP5 저장·레거시 소비자용 **미러**이므로 물리에서 파생시킨다
+        // (parser/control.rs:161 · hwpx_to_hwp.rs:1401 과 같은 방향).
+        Self::sync_common_obj_attr_known_bits(&mut table.common);
+        table.attr = table.common.attr;
+        // HWP5 파스본은 raw_ctrl_data(CommonObjAttr 원본 바이트)를 직렬화기가 그대로
+        // 기록하므로 FLAGS 사본도 갱신한다. **비어 있으면 손대지 않는다**: 토막을 심어두면
+        // HWPX→HWP 어댑터의 전체 합성(`adapt_table_with_context` 의 `raw_ctrl_data.is_empty()`
+        // 조건)이 건너뛰어지고 직렬화기가 그 토막을 ctrl_data 로 기록해 배치 물리는 물론
+        // width/height/z_order/margin/instance_id/description 까지 통째로 유실된다.
+        if table.raw_ctrl_data.len() >= common_obj_offsets::FLAGS.end {
+            table.raw_ctrl_data[common_obj_offsets::FLAGS]
+                .copy_from_slice(&table.common.attr.to_le_bytes());
         }
 
         // BorderFill 변경 — 표 테두리/배경/대각선 변경 시 모든 셀에도 동일 적용
@@ -2357,8 +2993,34 @@ impl DocumentCore {
             }
         }
 
+        // [개선 트랙1] 기준계/정렬 전환 rebase 적용 — 기존 오프셋 경로와 동일하게
+        // common + raw_ctrl_data V_OFFSET/H_OFFSET 이중 기록해야 저장 유실이 없다
+        // (직렬화기는 raw_ctrl_data 가 있으면 그대로 기록).
+        if let Some(plan) = rebase_plan {
+            let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+            let (h, v) = Self::rebased_offsets(&plan, &table.common, dpi);
+            // raw_ctrl_data 가 비어 있으면(HWPX 파스·편집 신설) 만들지 않는다 —
+            // 토막은 어댑터의 전체 합성을 건너뛰게 해 저장을 망친다(위 FLAGS 주석).
+            let has_raw_offsets = table.raw_ctrl_data.len() >= common_obj_offsets::H_OFFSET.end;
+            if let Some(v_off) = v {
+                table.common.vertical_offset = v_off as u32;
+                if has_raw_offsets {
+                    table.raw_ctrl_data[common_obj_offsets::V_OFFSET]
+                        .copy_from_slice(&v_off.to_le_bytes());
+                }
+            }
+            if let Some(h_off) = h {
+                table.common.horizontal_offset = h_off as u32;
+                if has_raw_offsets {
+                    table.raw_ctrl_data[common_obj_offsets::H_OFFSET]
+                        .copy_from_slice(&h_off.to_le_bytes());
+                }
+            }
+        }
+
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         if caption_created {
@@ -2573,68 +3235,9 @@ impl DocumentCore {
                 ));
             }
 
-            // 컨트롤이 차지하는 갭의 시작 위치를 찾아 char_offsets 조정
-            // serialize_para_text와 동일한 로직으로 control_idx번째 컨트롤의 위치를 찾는다
-            let text_chars: Vec<char> = para.text.chars().collect();
-            let mut ci = 0usize;
-            let mut prev_end: u32 = 0;
-            let mut gap_start: Option<u32> = None;
-            'outer: for i in 0..text_chars.len() {
-                let offset = if i < para.char_offsets.len() {
-                    para.char_offsets[i]
-                } else {
-                    prev_end
-                };
-                while prev_end + 8 <= offset && ci < para.controls.len() {
-                    if ci == control_idx {
-                        gap_start = Some(prev_end);
-                        break 'outer;
-                    }
-                    ci += 1;
-                    prev_end += 8;
-                }
-                // 문자 크기 산정
-                let char_size: u32 = if text_chars[i] == '\t' {
-                    8
-                } else if text_chars[i].len_utf16() == 2 {
-                    2
-                } else {
-                    1
-                };
-                prev_end = offset + char_size;
-            }
-            // 텍스트 뒤에 배치된 컨트롤 (남은 컨트롤)
-            if gap_start.is_none() {
-                while ci < para.controls.len() {
-                    if ci == control_idx {
-                        gap_start = Some(prev_end);
-                        break;
-                    }
-                    ci += 1;
-                    prev_end += 8;
-                }
-            }
-
-            // char_offsets 조정: 컨트롤 이후의 모든 offset을 8 감소
-            if let Some(gs) = gap_start {
-                let threshold = gs + 8;
-                for offset in para.char_offsets.iter_mut() {
-                    if *offset >= threshold {
-                        *offset -= 8;
-                    }
-                }
-            }
-
-            // 컨트롤 및 대응하는 ctrl_data_record 제거
-            para.controls.remove(control_idx);
-            if control_idx < para.ctrl_data_records.len() {
-                para.ctrl_data_records.remove(control_idx);
-            }
-
-            // char_count 갱신 (확장 컨트롤 = 8 code unit)
-            if para.char_count >= 8 {
-                para.char_count -= 8;
-            }
+            // 갭 회수·컨트롤 제거는 Paragraph::remove_inline_control_at 이 정본
+            // (범위 삭제 경로와 공유 — 2026-07-30 추출).
+            para.remove_inline_control_at(control_idx);
 
             section.raw_stream = None;
         }
@@ -2654,6 +3257,7 @@ impl DocumentCore {
             self.document.is_hwp3_variant,
         );
         self.recompose_section(section_idx);
+        self.refresh_table_host_line_segs(section_idx, parent_para_idx);
         self.paginate_if_needed();
 
         self.event_log.push(DocumentEvent::TableColumnDeleted {
@@ -2701,6 +3305,17 @@ impl DocumentCore {
 
         let row_count = table.row_count as usize;
         let col_count = table.col_count as usize;
+
+        // [table-structure/수식] 기록 대상(target_row,target_col)이 표 범위 밖이면 거부한다.
+        // 기존에는 write=true여도 아래 기록 블록의 `get_mut`가 조용히 None이 되어, 아무 데도
+        // 기록되지 않았는데 ok:true를 돌려줬다(예: 2×2 표에 (9,9) 대상). 존재하지 않는 셀에
+        // 결과를 "쓴다"는 요청은 조용히 삼키지 말고 명시적으로 거부해야 호출부가 안다.
+        if write_result && (target_row >= row_count || target_col >= col_count) {
+            return Err(HwpError::RenderError(format!(
+                "기록 대상 셀 ({},{})이 표 범위를 벗어납니다 (총 {}행 {}열)",
+                target_row, target_col, row_count, col_count
+            )));
+        }
 
         // 셀 값 조회 함수: 셀의 첫 문단 텍스트를 숫자로 파싱
         let cells = &table.cells;
@@ -2787,6 +3402,147 @@ fn json_escape(s: &str) -> String {
 mod tests {
     use crate::model::shape::common_obj_offsets;
     use crate::parser::control::parse_common_obj_attr;
+    use crate::DocumentCore;
+
+    /// [개선 트랙2 선행] 저장 lineseg 의 전폭 segment_width 는 좁힘 흔적이 아니다 —
+    /// 이 판정이 무너지면 어울림 없는 문서의 타이핑마다 전 페이지 조판이 붙는다.
+    #[test]
+    fn full_width_stored_segs_do_not_trip_narrow_trace() {
+        use crate::model::paragraph::{LineSeg, Paragraph};
+        let full_hu = 42_520; // A4 본문 폭 상당
+        let mut para = Paragraph::default();
+        para.line_segs = vec![
+            LineSeg {
+                segment_width: full_hu,
+                ..Default::default()
+            },
+            LineSeg {
+                segment_width: full_hu - 300,
+                ..Default::default()
+            }, // 오차 수준
+        ];
+        assert!(
+            !super::paragraph_has_narrow_trace(&para, full_hu),
+            "전폭은 흔적 아님"
+        );
+
+        para.line_segs[1].segment_width = full_hu - 2_000; // 실제 좁힘
+        assert!(
+            super::paragraph_has_narrow_trace(&para, full_hu),
+            "좁힘은 흔적"
+        );
+
+        para.line_segs[1].segment_width = full_hu;
+        para.line_segs[1].column_start = 5_000; // 우측 조각
+        assert!(
+            super::paragraph_has_narrow_trace(&para, full_hu),
+            "column_start 는 흔적"
+        );
+    }
+
+    /// [officex] 열 경계선 드래그가 **격자를 무너뜨리면 안 된다**.
+    ///
+    /// 증상(2026-08-01 사용자 신고 "표 경계선 이동이 또 이상해졌어"): 3×3 표에서 첫
+    /// 세로선을 오른쪽으로 끌면 열이 187·187·187px → **24·24·512px** 로 붕괴했다.
+    ///
+    /// 원인: 정상적인 열 드래그는 각 행에 (+d, −d) 두 갱신을 보낸다 — 표 폭을
+    /// 유지하려면 합이 **0이어야** 한다. 그런데 `count>=2 && delta_sum==0` 을
+    /// "이 행은 독립 폭(local_resize)" 신호로 읽어 모든 행을 등록했고,
+    /// resolve_column_widths 는 local_resize 행을 **열 폭 계산에서 통째로 제외**한다.
+    /// 결국 모든 행이 빠져 열 폭이 0에서 출발했다.
+    ///
+    /// 독립 폭은 **호출자가 localResize 로 요청할 때만**이다(Shift 드래그).
+    #[test]
+    fn column_drag_keeps_grid_and_does_not_mark_rows_local() {
+        let mut core = DocumentCore::new_empty();
+        let mut section = crate::model::document::Section::default();
+        section.section_def.page_def = crate::model::page::PageDef::a4_default();
+        section
+            .paragraphs
+            .push(crate::model::paragraph::Paragraph::new_empty());
+        let mut document = crate::model::document::Document::default();
+        document.sections.push(section);
+        core.set_document(document);
+        core.create_blank_document_native().expect("blank");
+        let created = core.create_table_native(0, 0, 0, 3, 3).expect("table");
+        let v: serde_json::Value = serde_json::from_str(&created).expect("json");
+        let pi = v["paraIdx"].as_u64().expect("paraIdx") as usize;
+        let ci = v["controlIdx"].as_u64().expect("controlIdx") as usize;
+
+        let before = {
+            let t = core.get_table_mut(0, pi, ci).expect("table");
+            t.get_column_widths()
+        };
+        assert_eq!(before.len(), 3, "3열이어야 한다");
+
+        // 첫 세로선을 오른쪽으로: 각 행마다 (col0 +d, col1 −d) — 합 0 이 정상이다
+        let d = 3060;
+        let updates = format!(
+            "[{{\"cellIdx\":0,\"widthDelta\":{d}}},{{\"cellIdx\":1,\"widthDelta\":{md}}},\
+             {{\"cellIdx\":3,\"widthDelta\":{d}}},{{\"cellIdx\":4,\"widthDelta\":{md}}},\
+             {{\"cellIdx\":6,\"widthDelta\":{d}}},{{\"cellIdx\":7,\"widthDelta\":{md}}}]",
+            d = d,
+            md = -d,
+        );
+        core.resize_table_cells_native(0, pi, ci, &updates)
+            .expect("resize");
+
+        let t = core.get_table_mut(0, pi, ci).expect("table");
+        assert!(
+            t.local_resize_rows.is_empty(),
+            "정상 열 드래그는 행을 독립 폭으로 만들지 않는다: {:?}",
+            t.local_resize_rows
+        );
+        let after = t.get_column_widths();
+        assert_eq!(
+            (after[0] as i64, after[1] as i64, after[2] as i64),
+            (
+                before[0] as i64 + d as i64,
+                before[1] as i64 - d as i64,
+                before[2] as i64
+            ),
+            "열 폭이 끈 만큼만 옮겨져야 한다 (전 {before:?} → 후 {after:?})"
+        );
+    }
+
+    /// [officex] resizeTableCells 규약 핀 — 절대 'width'/'height' 키는 조용히 무시되지
+    /// 않고 거부된다. 종전엔 0 델타로 접혀 {ok:true} 만 나가서 "리사이즈가 안 먹는다"로
+    /// 보였다(capability-map §3 "no-op(불확정)"의 정체 = 호출자 규약 착오).
+    #[test]
+    fn resize_table_cells_rejects_absolute_width_height_keys() {
+        let mut core = DocumentCore::new_empty();
+        let mut section = crate::model::document::Section::default();
+        section.section_def.page_def = crate::model::page::PageDef::a4_default();
+        section
+            .paragraphs
+            .push(crate::model::paragraph::Paragraph::new_empty());
+        let mut document = crate::model::document::Document::default();
+        document.sections.push(section);
+        core.set_document(document);
+        core.create_blank_document_native().expect("blank");
+        let created = core.create_table_native(0, 0, 0, 2, 3).expect("table");
+        let v: serde_json::Value = serde_json::from_str(&created).expect("json");
+        let pi = v["paraIdx"].as_u64().expect("paraIdx") as usize;
+        let ci = v["controlIdx"].as_u64().expect("controlIdx") as usize;
+
+        for bad in [
+            r#"[{"cellIdx":0,"width":5000}]"#,
+            r#"[{"cellIdx":0,"height":5000}]"#,
+        ] {
+            let err = core
+                .resize_table_cells_native(0, pi, ci, bad)
+                .expect_err("절대 키는 거부되어야 한다");
+            let msg = format!("{err:?}");
+            assert!(
+                msg.contains("Delta") && msg.contains("render"),
+                "거부 메시지가 규약을 알려주지 않는다: {msg}"
+            );
+        }
+
+        // 정상 규약(델타)은 그대로 동작한다 — 과잉 거부 회귀 차단.
+        core.resize_table_cells_native(0, pi, ci, r#"[{"cellIdx":0,"widthDelta":-2000}]"#)
+            .expect("델타 경로는 통과해야 한다");
+    }
 
     #[test]
     fn raw_ctrl_data_offsets_match_parser() {

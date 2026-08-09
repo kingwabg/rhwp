@@ -2,7 +2,8 @@
 
 use super::super::helpers::{
     border_line_type_to_u8_val, build_tab_def_from_json, color_ref_to_css, json_has_border_keys,
-    json_has_tab_keys, parse_char_shape_mods, parse_json_i16_array, parse_para_shape_mods,
+    json_has_tab_keys, json_str, parse_char_shape_mods, parse_json_i16_array,
+    parse_para_shape_mods,
 };
 use crate::document_core::DocumentCore;
 use crate::error::HwpError;
@@ -43,6 +44,46 @@ fn body_available_width_for_para_shape(
     let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
     let margin_right = para_style.map(|s| s.margin_right).unwrap_or(0.0);
     (col_width - margin_left - margin_right).max(1.0)
+}
+
+/// 문단의 flow 끝 좌표 (last seg 의 vpos + line_height + line_spacing, HWPUNIT).
+fn paragraph_flow_end_vpos(para: &Paragraph) -> Option<i32> {
+    para.line_segs
+        .last()
+        .map(|seg| seg.vertical_pos + seg.line_height + seg.line_spacing)
+}
+
+/// 서식 변경(줄간격·자간·글자크기 등)으로 문단 flow 높이가 변한 뒤, 후속 문단들의
+/// 저장 vertical_pos 를 델타만큼 이동한다 — 텍스트 편집 경로의 vpos 유지 관례
+/// (text_editing.rs `seg.vertical_pos += delta`)와 동일. 이게 빠지면 typeset 이
+/// stale 절대 vpos 로 페이지를 나눠 줄간격/자간 변경이 페이지 수에 반영되지 않는다
+/// (2026-08-02 root-cause: 짧은 문단 다수 문서에서 줄간격 100↔200% 모두 동일 쪽수).
+///
+/// 저장 vpos 되감김(다음 first < 이전 first — 쪽나눔/단 인코딩) 경계 이후는 페이지
+/// 신호이므로 건드리지 않는다 (recalculate_cell_paragraph_vpos 의 정지 규칙과 동일).
+fn shift_following_paragraph_vpos(paragraphs: &mut [Paragraph], para_idx: usize, delta: i32) {
+    if delta == 0 {
+        return;
+    }
+    // 되감김 경계는 이동 전 원좌표로 탐지한다.
+    let stop = paragraphs
+        .windows(2)
+        .enumerate()
+        .skip(para_idx)
+        .find_map(|(idx, pair)| {
+            let previous = pair[0].line_segs.first()?.vertical_pos;
+            let current_seg = pair[1].line_segs.first()?;
+            let is_synthetic = current_seg.tag
+                & crate::model::paragraph::LineSeg::TAG_IMPLEMENTATION_PROPERTY
+                != 0;
+            (current_seg.vertical_pos < previous && !is_synthetic).then_some(idx + 1)
+        })
+        .unwrap_or(paragraphs.len());
+    for para in paragraphs[para_idx + 1..stop].iter_mut() {
+        for seg in para.line_segs.iter_mut() {
+            seg.vertical_pos += delta;
+        }
+    }
 }
 
 impl DocumentCore {
@@ -776,23 +817,28 @@ impl DocumentCore {
                 };
                 // 원본 ParaShape에서 attr 비트 추출
                 let (a1, a2) = raw_ps.map(|r| (r.attr1, r.attr2)).unwrap_or((0, 0));
-                // 바이너리: attr1, HWPX: attr2 — OR 조합으로 양쪽 지원
-                let widow_orphan = ((a1 >> 16) & 1 != 0) || ((a2 >> 5) & 1 != 0);
-                let keep_with_next = ((a1 >> 17) & 1 != 0) || ((a2 >> 6) & 1 != 0);
-                let keep_lines = ((a1 >> 18) & 1 != 0) || ((a2 >> 7) & 1 != 0);
-                let page_break_before = ((a1 >> 19) & 1 != 0) || ((a2 >> 8) & 1 != 0);
+                // 문단 보호 4종 정본 = attr1 bit16-19 (HWP5 표 44 — HWPX 파서도 동일 비트로
+                // 통일, 2026-07-30). attr2 OR 폴백은 표 45 autoSpaceKrNum(bit5)과 충돌해 제거.
+                let widow_orphan = (a1 >> 16) & 1 != 0;
+                let keep_with_next = (a1 >> 17) & 1 != 0;
+                let keep_lines = (a1 >> 18) & 1 != 0;
+                let page_break_before = (a1 >> 19) & 1 != 0;
                 let font_line_height = (a1 >> 22) & 1 != 0;
                 let single_line = (a2 & 0x03) != 0;
-                let auto_space_kr_en = ((a2 >> 4) & 1 != 0) || ((a1 >> 20) & 1 != 0);
-                let auto_space_kr_num = ((a2 >> 5) & 1 != 0) || ((a1 >> 21) & 1 != 0);
-                // verticalAlign: attr1 bits 20-21 (autoSpacing과 충돌 시 0)
-                let vertical_align = if !auto_space_kr_en && !auto_space_kr_num {
-                    (a1 >> 20) & 0x03
-                } else {
-                    0
-                };
+                // [서식 패리티 2026-07-30] autoSpacing 의 정본은 attr2 bit4/5 다.
+                // 옛 코드가 attr1 bit20/21(=verticalAlign)을 여기에 OR 하는 폴백을 둬서,
+                // verticalAlign 을 세우면 autoSpacing 이 참으로 읽히고 그 결과 아래 분기가
+                // verticalAlign 을 0 으로 지웠다(적용-판독 구조적 파손). 서로 다른 비트이므로
+                // 각자의 정본만 읽는다 — 적용 측(model/style.rs)도 이미 이 분리를 따른다.
+                let auto_space_kr_en = (a2 >> 4) & 1 != 0;
+                let auto_space_kr_num = (a2 >> 5) & 1 != 0;
+                // verticalAlign: attr1 bits 20-21
+                let vertical_align = (a1 >> 20) & 0x03;
                 let english_break_unit = (a1 >> 5) & 0x03;
                 let korean_break_unit = (a1 >> 7) & 0x01;
+                // 줄 격자·공백 최소값 (HWP5 표 44: bit8 · bit9-15)
+                let snap_to_grid = (a1 >> 8) & 1 != 0;
+                let condense = (a1 >> 9) & 0x7f;
                 let border_connect = (a1 >> 28) & 1 != 0;
                 let border_ignore_margin = (a1 >> 29) & 1 != 0;
                 format!(
@@ -805,6 +851,7 @@ impl DocumentCore {
                         "\"fontLineHeight\":{},\"singleLine\":{},",
                         "\"autoSpaceKrEn\":{},\"autoSpaceKrNum\":{},\"verticalAlign\":{},",
                         "\"englishBreakUnit\":{},\"koreanBreakUnit\":{},",
+                        "\"snapToGrid\":{},\"condense\":{},",
                         "\"tabAutoLeft\":{},\"tabAutoRight\":{},\"tabStops\":[{}],\"defaultTabSpacing\":{},",
                         "{},\"borderSpacing\":[{},{},{},{}],",
                         "\"borderConnect\":{},\"borderIgnoreMargin\":{}}}"
@@ -822,6 +869,7 @@ impl DocumentCore {
                     font_line_height, single_line,
                     auto_space_kr_en, auto_space_kr_num, vertical_align,
                     english_break_unit, korean_break_unit,
+                    snap_to_grid, condense,
                     tab_auto_left, tab_auto_right, tab_stops_json, default_tab_spacing,
                     border_fill_json,
                     border_spacing[0], border_spacing[1], border_spacing[2], border_spacing[3],
@@ -839,6 +887,7 @@ impl DocumentCore {
                         "\"fontLineHeight\":false,\"singleLine\":false,",
                         "\"autoSpaceKrEn\":false,\"autoSpaceKrNum\":false,\"verticalAlign\":0,",
                         "\"englishBreakUnit\":0,\"koreanBreakUnit\":0,",
+                        "\"snapToGrid\":false,\"condense\":0,",
                         "\"tabAutoLeft\":false,\"tabAutoRight\":false,\"tabStops\":[],\"defaultTabSpacing\":{},",
                         "\"borderFillId\":0,",
                         "\"borderLeft\":{{\"type\":0,\"width\":0,\"color\":\"#000000\"}},",
@@ -962,6 +1011,56 @@ impl DocumentCore {
         new_id as i32
     }
 
+    /// [text-format/글꼴 이름] applyCharFormat의 fontName·fontFamily를 fontId로 해석한다.
+    ///
+    /// 종전엔 파서가 fontId만 읽어 fontName/fontFamily를 조용히 무시했다(ok:true인데 글꼴 그대로).
+    /// 되읽기 키(fontFamily)와 문서 표기(fontName) 둘 다 받아, 명시적 fontId가 없을 때만
+    /// findOrCreateFontId 경유로 font_id를 채운다(앱이 쓰던 우회로를 엔진이 흡수).
+    fn resolve_font_id_from_name(
+        &mut self,
+        props_json: &str,
+        mods_font_id: Option<u16>,
+    ) -> Option<u16> {
+        if mods_font_id.is_some() {
+            return mods_font_id; // 명시적 fontId가 우선
+        }
+        let name =
+            json_str(props_json, "fontName").or_else(|| json_str(props_json, "fontFamily"))?;
+        if name.is_empty() {
+            return None;
+        }
+        let id = self.find_or_create_font_id_native(&name);
+        if id >= 0 {
+            Some(id as u16)
+        } else {
+            None
+        }
+    }
+
+    /// [text-format/문단서식 단위붕괴] 조회(build_para_properties_json)는 저장 HWPUNIT을
+    /// dialog px로 돌려준다(margin/indent는 2× 스케일이라 ÷2 후 px, spacing은 1× px).
+    /// 그런데 설정 파서는 들어온 값을 그대로 저장해, 왕복마다 단위가 150배씩 붕괴했다.
+    /// 조회와 대칭이 되도록 들어온 px 값을 저장 표현으로 역변환한다(margin/indent ×2 스케일 복원).
+    fn px_para_mods_to_stored(&self, mods: &mut crate::model::style::ParaShapeMods) {
+        use crate::renderer::px_to_hwpunit;
+        let dpi = self.dpi;
+        if let Some(v) = mods.margin_left {
+            mods.margin_left = Some(px_to_hwpunit(v as f64, dpi) * 2);
+        }
+        if let Some(v) = mods.margin_right {
+            mods.margin_right = Some(px_to_hwpunit(v as f64, dpi) * 2);
+        }
+        if let Some(v) = mods.indent {
+            mods.indent = Some(px_to_hwpunit(v as f64, dpi) * 2);
+        }
+        if let Some(v) = mods.spacing_before {
+            mods.spacing_before = Some(px_to_hwpunit(v as f64, dpi));
+        }
+        if let Some(v) = mods.spacing_after {
+            mods.spacing_after = Some(px_to_hwpunit(v as f64, dpi));
+        }
+    }
+
     /// 글자 서식 적용 (네이티브) — 본문 문단
     pub fn apply_char_format_native(
         &mut self,
@@ -980,8 +1079,34 @@ impl DocumentCore {
                 para_idx
             )));
         }
+        // 입력 방어: 역순 범위와 깨진 props JSON을 삼키지 않고 거부한다(빈 범위 [n,n)는 no-op 허용).
+        if start_offset > end_offset {
+            return Err(HwpError::RenderError(format!(
+                "글자 서식 범위가 역순입니다: [{}, {})",
+                start_offset, end_offset
+            )));
+        }
+        if serde_json::from_str::<serde_json::Value>(props_json)
+            .map(|v| !v.is_object())
+            .unwrap_or(true)
+        {
+            return Err(HwpError::InvalidField(
+                "글자 서식 props가 유효한 JSON 객체가 아닙니다".into(),
+            ));
+        }
 
         let mut mods = parse_char_shape_mods(props_json);
+        // 글꼴 이름(fontName/fontFamily)을 fontId로 해석 — fontId만 먹던 결함.
+        mods.font_id = self.resolve_font_id_from_name(props_json, mods.font_id);
+        // 글자 크기 0·음수는 무효 — 조용히 저장하지 않고 거부한다.
+        if let Some(sz) = mods.base_size {
+            if sz <= 0 {
+                return Err(HwpError::InvalidField(format!(
+                    "글자 크기 {} 유효하지 않음(0 이하)",
+                    sz
+                )));
+            }
+        }
         // border/fill JSON이 있으면 BorderFill 생성/재사용하여 border_fill_id 설정
         if json_has_border_keys(props_json) {
             let bf_id = self.create_border_fill_from_json(props_json);
@@ -1007,7 +1132,16 @@ impl DocumentCore {
             let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
             let margin_right = para_style.map(|s| s.margin_right).unwrap_or(0.0);
             let available_width = (col_width - margin_left - margin_right).max(1.0);
-            // 원본 LineSeg 무효화 → reflow가 max_font_size에서 새로 계산
+            // 원본 LineSeg 무효화 → reflow가 max_font_size에서 새로 계산.
+            // clear 로 orig 가 사라지면 reflow 가 문단 원점을 0 으로 리셋하므로,
+            // 원점(first vpos)을 보존했다가 복원한다 — 안 하면 문단 자신과 후속
+            // 문단의 절대 vpos 체인이 무너져 조판이 어긋난다.
+            let old_first = self.document.sections[sec_idx].paragraphs[para_idx]
+                .line_segs
+                .first()
+                .map(|s| s.vertical_pos);
+            let old_end =
+                paragraph_flow_end_vpos(&self.document.sections[sec_idx].paragraphs[para_idx]);
             self.document.sections[sec_idx].paragraphs[para_idx]
                 .line_segs
                 .clear();
@@ -1017,6 +1151,25 @@ impl DocumentCore {
                 &styles,
                 self.dpi,
             );
+            if let Some(base) = old_first {
+                if base != 0 {
+                    for seg in self.document.sections[sec_idx].paragraphs[para_idx]
+                        .line_segs
+                        .iter_mut()
+                    {
+                        seg.vertical_pos += base;
+                    }
+                }
+            }
+            let new_end =
+                paragraph_flow_end_vpos(&self.document.sections[sec_idx].paragraphs[para_idx]);
+            if let (Some(o), Some(n)) = (old_end, new_end) {
+                shift_following_paragraph_vpos(
+                    &mut self.document.sections[sec_idx].paragraphs,
+                    para_idx,
+                    n - o,
+                );
+            }
         }
 
         self.document.sections[sec_idx].raw_stream = None;
@@ -1081,7 +1234,16 @@ impl DocumentCore {
         {
             let para = &mut self.document.sections[sec_idx].paragraphs[para_idx];
             para.apply_char_shape_range(start_offset, end_offset, char_shape_id);
+            let old_end = paragraph_flow_end_vpos(para);
             reflow_line_segs(para, available_width, &styles, self.dpi);
+            let new_end = paragraph_flow_end_vpos(para);
+            if let (Some(o), Some(n)) = (old_end, new_end) {
+                shift_following_paragraph_vpos(
+                    &mut self.document.sections[sec_idx].paragraphs,
+                    para_idx,
+                    n - o,
+                );
+            }
         }
 
         self.document.sections[sec_idx].raw_stream = None;
@@ -1108,6 +1270,8 @@ impl DocumentCore {
         props_json: &str,
     ) -> Result<String, HwpError> {
         let mut mods = parse_char_shape_mods(props_json);
+        // 글꼴 이름(fontName/fontFamily) 해석 — 본문과 같은 뿌리.
+        mods.font_id = self.resolve_font_id_from_name(props_json, mods.font_id);
         if json_has_border_keys(props_json) {
             let bf_id = self.create_border_fill_from_json(props_json);
             mods.border_fill_id = Some(bf_id);
@@ -1262,6 +1426,26 @@ impl DocumentCore {
         }
 
         let mut mods = parse_para_shape_mods(props_json);
+        // 여백·들여쓰기·문단간격은 조회가 돌려주는 px 단위로 들어온다 → 저장 단위로 역변환(왕복 단위 일치).
+        self.px_para_mods_to_stored(&mut mods);
+        // 입력 방어: 없는 번호 정의 id·범위 밖 문단 수준을 조용히 삼키지 않는다(번호가 소리 없이 사라짐).
+        if let Some(nid) = mods.numbering_id {
+            let count = self.document.doc_info.numberings.len();
+            if nid != 0 && nid as usize > count {
+                return Err(HwpError::InvalidField(format!(
+                    "번호 정의 {} 없음 (총 {}개)",
+                    nid, count
+                )));
+            }
+        }
+        if let Some(lvl) = mods.para_level {
+            if lvl > 6 {
+                return Err(HwpError::InvalidField(format!(
+                    "문단 수준 {} 범위 초과 (0~6)",
+                    lvl
+                )));
+            }
+        }
 
         // 탭 설정 변경 처리: TabDef 생성 → tab_def_id 세팅
         if json_has_tab_keys(props_json) {
@@ -1282,9 +1466,33 @@ impl DocumentCore {
             mods.tab_def_id = Some(new_tab_id);
         }
 
-        // 테두리/배경 변경 처리: BorderFill 생성 → border_fill_id 세팅
+        // 테두리/배경 변경 처리: BorderFill 생성 → border_fill_id 세팅.
+        // [서식 패리티 2026-07-30] **현재 문단의 BorderFill 을 base 로 승계**한다. 예전엔
+        // 무조건 새 기본값에서 시작해, 배경 면 색만 바꿔도 4방향 테두리가 생기고
+        // 반대로 테두리만 바꾸면 배경이 날아갔다(문단 배경/테두리 독립 변경 불가).
         if json_has_border_keys(props_json) {
-            let bf_id = self.create_border_fill_from_json(props_json);
+            let cur_bf_id = {
+                let ps_id = self.document.sections[sec_idx].paragraphs[para_idx].para_shape_id;
+                self.document
+                    .doc_info
+                    .para_shapes
+                    .get(ps_id as usize)
+                    .map(|ps| ps.border_fill_id)
+                    .unwrap_or(0)
+            };
+            let base_bf = if cur_bf_id > 0 {
+                self.document
+                    .doc_info
+                    .border_fills
+                    .get((cur_bf_id - 1) as usize)
+                    .cloned()
+            } else {
+                None
+            };
+            let bf_id = match base_bf {
+                Some(bf) => self.create_border_fill_from_json_based(props_json, bf),
+                None => self.create_border_fill_from_json(props_json),
+            };
             mods.border_fill_id = Some(bf_id);
         }
         if let Some(arr) = parse_json_i16_array(props_json, "borderSpacing", 4) {
@@ -1311,12 +1519,23 @@ impl DocumentCore {
             let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
             let margin_right = para_style.map(|s| s.margin_right).unwrap_or(0.0);
             let available_width = (col_width - margin_left - margin_right).max(1.0);
+            let old_end =
+                paragraph_flow_end_vpos(&self.document.sections[sec_idx].paragraphs[para_idx]);
             reflow_line_segs(
                 &mut self.document.sections[sec_idx].paragraphs[para_idx],
                 available_width,
                 &styles,
                 self.dpi,
             );
+            let new_end =
+                paragraph_flow_end_vpos(&self.document.sections[sec_idx].paragraphs[para_idx]);
+            if let (Some(o), Some(n)) = (old_end, new_end) {
+                shift_following_paragraph_vpos(
+                    &mut self.document.sections[sec_idx].paragraphs,
+                    para_idx,
+                    n - o,
+                );
+            }
         }
 
         self.document.sections[sec_idx].raw_stream = None;
@@ -1376,7 +1595,16 @@ impl DocumentCore {
         {
             let para = &mut self.document.sections[sec_idx].paragraphs[para_idx];
             para.para_shape_id = para_shape_id;
+            let old_end = paragraph_flow_end_vpos(para);
             reflow_line_segs(para, available_width, &styles, self.dpi);
+            let new_end = paragraph_flow_end_vpos(para);
+            if let (Some(o), Some(n)) = (old_end, new_end) {
+                shift_following_paragraph_vpos(
+                    &mut self.document.sections[sec_idx].paragraphs,
+                    para_idx,
+                    n - o,
+                );
+            }
         }
 
         self.document.sections[sec_idx].raw_stream = None;
@@ -1399,6 +1627,26 @@ impl DocumentCore {
         props_json: &str,
     ) -> Result<String, HwpError> {
         let mut mods = parse_para_shape_mods(props_json);
+        // 셀 문단도 본문과 같은 뿌리 — px 여백/들여쓰기/간격을 저장 단위로 역변환.
+        self.px_para_mods_to_stored(&mut mods);
+        // 입력 방어: 없는 번호 정의 id·범위 밖 문단 수준을 조용히 삼키지 않는다(번호가 소리 없이 사라짐).
+        if let Some(nid) = mods.numbering_id {
+            let count = self.document.doc_info.numberings.len();
+            if nid != 0 && nid as usize > count {
+                return Err(HwpError::InvalidField(format!(
+                    "번호 정의 {} 없음 (총 {}개)",
+                    nid, count
+                )));
+            }
+        }
+        if let Some(lvl) = mods.para_level {
+            if lvl > 6 {
+                return Err(HwpError::InvalidField(format!(
+                    "문단 수준 {} 범위 초과 (0~6)",
+                    lvl
+                )));
+            }
+        }
 
         // 탭 설정 변경 처리: TabDef 생성 → tab_def_id 세팅
         if json_has_tab_keys(props_json) {
@@ -1718,6 +1966,20 @@ impl DocumentCore {
         para_idx: usize,
         style_id: usize,
     ) -> Result<String, HwpError> {
+        self.apply_style_native_ex(sec_idx, para_idx, style_id, false)
+    }
+
+    /// 스타일 적용 — `overwrite` 가 참이면 문단의 **직접 서식까지 스타일 모양으로 덮어쓴다**
+    /// (한컴 「본문을 [X] 스타일 모양으로 덮어 쓸까요?」의 '예'). 거짓이면 종전처럼 직접 서식을
+    /// 보존한다(= '아니오'). 예전엔 '예' 경로가 없어서, 직접 서식이 있는 문단에 스타일을
+    /// 적용하면 문단 모양이 조용히 무시됐다(2026-07-30 조사 확정 갭).
+    pub fn apply_style_native_ex(
+        &mut self,
+        sec_idx: usize,
+        para_idx: usize,
+        style_id: usize,
+        overwrite: bool,
+    ) -> Result<String, HwpError> {
         let style = self
             .document
             .doc_info
@@ -1771,7 +2033,8 @@ impl DocumentCore {
         }
 
         let new_para_shape_id = match old_style.as_ref() {
-            Some(old) if current_psid != old.para_shape_id => current_psid,
+            // 직접 서식(문단모양이 옛 스타일과 다름)이 있어도 overwrite 면 스타일 모양으로 덮는다
+            Some(old) if !overwrite && current_psid != old.para_shape_id => current_psid,
             _ => self.resolve_style_para_shape_id(style_id, current_psid),
         };
 
@@ -2077,6 +2340,23 @@ impl DocumentCore {
                 ));
             }
         }
+
+        // [page-section/결함4] toggleHideHeaderFooter 로 건 감춤 override 도 되읽을 수 있게 한다.
+        // Control::PageHide 가 없어도, 이 문단이 놓인 쪽에 감춤 override(true)가 있으면 보고한다.
+        if let Ok(pages) = self.find_pages_for_paragraph(section_idx, para_idx) {
+            let hide_header = pages
+                .iter()
+                .any(|p| matches!(self.hidden_header_footer.get(&(*p, true)), Some(true)));
+            let hide_footer = pages
+                .iter()
+                .any(|p| matches!(self.hidden_header_footer.get(&(*p, false)), Some(true)));
+            if hide_header || hide_footer {
+                return Ok(format!(
+                    "{{\"ok\":true,\"exists\":true,\"hideHeader\":{},\"hideFooter\":{},\"hideMasterPage\":false,\"hideBorder\":false,\"hideFill\":false,\"hidePageNum\":false}}",
+                    hide_header, hide_footer
+                ));
+            }
+        }
         Ok("{\"ok\":true,\"exists\":false}".to_string())
     }
 }
@@ -2108,5 +2388,111 @@ mod tests {
             ..Default::default()
         };
         assert!(!char_shape_mods_affect_text_flow(&mods));
+    }
+
+    // 줄간격 변경이 페이지 수에 반영되는지 — stale vpos 회귀 방어.
+    // (2026-08-02 root-cause: 서식 변경 경로가 편집 경로와 달리 후속 문단들의
+    // 저장 vertical_pos 를 델타 이동하지 않아, typeset 이 stale 절대 vpos 로
+    // 페이지를 나눠 줄간격 100↔200% 가 같은 쪽수로 floor 되던 결함.
+    // shift_following_paragraph_vpos 배선으로 수리.)
+    #[test]
+    fn line_spacing_change_repaginates() {
+        use crate::document_core::DocumentCore;
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        for i in 0..60usize {
+            core.insert_text_native(0, i, 0, &format!("채우기 문장 {} 입니다.", i + 1))
+                .unwrap();
+            if i + 1 < 60 {
+                let len = core.document.sections[0].paragraphs[i].text.chars().count();
+                core.split_paragraph_native(0, i, len).unwrap();
+            }
+        }
+        let set_all = |core: &mut DocumentCore, v: i32| {
+            let n = core.document.sections[0].paragraphs.len();
+            for p in 0..n {
+                core.apply_para_format_native(
+                    0,
+                    p,
+                    &format!("{{\"lineSpacing\":{},\"lineSpacingType\":\"Percent\"}}", v),
+                )
+                .unwrap();
+            }
+        };
+        set_all(&mut core, 100);
+        let p100 = core.page_count();
+        set_all(&mut core, 200);
+        let p200 = core.page_count();
+        // 원하는 동작(수정 후): p100 < p200. 현재(버그): 둘 다 같다.
+        assert!(
+            p100 < p200,
+            "줄간격 100%와 200%는 페이지수가 달라야 한다 (현재 버그로 동일: 100={}, 200={})",
+            p100,
+            p200
+        );
+    }
+
+    // 자간(spacings) 축소는 줄바꿈(줄 수)을 바꾸므로 stale-vpos 버그를 우회해
+    // 페이지 수를 줄일 수 있어야 한다 — studio auto-fit(자간 기반)의 엔진 전제 검증.
+    #[test]
+    fn char_spacing_reduction_shrinks_page_count() {
+        use crate::document_core::DocumentCore;
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        // 몇 줄씩 감기는 중간 길이 문단 여러 개 — 실문서 근사 (2쪽 이상)
+        const N: usize = 15;
+        for i in 0..N {
+            let filler =
+                format!("문단 {} — 가나다라마바사아자차카타파하 여러 글자들 ", i + 1).repeat(16);
+            core.insert_text_native(0, i, 0, &filler).unwrap();
+            if i + 1 < N {
+                let len = core.document.sections[0].paragraphs[i].text.chars().count();
+                core.split_paragraph_native(0, i, len).unwrap();
+            }
+        }
+        let set_spacing = |core: &mut DocumentCore, v: i32| {
+            let n = core.document.sections[0].paragraphs.len();
+            for p in 0..n {
+                let len = core.document.sections[0].paragraphs[p].text.chars().count();
+                core.apply_char_format_native(
+                    0,
+                    p,
+                    0,
+                    len,
+                    &format!("{{\"spacings\":[{0},{0},{0},{0},{0},{0},{0}]}}", v),
+                )
+                .unwrap();
+            }
+        };
+        let lines0 = |core: &DocumentCore| core.document.sections[0].paragraphs[0].line_segs.len();
+        let chain_end = |core: &DocumentCore| {
+            core.document.sections[0]
+                .paragraphs
+                .last()
+                .and_then(|p| p.line_segs.last())
+                .map(|s| s.vertical_pos + s.line_height + s.line_spacing)
+                .unwrap_or(-1)
+        };
+        let p0 = core.page_count();
+        let l0 = lines0(&core);
+        let e0 = chain_end(&core);
+        set_spacing(&mut core, -25);
+        let p_neg = core.page_count();
+        let l_neg = lines0(&core);
+        let e_neg = chain_end(&core);
+        set_spacing(&mut core, 0);
+        let p_back = core.page_count();
+        eprintln!(
+            "spacing0={}({}줄,end={}) spacing-25={}({}줄,end={}) back0={}",
+            p0, l0, e0, p_neg, l_neg, e_neg, p_back
+        );
+        assert!(p0 >= 2, "테스트 전제: 원본이 2쪽 이상이어야 함 (p0={})", p0);
+        assert!(
+            p_neg < p0,
+            "자간 -25 면 페이지가 줄어야 한다 (전={}, 후={})",
+            p0,
+            p_neg
+        );
+        assert_eq!(p_back, p0, "자간 원복 시 페이지수도 원복");
     }
 }

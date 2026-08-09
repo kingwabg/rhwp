@@ -63,6 +63,9 @@ pub enum FontEmbedMode {
 
 /// SVG 렌더러
 pub struct SvgRenderer {
+    /// 본문 clip 사각형의 윗변 — 강조점이 이 위로 올라가면 화면에서 잘린다.
+    /// (Renderer trait 의 draw_text 시그니처를 못 바꿔 필드로 넘긴다.)
+    body_clip_top: Option<f64>,
     /// SVG 출력 버퍼
     output: String,
     /// 그라데이션 정의 버퍼 (<defs> 내부)
@@ -156,6 +159,7 @@ struct OverlayImageInfo {
 impl SvgRenderer {
     pub fn new() -> Self {
         Self {
+            body_clip_top: None,
             output: String::new(),
             defs: Vec::new(),
             gradient_counter: 0,
@@ -544,6 +548,7 @@ impl SvgRenderer {
             RenderNodeType::Body {
                 clip_rect: Some(cr),
             } => {
+                self.body_clip_top = Some(cr.y);
                 let clip_id = format!("body-clip-{}", node.id);
                 let right_pad = if self.show_paragraph_marks || self.show_control_codes {
                     TEXT_MARK_CLIP_RIGHT_PAD
@@ -2662,6 +2667,8 @@ impl Renderer for SvgRenderer {
     }
 
     fn draw_text(&mut self, text: &str, x: f64, y: f64, style: &TextStyle) {
+        // 강조점이 본문 clip 밖으로 나가지 않게 쓰는 천장(없으면 제한 없음).
+        let line_top = self.body_clip_top.unwrap_or(f64::NEG_INFINITY);
         // [Task #1067] inline 컨트롤 placeholder (U+FFFC OBJECT REPLACEMENT CHARACTER) 를
         // 보이지 않게 처리. HWP/HWPX 의 inline 도형/표/그림 등 treat_as_char 컨트롤이
         // paragraph text 자체에 U+FFFC 로 표현됨 — 도형 path 는 별도 emit 되므로 본
@@ -2907,6 +2914,30 @@ impl Renderer for SvgRenderer {
                 continue;
             }
             let char_x = x + char_positions[*char_idx];
+
+            // 컬러 이모지: 캔버스와 같은 산식으로 글자 높이에 맞춰 줄이고 바닥을 맞춘다
+            // (web_canvas.rs 의 같은 분기 참조 — 화면만 고치면 인쇄가 어긋난다).
+            if let Some(ch) = cluster_str.chars().next() {
+                if crate::renderer::layout::text_measurement::is_emoji_presentation(ch) {
+                    use crate::renderer::layout::text_measurement::{
+                        emoji_draw_offsets, EMOJI_GLYPH_SCALE,
+                    };
+                    let advance = cluster_advance(*char_idx, cluster_str);
+                    let scaled = font_size * EMOJI_GLYPH_SCALE;
+                    let (dx, lift) = emoji_draw_offsets(font_size, advance);
+                    self.output.push_str(&format!(
+                        "<text x=\"{:.4}\" y=\"{:.4}\" font-family=\"{}\" font-size=\"{:.4}\" fill=\"{}\">{}</text>\n",
+                        char_x + dx,
+                        y - lift,
+                        font_family,
+                        scaled,
+                        color,
+                        escape_xml(cluster_str),
+                    ));
+                    continue;
+                }
+            }
+
             let length_attrs =
                 svg_text_length_attrs(cluster_str, cluster_advance(*char_idx, cluster_str), ratio);
             let common_attrs = attrs_for_cluster(cluster_str, &color);
@@ -2974,26 +3005,41 @@ impl Renderer for SvgRenderer {
             );
         }
 
-        // 강조점 처리
+        // 강조점 처리 — 모양은 renderer::emphasis 한 곳에서 정한다(canvas 와 같은 도형).
         if style.emphasis_dot > 0 {
-            let dot_char = match style.emphasis_dot {
-                1 => "●",
-                2 => "○",
-                3 => "ˇ",
-                4 => "˜",
-                5 => "･",
-                6 => "˸",
-                _ => "",
-            };
-            if !dot_char.is_empty() {
-                let dot_size = font_size * 0.3;
-                let dot_y = y - font_size * 1.05;
-                for &cx in &char_positions[..char_positions.len().saturating_sub(1)] {
-                    let dot_x = x + cx + (font_size * style.ratio * 0.5);
-                    self.output.push_str(&format!(
-                        "<text x=\"{}\" y=\"{}\" font-size=\"{}\" text-anchor=\"middle\" fill=\"{}\">{}</text>\n",
-                        dot_x, dot_y, dot_size, color, dot_char,
-                    ));
+            use crate::renderer::emphasis::{emphasis_mark, EmphasisPrim};
+            for &cx in &char_positions[..char_positions.len().saturating_sub(1)] {
+                let center_x = x + cx + (font_size * style.ratio * 0.5);
+                for prim in emphasis_mark(style.emphasis_dot, center_x, y, font_size, line_top) {
+                    match prim {
+                        EmphasisPrim::Circle {
+                            cx,
+                            cy,
+                            r,
+                            filled,
+                            stroke_width,
+                        } => {
+                            if filled {
+                                self.output.push_str(&format!(
+                                    "<circle cx=\"{cx}\" cy=\"{cy}\" r=\"{r}\" fill=\"{color}\"/>\n"
+                                ));
+                            } else {
+                                self.output.push_str(&format!(
+                                    "<circle cx=\"{cx}\" cy=\"{cy}\" r=\"{r}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"{stroke_width}\"/>\n"
+                                ));
+                            }
+                        }
+                        EmphasisPrim::Polyline { points, width } => {
+                            let pts = points
+                                .iter()
+                                .map(|(px, py)| format!("{px},{py}"))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            self.output.push_str(&format!(
+                                "<polyline points=\"{pts}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"{width}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>\n"
+                            ));
+                        }
+                    }
                 }
             }
         }

@@ -16,18 +16,25 @@ impl DocumentCore {
         // --- 1. HTML 파싱: 행/셀 구조 추출 ---
         let table_lower = table_html.to_lowercase();
 
+        #[derive(Default)]
         struct ParsedCell {
             col_span: u16,
             row_span: u16,
             width_pt: f64,
+            width_pct: f64, // [paste-import/폭%] 퍼센트 폭(0=미지정) — 표 폭 기준 환산
             height_pt: f64,
             padding_pt: [f64; 4],          // left, right, top, bottom
+            has_explicit_padding: bool,    // [paste-import/여백] CSS로 padding을 준 셀인지
             border_widths_pt: [f64; 4],    // left, right, top, bottom
             border_colors: [u32; 4],       // BGR
             border_styles: [u8; 4],        // 0=none, 1=solid, 2=dashed, 3=dotted, 4=double
             background_color: Option<u32>, // BGR
+            // [paste-import/셀서식] td의 char/para CSS(정렬·굵기·색·크기·글꼴 등) — 셀 문단
+            // 서식으로 옮긴다. 예전엔 셀 레벨 속성(테두리·배경·폭)만 읽고 글자·정렬 서식은 버렸다.
+            cell_css: String,
             content_html: String,
             is_header: bool,
+            is_filler: bool,    // [paste-import/ragged] 직사각형 채움용 빈 셀
             vertical_align: u8, // 0=top, 1=center, 2=bottom
         }
 
@@ -45,6 +52,13 @@ impl DocumentCore {
             // <td>와 <th>를 출현 순서대로 처리
             let mut td_pos = 0;
             loop {
+                // 불완전 HTML 방어: </td>/</th>를 못 찾으면 td_pos가 문자열 길이를 넘어
+                // tr_inner_lower[td_pos..] 슬라이싱이 panic(unreachable trap)한다 — 안 닫힌
+                // <td>/<table>·중첩 표 같은 외부 클립보드 입력에서 실측. panic 대신 지금까지
+                // 수집한 셀로 degrade한다(NaN hitTest 가드와 같은 철학: 위험 연산 직전 방어).
+                if td_pos >= tr_inner_lower.len() {
+                    break;
+                }
                 let td_match = tr_inner_lower[td_pos..].find("<td");
                 let th_match = tr_inner_lower[td_pos..].find("<th");
 
@@ -77,11 +91,38 @@ impl DocumentCore {
                     let css_lower = css.to_lowercase();
 
                     // 크기 파싱
-                    let width_pt = parse_css_dimension_pt(&css_lower, "width");
+                    let mut width_pt = parse_css_dimension_pt(&css_lower, "width");
+                    // [paste-import/폭%] parse_css_dimension_pt는 %를 0으로 버린다 —
+                    // 결재 양식이 폭을 %로만 준다. 원본 %값을 따로 붙잡아 표 폭 기준으로 환산.
+                    let mut width_pct = parse_css_value(&css_lower, "width")
+                        .and_then(|v| {
+                            v.trim()
+                                .strip_suffix('%')
+                                .and_then(|n| n.trim().parse::<f64>().ok())
+                        })
+                        .unwrap_or(0.0);
                     let height_pt = parse_css_dimension_pt(&css_lower, "height");
 
                     // 패딩 파싱
                     let padding_pt = parse_css_padding_pt(&css_lower);
+                    let mut has_explicit_padding = padding_pt.iter().any(|&p| p > 0.01);
+
+                    // [paste-import/html4] style= 이 없을 때 HTML4 표현 속성으로 폴백
+                    if width_pt <= 0.0 && width_pct <= 0.0 {
+                        if let Some(w) = parse_html_attr_str(tag_str, "width") {
+                            let w = w.trim();
+                            if let Some(pct) = w
+                                .strip_suffix('%')
+                                .and_then(|n| n.trim().parse::<f64>().ok())
+                            {
+                                width_pct = pct;
+                            } else if let Ok(px) =
+                                w.strip_suffix("px").unwrap_or(w).trim().parse::<f64>()
+                            {
+                                width_pt = px * 0.75; // HTML width 속성은 px
+                            }
+                        }
+                    }
 
                     // 테두리 파싱 (left, right, top, bottom)
                     let mut border_widths_pt = [0.0f64; 4];
@@ -108,10 +149,14 @@ impl DocumentCore {
                         }
                     }
 
-                    // 배경색
+                    // 배경색 (CSS 우선, 없으면 HTML4 bgcolor 속성 폴백)
                     let background_color = parse_css_value(&css_lower, "background-color")
                         .or_else(|| parse_css_value(&css_lower, "background"))
-                        .and_then(|v| css_color_to_hwp_bgr(&v));
+                        .and_then(|v| css_color_to_hwp_bgr(&v))
+                        .or_else(|| {
+                            parse_html_attr_str(tag_str, "bgcolor")
+                                .and_then(|v| css_color_to_hwp_bgr(&v))
+                        });
 
                     // 수직 정렬 (0=미지정, 1=center, 2=bottom, 3=명시적 top)
                     let vertical_align =
@@ -121,6 +166,22 @@ impl DocumentCore {
                             Some("top") => 3u8, // 명시적 top
                             _ => 0u8,           // 미지정 → Center (HWP 기본)
                         };
+
+                    // [paste-import/셀서식] 셀 문단에 옮길 char/para CSS를 조립한다.
+                    // HTML4 align 속성은 CSS text-align 이 없을 때만 합성한다.
+                    let mut cell_css = css.clone();
+                    if parse_css_value(&css_lower, "text-align").is_none() {
+                        if let Some(align) = parse_html_attr_str(tag_str, "align") {
+                            let a = align.trim().to_lowercase();
+                            if matches!(a.as_str(), "left" | "right" | "center" | "justify") {
+                                if !cell_css.is_empty() && !cell_css.trim_end().ends_with(';') {
+                                    cell_css.push(';');
+                                }
+                                cell_css.push_str("text-align:");
+                                cell_css.push_str(&a);
+                            }
+                        }
+                    }
 
                     // 셀 내용 HTML 추출
                     let content_start = cell_abs + gt + 1;
@@ -137,18 +198,23 @@ impl DocumentCore {
                         col_span,
                         row_span,
                         width_pt,
+                        width_pct,
                         height_pt,
                         padding_pt,
+                        has_explicit_padding,
                         border_widths_pt,
                         border_colors,
                         border_styles,
                         background_color,
+                        cell_css,
                         content_html,
                         is_header: is_th,
+                        is_filler: false,
                         vertical_align,
                     });
 
-                    td_pos = content_end + close_tag.len();
+                    // close 태그를 못 찾은 폴백(content_end=len)에서 len을 넘어서지 않도록 클램프.
+                    td_pos = (content_end + close_tag.len()).min(tr_inner_lower.len());
                 } else {
                     break;
                 }
@@ -231,21 +297,77 @@ impl DocumentCore {
 
         let col_count = actual_col_count.max(1);
 
+        // [paste-import/ragged] 행마다 열 수가 다른 표(ragged)나 과한 colspan은 격자에
+        // 구멍을 남겨 직사각형이 아닌 표가 된다 — 한글에서 표가 손상돼 보인다. 점유되지
+        // 않은 [row×col] 칸을 1x1 빈 셀로 메워 항상 직사각형이 되게 한다.
+        for r in 0..row_count as usize {
+            for c in 0..col_count as usize {
+                if !occupied[r][c] {
+                    occupied[r][c] = true;
+                    let filler_col = parsed_rows[r].len();
+                    parsed_rows[r].push(ParsedCell {
+                        col_span: 1,
+                        row_span: 1,
+                        is_filler: true,
+                        ..Default::default()
+                    });
+                    cell_positions.push(CellPos {
+                        row: r as u16,
+                        col: c as u16,
+                        col_span: 1,
+                        row_span: 1,
+                        parsed_row: r,
+                        parsed_col: filler_col,
+                    });
+                }
+            }
+        }
+
         // --- 3. 셀 크기 계산 ---
         let default_page_width: u32 = 42520; // A4 좌우 여백 제외
         let default_col_width = default_page_width / col_count as u32;
         let default_row_height: u32 = 1000;
 
-        // 열별 폭 (CSS 지정 우선, 없으면 균등 분할)
+        // [paste-import/폭%] 퍼센트 폭 환산의 기준 폭 — 표 자체 폭(CSS px/pt 또는 HTML4
+        // width 속성)을 쓰고, 없으면 본문 폭(default_page_width). 결재 양식은 표 width:100%
+        // + 셀 width:14%/86% 로만 폭을 준다.
+        let table_open_tag = &table_html[..table_html
+            .find('>')
+            .map(|i| i + 1)
+            .unwrap_or(table_html.len())];
+        let table_open_style = parse_inline_style(table_open_tag).to_lowercase();
+        let table_width_pt = parse_css_dimension_pt(&table_open_style, "width");
+        let table_target_width: u32 = if table_width_pt > 0.0 {
+            (table_width_pt * 100.0).round() as u32
+        } else {
+            parse_html_attr_str(table_open_tag, "width")
+                .and_then(|w| {
+                    let w = w.trim();
+                    w.strip_suffix("px")
+                        .unwrap_or(w)
+                        .trim()
+                        .parse::<f64>()
+                        .ok()
+                        .map(|px| (px * 0.75 * 100.0).round() as u32)
+                })
+                .filter(|&w| w > 0)
+                .unwrap_or(default_page_width)
+        };
+
+        // 열별 폭 (CSS px/% 지정 우선, 없으면 균등 분할)
         let mut col_widths = vec![0u32; col_count as usize];
         for cp in &cell_positions {
             if cp.col_span == 1 {
                 let pc = &parsed_rows[cp.parsed_row][cp.parsed_col];
-                if pc.width_pt > 0.0 {
-                    let w = (pc.width_pt * 100.0).round() as u32;
-                    if w > col_widths[cp.col as usize] {
-                        col_widths[cp.col as usize] = w;
-                    }
+                let w = if pc.width_pct > 0.0 {
+                    ((pc.width_pct / 100.0) * table_target_width as f64).round() as u32
+                } else if pc.width_pt > 0.0 {
+                    (pc.width_pt * 100.0).round() as u32
+                } else {
+                    0
+                };
+                if w > col_widths[cp.col as usize] {
+                    col_widths[cp.col as usize] = w;
                 }
             }
         }
@@ -332,6 +454,14 @@ impl DocumentCore {
                 },
             };
 
+            // [paste-import/셀글자서식] td 인라인 CSS(굵기·크기·색·폰트)를 셀 기본 char
+            // shape 로 반영한다 — 종전엔 0 고정(워크어라운드: sc- 앱 restoreApprovalCellFormat
+            // 이 복원을 전담)이라 QA 결함(❌ 셀 글자 서식 소실)이었다. css 에 글자 속성이
+            // 없으면 기본 shape 와 동일해 dedup 으로 0 이 되돌아오므로 무서식 셀은 불변.
+            // 문단 서식(정렬·줄간격)은 여전히 앱 복원 몫이다(cell_para_shape_id=0 유지).
+            let cell_char_shape_id = self.css_to_char_shape_id(&pc.cell_css, false, false, false);
+            let cell_para_shape_id = 0;
+
             // 셀 내용 파싱
             // &nbsp; 등 HTML 엔티티를 디코딩한 후 공백만 남으면 빈 셀로 처리
             let cell_paragraphs = if pc.content_html.trim().is_empty()
@@ -339,6 +469,7 @@ impl DocumentCore {
             {
                 vec![Paragraph::new_empty()]
             } else {
+                // 셀 문단 구조 파서(원래 동작). 셀 안 글자 서식은 앱 복원 패스가 맡는다.
                 let parsed = self.parse_html_to_paragraphs(&pc.content_html);
                 if parsed.is_empty()
                     || parsed
@@ -351,10 +482,6 @@ impl DocumentCore {
                 }
             };
 
-            // 셀 문단의 para_shape_id (DIFF-3 수정)
-            // 기본 "본문" ParaShape (id=0) 사용 — 유효한 참조를 보장
-            let cell_para_shape_id: u16 = 0;
-
             // 셀 문단 보정: char_count_msb, char_count, para_shape_id, raw_header_extra, line_segs
             let mut cell_paragraphs = cell_paragraphs;
             for cp_para in &mut cell_paragraphs {
@@ -366,20 +493,26 @@ impl DocumentCore {
                 // para_shape_id: 기본 "본문" ParaShape 사용 (DIFF-3)
                 cp_para.para_shape_id = cell_para_shape_id;
 
-                // DIFF-2: char_shapes가 비어있으면 기본 CharShapeRef 추가
-                // 모든 셀 문단은 최소 1개의 명시적 CharShapeRef를 가져야 함
+                // DIFF-2: 모든 셀 문단은 시작 위치(0)에 명시적 CharShapeRef를 가져야 한다.
+                // [paste-import/셀글자서식] 예전엔 무조건 id 0(기본)만 넣어 td의 굵기·색·크기
+                // 서식이 사라졌다 — 시작 서식을 td의 char shape(cell_char_shape_id)로 넣는다.
+                // 인라인 서식이 붙어 첫 run 이 이미 pos 0 이면 그대로 두고, pos>0 이면 앞에
+                // 기본 서식을 끼운다.
                 if cp_para.char_shapes.is_empty() {
-                    let base_cs_id = if !self.document.doc_info.char_shapes.is_empty() {
-                        0u32
-                    } else {
-                        0u32
-                    };
                     cp_para
                         .char_shapes
                         .push(crate::model::paragraph::CharShapeRef {
                             start_pos: 0,
-                            char_shape_id: base_cs_id,
+                            char_shape_id: cell_char_shape_id,
                         });
+                } else if cp_para.char_shapes[0].start_pos != 0 {
+                    cp_para.char_shapes.insert(
+                        0,
+                        crate::model::paragraph::CharShapeRef {
+                            start_pos: 0,
+                            char_shape_id: cell_char_shape_id,
+                        },
+                    );
                 }
 
                 // raw_header_extra에 instance_id = 0x80000000 설정
@@ -450,8 +583,14 @@ impl DocumentCore {
                 has_header_row = true;
             }
 
-            // list_header_width_ref: is_header면 bit 2 설정
-            let lh_width_ref: u16 = if pc.is_header { 0x04 } else { 0 };
+            // [paste-import/여백] CSS로 padding을 준 셀은 안 여백 사용(apply_inner_margin)을
+            // 켠다 — 예전엔 padding 값은 저장되나 플래그가 꺼진 채라 한글이 표 기본 여백을
+            // 써 다르게 보였다. width_ref bit 0 도 함께 세워 라운드트립에서 일관되게 한다.
+            let apply_inner_margin = pc.has_explicit_padding;
+
+            // list_header_width_ref: is_header면 bit 2, apply_inner_margin이면 bit 0
+            let lh_width_ref: u16 =
+                (if pc.is_header { 0x04 } else { 0 }) | (if apply_inner_margin { 0x01 } else { 0 });
 
             // vertical_align → VerticalAlign enum
             // CSS에서 지정하지 않으면 기본값 Center (정상 HWP 파일 패턴)
@@ -468,17 +607,23 @@ impl DocumentCore {
             let mut raw_list_extra = vec![0u8; 13];
             raw_list_extra[0..4].copy_from_slice(&cell_width.to_le_bytes());
 
+            // [paste-import/rowspan] rowspan이 실제 행 수를 넘으면 표 밖을 가리키는
+            // 병합 정보가 저장돼 규격을 벗어난다. 저장값을 남은 행 수로 클램프한다
+            // (레이아웃 계산에 쓰인 occupied 그리드는 그대로 두고 저장/조회값만 보정).
+            let clamped_row_span = cp.row_span.min(row_count.saturating_sub(cp.row)).max(1);
+
             cells.push(Cell {
                 col: cp.col,
                 row: cp.row,
                 col_span: cp.col_span,
-                row_span: cp.row_span,
+                row_span: clamped_row_span,
                 width: cell_width,
                 height: cell_height,
                 padding,
                 border_fill_id,
                 paragraphs: cell_paragraphs,
                 is_header: pc.is_header,
+                apply_inner_margin,
                 list_header_width_ref: lh_width_ref,
                 vertical_align: v_align,
                 raw_list_extra,
@@ -493,11 +638,16 @@ impl DocumentCore {
         let total_width: u32 = col_widths.iter().sum();
         let total_height: u32 = row_heights.iter().sum();
 
-        // table.attr: 기존 문서의 표와 동일한 패턴 사용
-        // 0x082A2311 = treat_as_char | vert_rel_to=Para | horz_rel_to=Column |
-        //              allow_overlap | width_criterion | various layout flags
-        // 정상 HWP 파일의 모든 표에서 사용되는 표준값
-        let table_attr: u32 = 0x082A2311;
+        // table.attr = CommonObjAttr 플래그(파서: table.attr = common.attr).
+        // [pagination-overflow/paste-import #2] 종전값 0x082A2311 은 bit0(글자처럼취급)·
+        // bit13(쪽영역제한/restrictInPage)이 켜져 있었다. 조판기 is_effective_tac_table
+        // (=`table.attr & 0x01`)이 이 표를 인라인 개체로 오판해 통째 배치 경로로 빠지고,
+        // 쪽을 넘는 표(200행)가 안 갈라졌다(pageCount=1, 종이 위 겹침). bit0·bit13 을 꺼
+        // "자리차지(TopAndBottom)·vert=Para·비-TAC 블록 표"로 만들면 조판기가 행 단위 분할
+        // 경로(typeset_block_table)를 타 정상 분할된다. bit0 을 raw_ctrl_data 에도 함께 꺼
+        // attr==common.attr 정합을 유지 → 저장·재로드 왕복 후에도 분할이 보존된다.
+        // (0x082A2311 & !0x2001 = 0x082A0310)
+        let table_attr: u32 = 0x082A2311 & !0x2001;
 
         // raw_ctrl_data: CommonObjAttr 전체 (attr 포함, parse_common_obj_attr 정합)
         // [0..4] attr, [4..8] vertical_offset, [8..12] horizontal_offset,
@@ -586,7 +736,13 @@ impl DocumentCore {
         let tbl_rec_attr: u32 = 0x04000006; // bit 1(셀분리금지) + bit 2 + bit 26
 
         let outer_margin: i16 = 283; // 바깥 여백 기본값 ~1mm
+                                     // [pagination-overflow/paste-import #2] in-memory `common` 을 raw_ctrl_data 에서
+                                     // 파싱해 채운다(종전엔 Default 라 vert=Paper=종이 절대배치로 200행이 겹쳐 쌓였다).
+                                     // 위 table_attr(bit0/bit13 off)에 따라 common 은 비-TAC·자리차지·vert=Para 로 잡혀
+                                     // 흐름에 참여하고, in-memory==재로드 정합이 보장된다.
+        let parsed_common = crate::parser::control::parse_common_obj_attr(&raw_ctrl_data);
         let mut table = Table {
+            // attr == common.attr (파서 규약 유지) — 위 table_attr 에서 bit0/bit13 을 껐다.
             attr: table_attr,
             row_count,
             col_count,
@@ -597,10 +753,12 @@ impl DocumentCore {
             zones: Vec::new(),
             cells,
             cell_grid: Vec::new(),
-            page_break: TablePageBreak::None,
+            // 인라인 표는 행 경계 분할 허용(createTableEx 와 동일). None 이면 한 덩어리로
+            // 남아 쪽을 넘겨도 안 갈라진다.
+            page_break: TablePageBreak::RowBreak,
             repeat_header: has_header_row,
             caption: None,
-            common: Default::default(),
+            common: parsed_common,
             outer_margin_left: outer_margin,
             outer_margin_right: outer_margin,
             outer_margin_top: outer_margin,
@@ -667,13 +825,19 @@ impl DocumentCore {
                 start_pos: 0,
                 char_shape_id: default_char_shape_id,
             }],
+            // [pagination-overflow/paste-import #2] 표 host 문단의 LINE_SEG는 한컴 표준을 따른다:
+            // line_height=1000(placeholder)·segment_width=0. 종전엔 여기에 표 전체 높이/폭을
+            // 통째로 실어(line_height=total_height, segment_width=total_width) 표가 "쪼갤 수 없는
+            // 한 줄"로 굳어졌다 — 실제 표 높이는 HeightMeasurer가 셀에서 재므로 이 값이 크면
+            // 인라인 페이지네이션이 행 단위로 못 가르고 한 쪽에 뭉친다. createTableEx 와 동일하게
+            // 표준 placeholder 로 맞춰 행 분할 경로를 살린다.
             line_segs: vec![crate::model::paragraph::LineSeg {
                 text_start: 0,
-                line_height: total_height.min(i32::MAX as u32) as i32,
-                text_height: total_height.min(i32::MAX as u32) as i32,
-                baseline_distance: (total_height as f64 * 0.85).min(i32::MAX as f64) as i32,
+                line_height: 1000,
+                text_height: 1000,
+                baseline_distance: 850,
                 line_spacing: 600,
-                segment_width: total_width.min(i32::MAX as u32) as i32,
+                segment_width: 0,
                 tag: crate::model::paragraph::LineSeg::TAG_SINGLE_SEGMENT_LINE,
                 ..Default::default()
             }],
@@ -691,6 +855,38 @@ impl DocumentCore {
         };
 
         paragraphs.push(table_para);
+
+        // [paste-import/caption] <caption> 텍스트는 표에도 본문에도 남지 않고 사라졌다.
+        // 표 뒤에 캡션 문단을 두어 데이터 유실을 막는다(표는 para 0 을 유지). 렌더 표
+        // 캡션(Table.caption)까지 붙이는 건 별도 과제 — 여기선 텍스트 보존이 목적.
+        if let Some(cap_start) = table_lower.find("<caption") {
+            if let Some(gt) = table_html[cap_start..].find('>') {
+                let inner_start = cap_start + gt + 1;
+                let inner_end = table_lower[inner_start..]
+                    .find("</caption>")
+                    .map(|i| inner_start + i)
+                    .unwrap_or(inner_start);
+                let cap_text = decode_html_entities(&html_strip_tags(
+                    &table_html[inner_start..inner_end.min(table_html.len())],
+                ));
+                let cap_text = cap_text.trim();
+                if !cap_text.is_empty() {
+                    let mut cap_para = Paragraph::default();
+                    cap_para.text = cap_text.to_string();
+                    cap_para.char_count = cap_para.text.encode_utf16().count() as u32;
+                    cap_para.char_offsets = cap_para
+                        .text
+                        .chars()
+                        .scan(0u32, |acc, c| {
+                            let off = *acc;
+                            *acc += c.len_utf16() as u32;
+                            Some(off)
+                        })
+                        .collect();
+                    paragraphs.push(cap_para);
+                }
+            }
+        }
     }
 
     /// CSS 테두리/배경 정보로 BorderFill을 생성하고 DocInfo에 등록한다.
@@ -775,29 +971,11 @@ impl DocumentCore {
     /// JSON에서 border/fill 속성을 파싱하여 BorderFill을 생성/재사용한다.
     /// 프론트엔드 글자 테두리/배경 대화상자에서 호출된다.
     pub(crate) fn create_border_fill_from_json(&mut self, json: &str) -> u16 {
-        use crate::model::style::{
-            BorderFill, BorderLine, CenterLine, DiagonalLine, Fill, FillType, SolidFill,
-        };
+        use crate::model::style::{BorderFill, BorderLine, CenterLine, DiagonalLine, Fill};
 
-        fn json_diag_bits(json: &str, key: &str) -> Option<u16> {
-            json_i32(json, key)
-                .map(|v| (v as u16) & 0x07)
-                .or_else(|| json_bool(json, key).map(|v| if v { 0b010 } else { 0 }))
-        }
-
-        fn json_center_line(json: &str) -> Option<CenterLine> {
-            json_str(json, "centerLine").map(|value| {
-                let normalized = value.trim().to_ascii_uppercase();
-                match normalized.as_str() {
-                    "VERTICAL" | "HORIZONTAL_BAR" => CenterLine::Vertical,
-                    "HORIZONTAL" | "VERTICAL_BAR" => CenterLine::Horizontal,
-                    "CROSS" => CenterLine::Cross,
-                    _ => CenterLine::None,
-                }
-            })
-        }
-
-        let mut bf = json_u32(json, "borderFillId")
+        // 기본 base: borderFillId 가 있으면 그 BorderFill 을 복제, 없으면 전 방향 실선(Solid)
+        // 기본값(표 등 기존 호출부 동작 보존).
+        let base = json_u32(json, "borderFillId")
             .and_then(|id| {
                 if id == 0 {
                     None
@@ -817,6 +995,37 @@ impl DocumentCore {
                 center_line: CenterLine::None,
                 fill: Fill::default(),
             });
+        self.create_border_fill_from_json_based(json, base)
+    }
+
+    /// create_border_fill_from_json 의 base 지정 변형.
+    /// [page-section/결함6] 쪽 테두리는 지정 안 한 방향까지 실선 기본값으로 덮이면 안 되므로,
+    /// 호출부가 '현재 테두리' 또는 '선없음' base 를 넘겨 지정한 키만 병합되게 한다.
+    pub(crate) fn create_border_fill_from_json_based(
+        &mut self,
+        json: &str,
+        mut bf: crate::model::style::BorderFill,
+    ) -> u16 {
+        use crate::model::style::{CenterLine, Fill, FillType, SolidFill};
+
+        fn json_diag_bits(json: &str, key: &str) -> Option<u16> {
+            json_i32(json, key)
+                .map(|v| (v as u16) & 0x07)
+                .or_else(|| json_bool(json, key).map(|v| if v { 0b010 } else { 0 }))
+        }
+
+        fn json_center_line(json: &str) -> Option<CenterLine> {
+            json_str(json, "centerLine").map(|value| {
+                let normalized = value.trim().to_ascii_uppercase();
+                match normalized.as_str() {
+                    "VERTICAL" | "HORIZONTAL_BAR" => CenterLine::Vertical,
+                    "HORIZONTAL" | "VERTICAL_BAR" => CenterLine::Horizontal,
+                    "CROSS" => CenterLine::Cross,
+                    _ => CenterLine::None,
+                }
+            })
+        }
+
         bf.raw_data = None;
 
         // 4방향 테두리 파싱

@@ -322,12 +322,10 @@ struct FormattedTable {
     table_footnote_count: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct VisibleFloatExclusion {
-    /// visible host 문단의 자리차지 float 표가 후속 본문을 피하게 만드는 y 구간.
-    top: f64,
-    bottom: f64,
-}
+/// [officex] 자리차지 배타 밴드 — layout 과 **같은 타입**을 쓴다.
+/// 종전엔 여기 별도 struct 가 있었는데, typeset 이 페이지 분할을 확정하고 layout 이 그리므로
+/// 두 쪽 규칙이 어긋나면 컬럼 예산이 갈려 페이지 바닥이 터진다(float_placement.rs 주석 참조).
+type VisibleFloatExclusion = crate::renderer::float_placement::FloatBand;
 
 #[derive(Debug, Clone)]
 struct DeferredTableControl {
@@ -525,6 +523,9 @@ struct TypesetState {
     /// [Task #362] 현재 단에서 표 옆에 배치되는 wrap-around paragraphs.
     /// flush_column 에서 ColumnContent 로 전달.
     current_column_wrap_around_paras: Vec<crate::renderer::pagination::WrapAroundPara>,
+    /// [officex/어울림 배선 2/3] 이 단에서 생산된 사전 배타 밴드(앵커 상대) —
+    /// flush 시 ColumnContent.topbottom_bands 로 넘어간다. 소비자는 아직 없다(동작 불변).
+    current_column_bands: Vec<crate::renderer::pagination::PendingFloatBand>,
     /// [Task #604 R3] 현재 단의 wrap text 문단 ↔ anchor 메타데이터.
     /// wrap_around state machine 매칭 시 등록. flush_column 에서 ColumnContent 로 전달.
     current_column_wrap_anchors:
@@ -1792,6 +1793,7 @@ impl TypesetState {
             behind_float_table_para: None,
             behind_pending_absorbs: Vec::new(),
             current_column_wrap_around_paras: Vec::new(),
+            current_column_bands: Vec::new(),
             current_column_wrap_anchors: std::collections::HashMap::new(),
             current_zone_column_type: column_type,
             current_zone_design_spacing_px: 0.0,
@@ -1899,6 +1901,7 @@ impl TypesetState {
             return;
         }
         let col_content = ColumnContent {
+            topbottom_bands: std::mem::take(&mut self.current_column_bands),
             column_index: self.current_column,
             start_height: self.current_start_height,
             endnote_flow: self.current_endnote_flow,
@@ -1953,6 +1956,7 @@ impl TypesetState {
     /// 비어있어도 flush
     fn flush_column_always(&mut self) {
         let col_content = ColumnContent {
+            topbottom_bands: std::mem::take(&mut self.current_column_bands),
             column_index: self.current_column,
             start_height: self.current_start_height,
             endnote_flow: self.current_endnote_flow,
@@ -2031,19 +2035,22 @@ impl TypesetState {
             return;
         }
 
-        let use_overlap_probe = self.is_hwpx_source && probe_height > 0.0;
         self.visible_float_exclusions
             .retain(|zone| self.current_height < zone.bottom - 0.5);
 
-        let mut jump_to = self.current_height;
-        for zone in &self.visible_float_exclusions {
-            let starts_in_zone = jump_to + 0.5 >= zone.top && jump_to < zone.bottom;
-            let overlaps_zone =
-                use_overlap_probe && jump_to < zone.top && jump_to + probe_height > zone.top + 0.5;
-            if starts_in_zone || overlaps_zone {
-                jump_to = jump_to.max(zone.bottom);
-            }
-        }
+        // [officex/S3] 겹침 프로브를 소스 무관으로 — layout(layout.rs:5030-5060)과 같은 규칙.
+        // 종전엔 is_hwpx_source 일 때만 켜져, HWP5 문서에서 layout 은 줄을 표 아래로
+        // 건너뛰는데 typeset 은 그 줄을 표 위 예산에 넣는 비대칭이 있었다. 분할을 확정하는
+        // 쪽(typeset)과 그리는 쪽(layout)이 다른 규칙을 쓰면 페이지 바닥이 터진다.
+        // probe_height 0 은 여전히 "프로브 끔"(시작점 판정만)이다.
+        let probe = probe_height;
+        let jump_to = crate::renderer::float_placement::skip_float_bands(
+            self.current_height,
+            &self.visible_float_exclusions,
+            probe,
+            None, // typeset 에는 소유자 개념이 없다(종전 동작 그대로)
+            None, // 가로 무시 = 종전 동작
+        );
 
         if jump_to > self.current_height + 0.5 {
             self.current_height = jump_to;
@@ -11324,6 +11331,13 @@ impl TypesetEngine {
         } else {
             layout_drift_safety_px
         };
+        // [officex/S3] HWP5 에도 프로브를 켠다 — 종전엔 0(끔)이라, layout(소스 무관 프로브)이
+        // 줄을 표 아래로 건너뛰는데 typeset 은 그 줄을 표 위 예산에 넣는 **과소 예산** 비대칭이
+        // 있었다(페이지 바닥 터짐의 방향). HWP5 프로브는 layout 과 같은 spacing 제외(#1789).
+        // ⚠ HWPX 는 기존 lh+ls 를 **유지**한다 — issue_1510 이 이 값 위에서 한글 2쪽 대조
+        // 기준을 핀해 두었고(lh 로 줄이면 filler 30 이 1쪽에 남아 한컴과 어긋남), lh+ls 는
+        // 과대 예산이라 안전한 방향의 어긋남이다. HWPX 까지 lh 로 통일하려면 한글 재대조가
+        // 필요하므로 별건으로 남긴다.
         let exclusion_probe_height = if st.is_hwpx_source {
             fmt.line_heights
                 .first()
@@ -11331,7 +11345,10 @@ impl TypesetEngine {
                 .map(|(lh, ls)| lh + ls)
                 .unwrap_or(fmt.height_for_fit)
         } else {
-            0.0
+            fmt.line_heights
+                .first()
+                .copied()
+                .unwrap_or(fmt.height_for_fit)
         };
         st.apply_visible_float_exclusions(exclusion_probe_height);
         // [Task #1725] tail-before-vpos-reset 문단은 각주 안전마진(보수 버퍼 40px)만 1회 되돌려
@@ -11572,8 +11589,40 @@ impl TypesetEngine {
                     )
                 });
 
+        // [officex/어울림 배선 3/3] 밴드를 가로지르는 문단의 예산 짝맞춤 — layout 의
+        // 줄 단위 회피(같은 커밋)가 중간 줄을 밴드 아래로 내리면 문단이 자라므로,
+        // typeset 도 같은 계산부(stack_lines_through_bands)로 늘어난 만큼(extra)을
+        // fit 판정과 누적에 더한다. 한쪽만 바꾸면 페이지 바닥이 터진다(S3·S4 병력).
+        // 프로브 규약: HWP5 = 잉크(lh)만(#1789) · HWPX = lh+ls 유지(issue_1510).
+        let band_stack_extra =
+            if st.visible_float_exclusions.is_empty() || fmt.line_heights.is_empty() {
+                0.0
+            } else {
+                let advances: Vec<(f64, f64)> = fmt
+                    .line_heights
+                    .iter()
+                    .zip(fmt.line_spacings.iter())
+                    .map(|(lh, ls)| {
+                        if st.is_hwpx_source {
+                            (lh + ls, 0.0)
+                        } else {
+                            (*lh, *ls)
+                        }
+                    })
+                    .collect();
+                let start = st.current_height + fmt.spacing_before;
+                let plain: f64 = advances.iter().map(|(ink, sp)| ink + sp).sum();
+                let (_, end) = crate::renderer::float_placement::stack_lines_through_bands(
+                    start,
+                    &advances,
+                    &st.visible_float_exclusions,
+                    None,
+                    None,
+                );
+                (end - start - plain).max(0.0)
+            };
         if forced_page_break_line.is_none()
-            && (st.current_height + fmt.height_for_fit <= available
+            && (st.current_height + fmt.height_for_fit + band_stack_extra <= available
                 || saved_single_line_bottom_fits
                 || saved_list_tail_body_vpos_fits)
         {
@@ -11587,7 +11636,7 @@ impl TypesetEngine {
             // 다단에서는 layout 이 vpos 기반으로 항목을 단별로 stacking 하므로
             // typeset 누적 시 trailing_ls 인플레이션이 단을 조기 종료시킴.
             let advance = fmt.flow_advance_height(para, st.col_count, trim_spacing_before_for_flow);
-            st.current_height += advance;
+            st.current_height += advance + band_stack_extra;
             st.flow_underrun += (fmt.total_height - advance).max(0.0);
             if let Some(v) = body_bottom_vpos {
                 st.prev_body_bottom_vpos = Some(v);
@@ -12065,7 +12114,7 @@ impl TypesetEngine {
         };
         let mt = fitted_visible_mt.as_ref().or(mt);
 
-        let is_tac = table.attr & 0x01 != 0;
+        let is_tac = table.common.treat_as_char;
         // [#1880] 자리차지(TopAndBottom) 판정: 종전 원시 attr 비트((attr>>21)&7==1)는
         // HWPX 파스가 table.attr 를 미채움(bit0 만 미러, section.rs:1831)이라 항상
         // false, HWP5 재파스는 원시 attr 전체(control.rs:153)라 true — 같은 IR 의
@@ -12296,7 +12345,7 @@ impl TypesetEngine {
         use crate::model::shape::{TextWrap, VertRelTo};
 
         !para_has_visible_text(para)
-            && !self.is_effective_tac_table(para, table, fmt)
+            && !table.common.treat_as_char
             && !table.common.treat_as_char
             && matches!(table.common.text_wrap, TextWrap::TopAndBottom)
             && matches!(table.common.vert_rel_to, VertRelTo::Para)
@@ -12316,7 +12365,7 @@ impl TypesetEngine {
         use crate::model::shape::{TextWrap, VertRelTo};
 
         !para_has_visible_text(para)
-            && !self.is_effective_tac_table(para, table, fmt)
+            && !table.common.treat_as_char
             && !table.common.treat_as_char
             && matches!(table.common.text_wrap, TextWrap::TopAndBottom)
             && matches!(table.common.vert_rel_to, VertRelTo::Para)
@@ -12514,16 +12563,14 @@ impl TypesetEngine {
         let tac_count = para
             .controls
             .iter()
-            .filter(
-                |c| matches!(c, Control::Table(t) if self.is_effective_tac_table(para, t, &fmt)),
-            )
+            .filter(|c| matches!(c, Control::Table(t) if t.common.treat_as_char))
             .count();
 
         let has_tac = tac_count > 0;
         let first_line_tac_height = if tac_count == 1 && fmt.line_heights.len() > 1 {
             para.controls.iter().find_map(|ctrl| match ctrl {
                 Control::Table(t)
-                    if self.is_effective_tac_table(para, t, &fmt)
+                    if t.common.treat_as_char
                         && self.tac_table_line_index(para, t, &fmt) == Some(0) =>
                 {
                     Some(
@@ -12547,7 +12594,7 @@ impl TypesetEngine {
             para.controls
                 .iter()
                 .find_map(|ctrl| match ctrl {
-                    Control::Table(table) if self.is_effective_tac_table(para, table, &fmt) => {
+                    Control::Table(table) if table.common.treat_as_char => {
                         Some(self.tac_table_line_index(para, table, &fmt).unwrap_or(0))
                     }
                     _ => None,
@@ -12578,9 +12625,7 @@ impl TypesetEngine {
         {
             para.controls
                 .iter()
-                .position(|c| {
-                    matches!(c, Control::Table(t) if self.is_effective_tac_table(para, t, &fmt))
-                })
+                .position(|c| matches!(c, Control::Table(t) if t.common.treat_as_char))
                 .filter(|&ti| {
                     ti > 0
                         && ti <= fmt.line_heights.len()
@@ -12667,8 +12712,8 @@ impl TypesetEngine {
         };
         let table_flow_tiebreak = |ctrl: &Control| -> u8 {
             match ctrl {
-                Control::Table(t) if !self.is_effective_tac_table(para, t, &fmt) => 0,
-                Control::Table(t) if self.is_effective_tac_table(para, t, &fmt) => 1,
+                Control::Table(t) if !t.common.treat_as_char => 0,
+                Control::Table(t) if t.common.treat_as_char => 1,
                 _ => 1,
             }
         };
@@ -12820,7 +12865,7 @@ impl TypesetEngine {
                         .find(|mt| mt.para_index == para_idx && mt.control_index == ctrl_idx);
                     let is_first_placed = first_placed_table == Some(ctrl_idx);
                     let is_last_placed = last_placed_table == Some(ctrl_idx);
-                    if self.is_effective_tac_table(para, table, &fmt) {
+                    if table.common.treat_as_char {
                         self.typeset_tac_table(
                             st,
                             para_idx,
@@ -13048,7 +13093,7 @@ impl TypesetEngine {
             let mut tac_idx = 0;
             for (ci, c) in para.controls.iter().enumerate() {
                 if let Control::Table(t) = c {
-                    if self.is_effective_tac_table(para, t, &fmt) {
+                    if t.common.treat_as_char {
                         if let Some(seg) = para.line_segs.get(tac_idx) {
                             let seg_lh = hwpunit_to_px(seg.line_height, self.dpi);
                             let mt_h = measured_tables
@@ -13071,7 +13116,7 @@ impl TypesetEngine {
                     .controls
                     .iter()
                     .filter_map(|c| match c {
-                        Control::Table(t) if self.is_effective_tac_table(para, t, &fmt) => {
+                        Control::Table(t) if t.common.treat_as_char => {
                             Some(hwpunit_to_px(t.outer_margin_top as i32, self.dpi))
                         }
                         _ => None,
@@ -13200,7 +13245,7 @@ impl TypesetEngine {
             .controls
             .iter()
             .take(ctrl_idx)
-            .filter(|c| matches!(c, Control::Table(t) if self.is_effective_tac_table(para, t, fmt)))
+            .filter(|c| matches!(c, Control::Table(t) if t.common.treat_as_char))
             .count();
         let tac_seg_idx = if tac_count > 1 {
             // [#2322] 텍스트-host 다중 TAC: 선행 텍스트 줄 수만큼 lineseg 매핑을
@@ -13211,7 +13256,7 @@ impl TypesetEngine {
                 .controls
                 .iter()
                 .find_map(|c| match c {
-                    Control::Table(t) if self.is_effective_tac_table(para, t, fmt) => Some(t),
+                    Control::Table(t) if t.common.treat_as_char => Some(t),
                     _ => None,
                 })
                 .and_then(|t| self.tac_table_line_index(para, t, fmt))
@@ -13457,6 +13502,8 @@ impl TypesetEngine {
             && pre_table_end_line > 0
             && pre_table_end_line < total_lines;
 
+        // [트랙3] 앵커선행 square host 의 표 높이 유예 회계 — post-text 가산 뒤 max 적용.
+        let mut deferred_square_host_base: Option<f64> = None;
         if is_wrap_around_table && pre_height > 0.0 {
             let v_off_px = crate::renderer::hwpunit_to_px(vertical_offset as i32, self.dpi);
             let table_bottom = v_off_px + table_total_height;
@@ -13484,12 +13531,25 @@ impl TypesetEngine {
             let table_bottom = table_top + table_total_height.max(0.0);
             if signed_vertical_offset > 0 {
                 if table_bottom > table_top + 0.5 {
-                    st.visible_float_exclusions.push(VisibleFloatExclusion {
-                        top: table_top,
-                        bottom: table_bottom,
-                    });
+                    st.visible_float_exclusions
+                        .push(VisibleFloatExclusion::full_width(
+                            table_top,
+                            table_bottom,
+                            None, // typeset 은 소유자 스킵을 쓰지 않는다(종전 동작 유지)
+                        ));
                 }
                 st.current_height += pre_height;
+                // [officex/S4] 높이 회계 구멍 — 밴드 방식은 표 높이를 예산에 안 넣고
+                // "후속 본문이 밴드를 소비"하는 데 기댄다. 그런데 표 절대 하단이 단 용량을
+                // 넘으면 이 페이지의 어떤 본문도 그 초과분을 소비할 수 없고, 표가 페이지
+                // 마지막 항목이면 영영 회계되지 않아 다음 내용이 넘친 표 밑에 계속 쌓였다
+                // (pagination/engine.rs effective_table_height 의 "넘치면 차액" 반쪽이
+                // 여기엔 없었다). 넘친 경우에만 흐름을 표 하단까지 전진시켜 단을 닫는다 —
+                // 들어오는 경우(bottom ≤ 용량)는 기여 0 그대로라 기존 문서는 불변이다.
+                let column_capacity = st.available_height();
+                if table_bottom > column_capacity + 0.5 {
+                    st.current_height = st.current_height.max(table_bottom);
+                }
             } else {
                 let following_non_positive =
                     has_following_non_positive_visible_float(para, ctrl_idx);
@@ -13498,11 +13558,48 @@ impl TypesetEngine {
                 } else {
                     0.0
                 };
+                // [officex/어울림 배선 3/3] 음수 오프셋(위로 올린) visible float 의
+                // 사전 밴드 생산 — 앞 문단을 미는 역방향 소비를 위해 flow 좌표를 싣는다.
+                // 양수 밴드는 self-registration(layout)이 전담하므로 싣지 않는다.
+                if signed_vertical_offset < 0 && table_bottom > table_top + 0.5 {
+                    st.current_column_bands
+                        .push(crate::renderer::pagination::PendingFloatBand {
+                            para_index: para_idx,
+                            offset_from_para_top: table_top - para_start_height,
+                            height: table_bottom - table_top,
+                            flow_top: table_top,
+                        });
+                }
                 st.current_height = st.current_height.max(table_bottom + inter_float_gap);
             }
         } else if tac_wrap_split {
             st.current_height += table_total_height;
+        } else if is_wrap_around_table
+            && para_has_non_whitespace_text(para)
+            && para.text_is_blank_before_control(ctrl_idx)
+        {
+            // [트랙3] 앵커선행 square host — 표와 post-text 가 같은 세로 구간을 공유
+            // (옆 흐름)하므로 합산이 아니라 wrap 시멘틱(max). 표 높이 가산을 유예하고
+            // post-text 가산 직후 max 로 회계한다(13508 pre_height 케이스와 대칭).
+            deferred_square_host_base = Some(st.current_height);
         } else {
+            // [officex/어울림 배선 3/3] 빈 host 단독 자리차지 float 를 위로 올린 경우
+            // (판정식 probe-flow.mjs 의 구조 — createTable 분할로 표는 빈 문단에 앵커).
+            // 이미 배치된 앞 문단을 밀어야 하므로 flow 좌표의 사전 밴드를 생산한다.
+            // 위치 계약 = compute_table_y_position 의 Para 기준: para_y + v_off (om 미가산).
+            if is_para_topbottom_float(&table.common) && signed_vertical_offset < 0 {
+                let v_off_px = hwpunit_to_px(signed_vertical_offset, self.dpi);
+                let band_top = para_start_height + v_off_px;
+                if table_total_height > 0.5 {
+                    st.current_column_bands
+                        .push(crate::renderer::pagination::PendingFloatBand {
+                            para_index: para_idx,
+                            offset_from_para_top: v_off_px,
+                            height: table_total_height,
+                            flow_top: band_top,
+                        });
+                }
+            }
             // [#2097 프로브 기록] 빈 host 자리차지 float(v_off>0)의 흐름 전진에
             // v_off + outer_bottom 을 더하는 기하 정합(82802 pi75: 저장 322.6 =
             // v_off 21.6 + outer 3.8 + 표 297.2, rhwp 299.1)은 격리 수정으로
@@ -13533,17 +13630,16 @@ impl TypesetEngine {
         let tac_table_count = para
             .controls
             .iter()
-            .filter(|c| matches!(c, Control::Table(t) if self.is_effective_tac_table(para, t, fmt)))
+            .filter(|c| matches!(c, Control::Table(t) if t.common.treat_as_char))
             .count();
         let post_table_start = if tac_wrap_split {
             (pre_table_end_line + 1).min(total_lines).max(1)
-        } else if table.attr & 0x01 != 0 {
+        } else if table.common.treat_as_char && total_lines > pre_table_end_line.max(1) {
+            // 표줄 다음에 실제 본문 줄이 있을 때만 표줄을 post-text 에서 제외한다.
+            // 표와 후행 텍스트가 **같은(유일한) 줄**을 공유하는 문단에서 무조건
+            // .max(1) 하면 그 줄이 통째로 post-text 범위 밖이 되어 후행 텍스트가
+            // 아예 렌더되지 않는다.
             pre_table_end_line.max(1)
-        } else if table.common.treat_as_char && total_lines > pre_table_end_line + 1 {
-            // HWPX TAC 표(attr 비트0=0): 표줄(pre_table_end_line) 다음에 실제 본문 줄이
-            // 있으면 표줄을 post-text 에서 제외(HWP5 attr&0x01 의 pre_end.max(1) 와 정합).
-            // 단일 줄(표줄만)은 건드리지 않아 기존 동작 보존.
-            pre_table_end_line + 1
         } else if is_last_table && !is_first_table {
             0
         } else {
@@ -13583,10 +13679,16 @@ impl TypesetEngine {
             });
             st.current_height += post_height;
         }
+        // [트랙3] 유예했던 표 높이 회계 — wrap 시멘틱: 흐름 하단 = max(post-text 하단,
+        // 표 배치 시점 + v_off + 표높이). post-text 미가산 케이스에서도 표 높이는 남는다.
+        if let Some(base) = deferred_square_host_base {
+            let v_off_px = hwpunit_to_px(signed_vertical_offset, self.dpi);
+            st.current_height = st.current_height.max(base + v_off_px + table_total_height);
+        }
 
         // TAC 표: trailing line_spacing 복원 (Paginator place_table_fits:777-783 동일)
         // has_post_text는 tac_table_count와 무관하게 텍스트 줄 존재 여부만 확인
-        let is_tac = self.is_effective_tac_table(para, table, fmt);
+        let is_tac = table.common.treat_as_char;
         if is_tac && fmt.total_height > fmt.height_for_fit && !has_post_text {
             st.current_height += fmt.total_height - fmt.height_for_fit;
         }
@@ -13638,15 +13740,6 @@ impl TypesetEngine {
                 None
             }
         })
-    }
-
-    fn is_effective_tac_table(
-        &self,
-        para: &Paragraph,
-        table: &crate::model::table::Table,
-        fmt: &FormattedParagraph,
-    ) -> bool {
-        table.attr & 0x01 != 0 || self.tac_table_line_index(para, table, fmt) == Some(0)
     }
 
     /// 비-TAC 블록 표의 조판: fits → place / split(Break Token 기반).
@@ -15128,6 +15221,55 @@ impl TypesetEngine {
             if !st.current_items.is_empty() {
                 st.advance_column_or_new_page();
             }
+            self.place_table_with_text(
+                st,
+                para_idx,
+                ctrl_idx,
+                para,
+                table,
+                fmt,
+                para_start_height,
+                table_total,
+                is_first_placed,
+                is_last_placed,
+            );
+            return;
+        }
+
+        // [officex/E3] 쪽나눔 = "나누지 않음"(TablePageBreak::None) 존중.
+        //
+        // 한글의 표 나눔 속성 0 은 "이 표는 쪽 경계에서 자르지 않는다"이고, 남은 공간이
+        // 모자라면 표를 **통째로 다음 쪽으로** 옮긴다. 종전 엔진은 이 값을 분할 판정에
+        // 전혀 쓰지 않아(선언높이 신뢰 #2097 에만 사용) 0/1/2 가 동일하게 분할됐다
+        // (실측 2026-07-27 diag_page_break2: 앞 본문 + 40행 표에서 0·2 모두 쪽 0..1 분할).
+        //
+        // 위 #991(1행 tac)과 같은 형태다: 한 쪽에 들어가는 표만 옮기고, 한 쪽에도 안
+        // 들어가는 초대형 표는 분할 외 방법이 없으므로 종전 경로로 폴백한다.
+        // tac 표는 인라인 원자성 규칙(#991·capability-map §3.5)이 따로 있어 제외한다.
+        if matches!(table.page_break, crate::model::table::TablePageBreak::None)
+            && !table.common.treat_as_char
+            && matches!(table.common.text_wrap, TextWrap::TopAndBottom)
+            // 제목 줄 반복(repeat_header)이 켜진 표는 **쪽을 걸쳐 나뉘는 것을 전제**한
+            // 설정이다 — 반복할 머리행은 분할될 때만 의미가 있다. 실측이 이를 지지한다:
+            // task1725 문서(한컴 PDF 오라클 242쪽)의 pb=None·repeat_header=true 표를
+            // 통째 이동시키면 243쪽으로 어긋나고, 분할로 두면 242쪽으로 일치한다.
+            && !table.repeat_header
+            && table_total <= available
+            && !st.current_items.is_empty()
+        {
+            if std::env::var("RHWP_DIAG_E3").is_ok() {
+                eprintln!(
+                    "E3_MOVE pi={} rows={} total={:.1} cur_h={:.1} avail={:.1} wrap={:?} vrel={:?}",
+                    para_idx,
+                    table.row_count,
+                    table_total,
+                    st.current_height,
+                    available,
+                    table.common.text_wrap,
+                    table.common.vert_rel_to,
+                );
+            }
+            st.advance_column_or_new_page();
             self.place_table_with_text(
                 st,
                 para_idx,
@@ -16657,13 +16799,18 @@ impl TypesetEngine {
     // 유틸리티
     // ========================================================
 
-    /// 문단에 블록 표 컨트롤이 있는지 감지
+    /// 문단에 블록 표 컨트롤이 있는지 감지.
+    ///
+    /// 글자처럼 취급 여부는 물리(`common.treat_as_char`)만 읽는다 — 미러
+    /// `Table.attr` bit0 은 HWPX 파스에서 불완전하다(section.rs
+    /// `materialize_hwpx_table_attrs`). 미러를 읽으면 같은 문서가 컨테이너
+    /// 포맷에 따라 인라인/블록으로 갈린다.
     fn paragraph_has_table(&self, para: &Paragraph) -> bool {
         use crate::renderer::height_measurer::is_tac_table_inline_in_para;
         let seg_width = para.line_segs.first().map(|s| s.segment_width).unwrap_or(0);
         para.controls.iter().any(|c| {
-            matches!(c, Control::Table(t) if t.attr & 0x01 == 0
-                || (t.attr & 0x01 != 0 && !is_tac_table_inline_in_para(t, seg_width, para)))
+            matches!(c, Control::Table(t) if !t.common.treat_as_char
+                || !is_tac_table_inline_in_para(t, seg_width, para))
         })
     }
 
@@ -17018,6 +17165,7 @@ mod tests {
                 DEFAULT_DPI,
             ),
             column_contents: vec![ColumnContent {
+                topbottom_bands: Vec::new(),
                 column_index: 0,
                 start_height: 0.0,
                 endnote_flow: false,

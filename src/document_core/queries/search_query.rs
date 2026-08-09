@@ -31,9 +31,13 @@ fn find_in_text(text: &str, query: &str, case_sensitive: bool) -> Vec<usize> {
         if chars.len() < qlen {
             return results;
         }
-        for i in 0..=chars.len() - qlen {
+        let mut i = 0;
+        while i + qlen <= chars.len() {
             if chars[i..i + qlen] == qchars[..] {
                 results.push(i);
+                i += qlen; // 겹치는 매치는 세지 않는다(한컴/Word 표준 = non-overlapping)
+            } else {
+                i += 1;
             }
         }
     } else {
@@ -45,9 +49,13 @@ fn find_in_text(text: &str, query: &str, case_sensitive: bool) -> Vec<usize> {
         if chars.len() < qlen {
             return results;
         }
-        for i in 0..=chars.len() - qlen {
+        let mut i = 0;
+        while i + qlen <= chars.len() {
             if chars[i..i + qlen] == qchars[..] {
                 results.push(i);
+                i += qlen; // 겹치는 매치는 세지 않는다(한컴/Word 표준 = non-overlapping)
+            } else {
+                i += 1;
             }
         }
     }
@@ -348,8 +356,19 @@ impl DocumentCore {
                     }
                     _ => continue,
                 };
+                // [text-format/치환 서식] 매치 첫 글자의 char_shape를 잡아 삽입 범위에 되씌운다
+                // — 치환 글자가 '바로 앞 글자' 서식을 물려받아 원 서식이 유실/번지던 문제(본문과 같은 뿌리).
+                let orig_shape = cell_para.char_shape_id_at(hit.char_offset);
                 cell_para.delete_text_at(hit.char_offset, hit.length);
                 cell_para.insert_text_at(hit.char_offset, new_text);
+                if let Some(id) = orig_shape {
+                    let new_len = new_text.chars().count();
+                    cell_para.apply_char_shape_range(
+                        hit.char_offset,
+                        hit.char_offset + new_len,
+                        id,
+                    );
+                }
             } else {
                 // 본문 문단 치환 — delete_text_native + insert_text_native는 recompose를 호출하므로
                 // 성능을 위해 직접 문단 수준 조작 후 마지막에 일괄 recompose
@@ -362,13 +381,33 @@ impl DocumentCore {
                     .paragraphs
                     .get_mut(hit.para)
                     .ok_or_else(|| HwpError::RenderError("문단 범위 초과".into()))?;
+                // [text-format/치환 서식] 위 셀 분기와 같은 이유 — 원 서식 보존.
+                let orig_shape = para.char_shape_id_at(hit.char_offset);
                 para.delete_text_at(hit.char_offset, hit.length);
                 para.insert_text_at(hit.char_offset, new_text);
+                if let Some(id) = orig_shape {
+                    let new_len = new_text.chars().count();
+                    para.apply_char_shape_range(hit.char_offset, hit.char_offset + new_len, id);
+                }
             }
         }
 
         // 변경된 섹션들 recompose
         if count > 0 {
+            // [text-format/치환 줄바꿈] 치환이 넣은 '\n'은 문단 내 줄나눔을 바꾸는데,
+            // recompose_section만으로는 line_segs가 그대로라 조판에 반영되지 않았다(1줄 고정,
+            // 저장 왕복 후에도 1줄). 직접 입력 경로처럼 영향 본문 문단을 먼저 reflow해 줄을 재계산한다.
+            let mut affected_body: Vec<(usize, usize)> = all_hits
+                .iter()
+                .filter(|h| h.cell_context.is_none())
+                .map(|h| (h.sec, h.para))
+                .collect();
+            affected_body.sort();
+            affected_body.dedup();
+            for (sec_idx, para_idx) in affected_body {
+                self.reflow_paragraph(sec_idx, para_idx);
+            }
+
             let mut affected_sections: Vec<usize> = all_hits.iter().map(|h| h.sec).collect();
             affected_sections.sort();
             affected_sections.dedup();

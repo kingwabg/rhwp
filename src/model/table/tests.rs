@@ -559,6 +559,35 @@ fn test_delete_row_merged_cell_anchor() {
         .find(|c| c.col == 0 && c.row == 0)
         .unwrap();
     assert_eq!(merged.row_span, 2);
+    // [table-layout/삭제-세로병합] 3행치 높이(3000)를 물던 병합 셀은 앵커 행 하나가
+    // 사라지면 2행치(2000)로 줄어야 표 높이가 실제 행 수에 비례한다.
+    assert_eq!(merged.height, 2000);
+}
+
+#[test]
+fn test_delete_row_merged_shrinks_table_height() {
+    // 세로 병합(row_span=2)이 걸친 행을 지우면 표 전체 높이가 한 행만큼 줄어야 한다.
+    // (병합 셀이 2행치 height를 그대로 물고 있으면 행은 줄었는데 표 높이는 그대로인 결함.)
+    let mut table = make_table(3, 3);
+    // (0,0)~(1,0) 세로 병합
+    table.merge_cells(0, 0, 1, 0).unwrap();
+    let merged_before = table.cell_at(0, 0).unwrap();
+    assert_eq!(merged_before.row_span, 2);
+    assert_eq!(merged_before.height, 2000); // 1000 * 2행
+    let height_before: HwpUnit = table.get_row_heights().iter().sum();
+    assert_eq!(height_before, 3000); // 3행 * 1000
+
+    table.delete_row(0).unwrap();
+
+    assert_eq!(table.row_count, 2);
+    // 남은 병합 셀은 이제 단일 행 높이(1000)를 가져야 한다.
+    let merged_after = table.cell_at(0, 0).unwrap();
+    assert_eq!(merged_after.row_span, 1);
+    assert_eq!(merged_after.height, 1000);
+    // 행 높이는 [1000, 1000], 표 높이는 2000으로 한 행만큼 줄어야 한다.
+    assert_eq!(table.get_row_heights(), vec![1000, 1000]);
+    let height_after: HwpUnit = table.get_row_heights().iter().sum();
+    assert_eq!(height_after, 2000);
 }
 
 #[test]
@@ -1153,4 +1182,229 @@ fn insert_column_inherits_shape_when_row_has_only_merged_cells() {
     for cell in new_cells {
         assert_inherited(cell, "insert_column");
     }
+}
+
+// ── [경계선 재설계 2026-08-04] offset_cell_boundary ────────────────────────
+
+/// 아래 경계 어긋내기(+): 대상이 아래로 커지고 이웃 아래 칸이 줄며, 새 격자 줄이 생기고
+/// 다른 열은 스팬만 늘어 겉모습이 안 변한다. 표 전체 높이 불변.
+#[test]
+fn test_offset_cell_boundary_bottom_down() {
+    let mut t = make_table(2, 2);
+    set_cell_text(&mut t, 0, 0, "A1");
+    set_cell_text(&mut t, 1, 0, "A2");
+    set_cell_text(&mut t, 1, 1, "B2");
+    let a1 = t.cell_index_at(0, 0).unwrap();
+    t.offset_cell_boundary(a1, false, 400).unwrap();
+
+    assert_eq!(t.row_count, 3, "격자 줄이 하나 늘어야 한다");
+    // A1: 줄 0-1 병합, 높이 1000+400
+    let a1c = t.cell_at(0, 0).unwrap();
+    assert_eq!((a1c.row_span, a1c.height), (2, 1400));
+    // A2: 줄 2, 높이 1000-400
+    let a2c = t.cell_at(2, 0).unwrap();
+    assert_eq!((a2c.row, a2c.row_span, a2c.height), (2, 1, 600));
+    assert_eq!(cell_text(&t, 2, 0), "A2", "A2 내용 보존");
+    // B 열: B1 그대로, B2 는 줄 1-2 스팬(겉모습 불변, 높이 1000 유지)
+    let b1 = t.cell_at(0, 1).unwrap();
+    assert_eq!((b1.row_span, b1.height), (1, 1000));
+    let b2 = t.cell_at(1, 1).unwrap();
+    assert_eq!((b2.row, b2.row_span, b2.height), (1, 2, 1000));
+    assert_eq!(cell_text(&t, 1, 1), "B2");
+}
+
+/// 아래 경계 어긋내기(-): 대상이 줄고 아래 이웃이 위로 커진다.
+#[test]
+fn test_offset_cell_boundary_bottom_up() {
+    let mut t = make_table(2, 2);
+    set_cell_text(&mut t, 0, 0, "A1");
+    set_cell_text(&mut t, 1, 0, "A2");
+    let a1 = t.cell_index_at(0, 0).unwrap();
+    t.offset_cell_boundary(a1, false, -300).unwrap();
+
+    assert_eq!(t.row_count, 3);
+    let a1c = t.cell_at(0, 0).unwrap();
+    assert_eq!((a1c.row_span, a1c.height), (1, 700));
+    let a2c = t.cell_at(1, 0).unwrap();
+    assert_eq!((a2c.row, a2c.row_span, a2c.height), (1, 2, 1300));
+    assert_eq!(
+        cell_text(&t, 1, 0),
+        "A2",
+        "흡수한 조각은 비어 있고 이웃 내용이 정본"
+    );
+    // B1 은 줄 0-1 스팬으로 겉모습 불변
+    let b1 = t.cell_at(0, 1).unwrap();
+    assert_eq!((b1.row_span, b1.height), (2, 1000));
+}
+
+/// 오른쪽 경계 어긋내기(+): 열 방향 대칭.
+#[test]
+fn test_offset_cell_boundary_right_down() {
+    let mut t = make_table(2, 2);
+    set_cell_text(&mut t, 0, 0, "A1");
+    set_cell_text(&mut t, 0, 1, "B1");
+    let a1 = t.cell_index_at(0, 0).unwrap();
+    t.offset_cell_boundary(a1, true, 900).unwrap();
+
+    assert_eq!(t.col_count, 3, "격자 칸이 하나 늘어야 한다");
+    let a1c = t.cell_at(0, 0).unwrap();
+    assert_eq!((a1c.col_span, a1c.width), (2, 4500));
+    let b1c = t.cell_at(0, 2).unwrap();
+    assert_eq!((b1c.col, b1c.col_span, b1c.width), (2, 1, 2700));
+    assert_eq!(cell_text(&t, 0, 2), "B1");
+    // 아랫줄: A2 는 분할선을 안 걸치니 그대로, B2 가 칸 1-2 스팬으로 겉모습 불변
+    let a2 = t.cell_at(1, 0).unwrap();
+    assert_eq!((a2.col_span, a2.width), (1, 3600));
+    let b2 = t.cell_at(1, 1).unwrap();
+    assert_eq!((b2.col_span, b2.width), (2, 3600));
+}
+
+/// 가드: 바깥 테두리(마지막 행/열)는 어긋낼 수 없다.
+#[test]
+fn test_offset_cell_boundary_outer_rejected() {
+    let mut t = make_table(2, 2);
+    let a2 = t.cell_index_at(1, 0).unwrap();
+    assert!(t.offset_cell_boundary(a2, false, 300).is_err());
+    let b1 = t.cell_index_at(0, 1).unwrap();
+    assert!(t.offset_cell_boundary(b1, true, 300).is_err());
+}
+
+/// 가드: 폭이 다른(스팬 불일치) 이웃과는 거부.
+#[test]
+fn test_offset_cell_boundary_span_mismatch_rejected() {
+    let mut t = make_table(3, 2);
+    // 가운데 행을 가로로 병합 → A1 아래 이웃의 col_span 이 2
+    t.merge_cells(1, 0, 1, 1).unwrap();
+    let a1 = t.cell_index_at(0, 0).unwrap();
+    assert!(t.offset_cell_boundary(a1, false, 300).is_err());
+}
+
+/// 표 전체 치수 불변: 어긋내기 전후 행 높이 합(레이아웃 제약 기준)이 유지된다.
+#[test]
+fn test_offset_cell_boundary_preserves_totals() {
+    let mut t = make_table(2, 3);
+    let before_w = t.common.width;
+    let before_h = t.common.height;
+    let a1 = t.cell_index_at(0, 0).unwrap();
+    t.offset_cell_boundary(a1, false, 250).unwrap();
+    assert_eq!(t.common.width, before_w, "표 폭 불변");
+    assert_eq!(t.common.height, before_h, "표 높이 불변");
+}
+
+/// 복원(치유): 어긋낸 아래 경계를 restore 하면 원래 2×2 격자로 완전히 돌아온다.
+#[test]
+fn test_restore_cell_boundary_bottom() {
+    let mut t = make_table(2, 2);
+    set_cell_text(&mut t, 0, 0, "A1");
+    set_cell_text(&mut t, 1, 0, "A2");
+    set_cell_text(&mut t, 1, 1, "B2");
+    let a1 = t.cell_index_at(0, 0).unwrap();
+    t.offset_cell_boundary(a1, false, 400).unwrap();
+    assert_eq!(t.row_count, 3);
+
+    let a1_after = t.cell_index_at(0, 0).unwrap();
+    t.restore_cell_boundary(a1_after, false).unwrap();
+
+    assert_eq!(t.row_count, 2, "접힌 줄까지 정리돼 원 격자로");
+    let a1c = t.cell_at(0, 0).unwrap();
+    assert_eq!(
+        (a1c.row_span, a1c.height),
+        (1, 1000),
+        "목격자(B1) 높이로 복원"
+    );
+    let a2c = t.cell_at(1, 0).unwrap();
+    assert_eq!((a2c.row, a2c.row_span, a2c.height), (1, 1, 1000));
+    assert_eq!(cell_text(&t, 1, 0), "A2", "이웃 내용 보존");
+    assert_eq!(cell_text(&t, 1, 1), "B2");
+    let b1 = t.cell_at(0, 1).unwrap();
+    assert_eq!((b1.row_span, b1.height), (1, 1000));
+}
+
+/// 복원(치유): 오른쪽 경계 대칭.
+#[test]
+fn test_restore_cell_boundary_right() {
+    let mut t = make_table(2, 2);
+    set_cell_text(&mut t, 0, 1, "B1");
+    let a1 = t.cell_index_at(0, 0).unwrap();
+    t.offset_cell_boundary(a1, true, 900).unwrap();
+    assert_eq!(t.col_count, 3);
+
+    let a1_after = t.cell_index_at(0, 0).unwrap();
+    t.restore_cell_boundary(a1_after, true).unwrap();
+
+    assert_eq!(t.col_count, 2);
+    let a1c = t.cell_at(0, 0).unwrap();
+    assert_eq!((a1c.col_span, a1c.width), (1, 3600));
+    let b1c = t.cell_at(0, 1).unwrap();
+    assert_eq!((b1c.col, b1c.col_span, b1c.width), (1, 1, 3600));
+    assert_eq!(cell_text(&t, 0, 1), "B1");
+}
+
+/// 가드: 어긋나지 않은 칸은 복원 거부.
+#[test]
+fn test_restore_cell_boundary_not_offset_rejected() {
+    let mut t = make_table(2, 2);
+    let a1 = t.cell_index_at(0, 0).unwrap();
+    assert!(t.restore_cell_boundary(a1, false).is_err());
+}
+
+/// 치유 반대 방향: 정렬된 칸(B1)의 경계를 어긋난 선 쪽으로 맞추면 전 열이 어긋난
+/// 선 위치로 정렬되고 격자가 단순화된다.
+#[test]
+fn test_restore_cell_boundary_extend_direction() {
+    let mut t = make_table(2, 2);
+    set_cell_text(&mut t, 1, 1, "B2");
+    let a1 = t.cell_index_at(0, 0).unwrap();
+    t.offset_cell_boundary(a1, false, 400).unwrap();
+    assert_eq!(t.row_count, 3);
+
+    // B1(정렬된 칸)을 잡고 어긋난 선으로 — restore 가 extend 분기로 처리
+    let b1 = t.cell_index_at(0, 1).unwrap();
+    t.restore_cell_boundary(b1, false).unwrap();
+
+    assert_eq!(t.row_count, 2, "어긋난 선 위치로 정렬되며 격자 단순화");
+    let a1c = t.cell_at(0, 0).unwrap();
+    assert_eq!(
+        (a1c.row_span, a1c.height),
+        (1, 1400),
+        "A1 은 어긋난 크기 유지"
+    );
+    let b1c = t.cell_at(0, 1).unwrap();
+    assert_eq!(
+        (b1c.row_span, b1c.height),
+        (1, 1400),
+        "B1 이 어긋난 선까지 확장(목격자 A1)"
+    );
+    let b2c = t.cell_at(1, 1).unwrap();
+    assert_eq!((b2c.row_span, b2c.height), (1, 600));
+    assert_eq!(cell_text(&t, 1, 1), "B2", "B2 내용 보존");
+}
+
+/// 어긋낸 표의 조각 열/행도 병합 제약으로 정확히 유도된다 —
+/// update_ctrl_dimensions 를 부르는 다음 연산이 표를 키우지 않는다(신고 수리).
+#[test]
+fn test_offset_table_derived_sizes_stable() {
+    let mut t = make_table(2, 2);
+    let a1 = t.cell_index_at(0, 0).unwrap();
+    t.offset_cell_boundary(a1, true, 900).unwrap();
+    assert_eq!(
+        t.get_column_widths(),
+        vec![3600, 900, 2700],
+        "조각 열 폭이 제약으로 풀린다"
+    );
+    let w_before = t.common.width;
+    t.update_ctrl_dimensions();
+    assert_eq!(t.common.width, w_before, "재계산해도 표 폭 불변");
+
+    let mut t2 = make_table(2, 2);
+    let a1b = t2.cell_index_at(0, 0).unwrap();
+    t2.offset_cell_boundary(a1b, false, 400).unwrap();
+    assert_eq!(
+        t2.get_row_heights(),
+        vec![1000, 400, 600],
+        "조각 행 높이가 제약으로 풀린다"
+    );
+    let h_before = t2.common.height;
+    t2.update_ctrl_dimensions();
+    assert_eq!(t2.common.height, h_before, "재계산해도 표 높이 불변");
 }
