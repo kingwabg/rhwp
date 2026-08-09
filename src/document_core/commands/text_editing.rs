@@ -445,6 +445,19 @@ impl DocumentCore {
         char_offset: usize,
         text: &str,
     ) -> Result<String, HwpError> {
+        self.insert_text_native_side(section_idx, para_idx, char_offset, text, false)
+    }
+
+    /// after_controls: 같은 텍스트 오프셋에 앵커된 인라인 컨트롤 **뒤**에 삽입
+    /// (논리 좌표 "컨트롤 뒤" 삽입 — insertTextLogical 전용).
+    pub(crate) fn insert_text_native_side(
+        &mut self,
+        section_idx: usize,
+        para_idx: usize,
+        char_offset: usize,
+        text: &str,
+        after_controls: bool,
+    ) -> Result<String, HwpError> {
         // 인덱스 범위 검증
         if section_idx >= self.document.sections.len() {
             return Err(HwpError::RenderError(format!(
@@ -500,7 +513,11 @@ impl DocumentCore {
         );
         {
             let para = &mut self.document.sections[section_idx].paragraphs[para_idx];
-            para.insert_text_at(char_offset, text);
+            if after_controls {
+                para.insert_text_at_after_controls(char_offset, text);
+            } else {
+                para.insert_text_at(char_offset, text);
+            }
             keep_inactive_field_start_outside(para, &before_insertions, new_chars_count);
             keep_inactive_field_end_outside(para, &outside_insertions, new_chars_count);
             if has_clickhere_field_range(para) {

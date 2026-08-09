@@ -1628,8 +1628,16 @@ impl DocumentCore {
             if sec + 1 < self.document.sections.len() {
                 return self.enter_paragraph(sec + 1, 0, delta, preferred_x);
             }
-            // 문서 끝 — 표 마지막 위치 유지
-            Ok((sec, 0, 0, None))
+            // 문서 끝 — 호스트 문단의 끝(TAC 표 뒤)으로. 종전엔 (para 0, offset 0)
+            // 하드코딩이라 마지막 셀에서 ↓ 가 커서를 **표 앞**으로 보냈고, 이어 친
+            // 글자/공백이 표 앞에 삽입돼 표가 밀렸다(2026-08-10 사용자 신고:
+            // "표에 딱 붙은 캐럿이 표를 이동시켜"). 한컴은 아래 탈출 = 표 뒤다.
+            let end = section
+                .paragraphs
+                .get(ppi)
+                .map(crate::document_core::helpers::logical_paragraph_length)
+                .unwrap_or(0);
+            Ok((sec, ppi, end, None))
         } else {
             // 위로 나가면 **표 앞 문단**으로. 종전엔 표를 품은 문단(ppi) 자신에 섰는데,
             // 아래로 나갈 때는 ppi+1 로 건너뛰므로 위아래가 짝이 안 맞았다 — 표 위에서

@@ -852,9 +852,7 @@ impl HwpDocument {
         // 걸려 컨트롤이 오른쪽으로 밀린다(표 뒤 타이핑이 표 앞에 꽂히는 실측 결함).
         // 후행 컨트롤(text_offset==text_len)은 insert_text_at 의 하이브리드 확장
         // 오프셋(text_len + 소비한 후행 컨트롤 수)이 "컨트롤 뒤"를 정확히 표현한다.
-        // ponytail: 텍스트 중간의 컨트롤 뒤 삽입은 여전히 컨트롤 앞으로 감 —
-        // 스트림 좌표 삽입 코어 도입 시 승격.
-        let insert_offset = if at_ctrl {
+        let (insert_offset, after_controls) = if at_ctrl {
             let text_len = self.document.sections[sec].paragraphs[pi]
                 .text
                 .chars()
@@ -864,14 +862,20 @@ impl HwpDocument {
                     &self.document.sections[sec].paragraphs[pi],
                     text_len,
                 );
-                text_len + (logical_offset as usize).saturating_sub(logical_at_text_end)
+                (
+                    text_len + (logical_offset as usize).saturating_sub(logical_at_text_end),
+                    false,
+                )
             } else {
-                text_offset
+                // 텍스트 중간의 컨트롤 뒤 삽입 — 컨트롤 앞 규약을 우회해 뒤에 넣는다.
+                // 종전엔 컨트롤 앞으로 들어가 표 뒤 IME preedit 이 표 앞에 꽂혔고,
+                // 이어지는 논리 삭제와 어긋나 자모가 잔류했다("ㄴ니", 2026-08-10).
+                (text_offset, true)
             }
         } else {
-            text_offset
+            (text_offset, false)
         };
-        let result = self.insert_text_native(sec, pi, insert_offset, text)?;
+        let result = self.insert_text_native_side(sec, pi, insert_offset, text, after_controls)?;
         // 삽입 후 논리적 오프셋 반환
         let new_text_offset = text_offset + text.chars().count();
         let new_logical = crate::document_core::helpers::text_to_logical_offset(
@@ -1004,6 +1008,33 @@ impl HwpDocument {
             count as usize,
         )
         .map_err(|e| e.into())
+    }
+
+    /// 논리적 오프셋(인라인 컨트롤 = 1칸)으로 텍스트를 삭제한다 — insertTextLogical 의 짝.
+    ///
+    /// 커서 좌표(논리)를 그대로 넘기는 호출자용. TAC 표가 있는 문단에서 deleteText(텍스트
+    /// 좌표)에 논리 오프셋을 넘기면 삭제가 한 칸 밀려 IME 조합 preedit 교체가 실패했다
+    /// (2026-08-10 실측: 표 뒤 "니" 조합 시 첫 자모 "ㄴ"이 잔류해 "ㄴ니"로 이중 입력).
+    #[wasm_bindgen(js_name = deleteTextLogical)]
+    pub fn delete_text_logical(
+        &mut self,
+        section_idx: u32,
+        para_idx: u32,
+        logical_offset: u32,
+        count: u32,
+    ) -> Result<String, JsValue> {
+        let sec = section_idx as usize;
+        let pi = para_idx as usize;
+        if sec >= self.document.sections.len() || pi >= self.document.sections[sec].paragraphs.len()
+        {
+            return Err(JsValue::from_str("인덱스 범위 초과"));
+        }
+        let (text_offset, _at_ctrl) = crate::document_core::helpers::logical_to_text_offset(
+            &self.document.sections[sec].paragraphs[pi],
+            logical_offset as usize,
+        );
+        self.delete_text_native(sec, pi, text_offset, count as usize)
+            .map_err(|e| e.into())
     }
 
     /// 표 셀 내부 문단에 텍스트를 삽입한다.

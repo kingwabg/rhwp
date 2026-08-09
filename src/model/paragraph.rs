@@ -500,6 +500,21 @@ impl Paragraph {
     /// char_offset이 text.chars().count()를 초과하면 인라인 컨트롤 뒤의
     /// 위치로 간주하여 올바른 UTF-16 위치에 삽입한다.
     pub fn insert_text_at(&mut self, char_offset: usize, new_text: &str) {
+        self.insert_text_at_with_control_side(char_offset, new_text, true)
+    }
+
+    /// 같은 텍스트 오프셋에 컨트롤이 앵커된 경우, 새 글자를 컨트롤 **뒤**에 넣는다.
+    /// (논리 좌표 "컨트롤 뒤" 삽입용 — insert_text_at 의 기본 규약은 컨트롤 앞.)
+    pub fn insert_text_at_after_controls(&mut self, char_offset: usize, new_text: &str) {
+        self.insert_text_at_with_control_side(char_offset, new_text, false)
+    }
+
+    fn insert_text_at_with_control_side(
+        &mut self,
+        char_offset: usize,
+        new_text: &str,
+        before_control: bool,
+    ) {
         if new_text.is_empty() {
             return;
         }
@@ -513,7 +528,8 @@ impl Paragraph {
         // 마지막 문자 + 후행 컨트롤 갭을 포함한 값으로 계산
         let effective_char_offset = char_offset.min(text_len);
         let control_positions = self.control_text_positions();
-        let inserts_before_inline_control = char_offset <= text_len
+        let inserts_before_inline_control = before_control
+            && char_offset <= text_len
             && self
                 .controls
                 .iter()
