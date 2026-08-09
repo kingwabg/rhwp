@@ -47,13 +47,13 @@
 
   /* 포커스/선택/핸들 */
   --focus-ring: #4a90d9;
-  --selection-fill: #b8d7ff;
+  --selection-fill: rgba(135, 206, 235, 0.4);
   --caret-color: #111111;
   --resize-handle: #3f78d8;
   --ui-align-icon-filter: none;
   --ui-icon-sprite-url: url(/images/icon_small_ko.svg);
-  --table-selection-fill: rgba(51, 122, 183, 0.25);
-  --table-selection-stroke: #337ab7;
+  --table-selection-fill: rgba(135, 206, 235, 0.35);
+  --table-selection-stroke: #4db3e6;
 
   /* 눈금자 */
   --ruler-bg: #d0d0d0;
@@ -190,13 +190,13 @@
   --doc-shadow: rgba(0, 0, 0, 0.5);
 
   --focus-ring: #8bb8ff;
-  --selection-fill: #315f91;
+  --selection-fill: rgba(135, 206, 235, 0.3);
   --caret-color: #111111;
   --resize-handle: #8bb8ff;
   --ui-align-icon-filter: invert(1) brightness(1.6);
   --ui-icon-sprite-url: url(/images/icon_small_ko_dark.svg);
-  --table-selection-fill: rgba(139, 184, 255, 0.28);
-  --table-selection-stroke: #8bb8ff;
+  --table-selection-fill: rgba(135, 206, 235, 0.28);
+  --table-selection-stroke: #7cc7ec;
 
   --ruler-bg: #2d333b;
   --ruler-body: var(--ui-surface-raised);
