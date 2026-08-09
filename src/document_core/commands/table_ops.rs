@@ -2621,6 +2621,16 @@ impl DocumentCore {
                 self.plan_object_rebase(section_idx, parent_para_idx, control_idx, json, &old)
             });
 
+        // [officex] TAC 토글 검출용 스냅샷 (그림 setter 의 was_tac 과 동일 역할).
+        let was_tac = matches!(
+            self.document
+                .sections
+                .get(section_idx)
+                .and_then(|s| s.paragraphs.get(parent_para_idx))
+                .and_then(|p| p.controls.get(control_idx)),
+            Some(Control::Table(t)) if t.common.treat_as_char
+        );
+
         let caption_style = self
             .document
             .doc_info
@@ -3016,6 +3026,54 @@ impl DocumentCore {
                         .copy_from_slice(&h_off.to_le_bytes());
                 }
             }
+        }
+
+        // [officex] 표 TAC 토글 마이그레이션 — 그림(picture.rs)·도형(shape.rs) setter 와
+        // 동일 패턴의 표 누락분. 시각 편입 자체는 물리 기반 라우팅(paragraph_has_table)과
+        // 이 함수 꼬리의 recompose/refresh 가 이미 처리하지만, **드래그로 옮겨 둔 표를
+        // TAC 로 켜면 rel_to·offset 이 남아** 나중에 다시 끄는 순간 표가 옛 오프셋으로
+        // 점프하고, 저장 파일에도 남는다. 한컴 산출물(samples/tac-verify Scenario A~D)대로
+        // rel_to=Para·offset=0 리셋(+미러·raw 이중 기록)하고, 토글 시 호스트 문단을
+        // 재조판해 저장 line_segs 를 새 물리에 맞춘다. 핀: officex_table_tac_toggle_migration.
+        let now_tac = matches!(
+            self.document
+                .sections
+                .get(section_idx)
+                .and_then(|s| s.paragraphs.get(parent_para_idx))
+                .and_then(|p| p.controls.get(control_idx)),
+            Some(Control::Table(t)) if t.common.treat_as_char
+        );
+        if was_tac != now_tac {
+            if now_tac {
+                let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+                table.common.horz_rel_to = crate::model::shape::HorzRelTo::Para;
+                table.common.vert_rel_to = crate::model::shape::VertRelTo::Para;
+                table.common.horizontal_offset = 0;
+                table.common.vertical_offset = 0;
+                Self::sync_common_obj_attr_known_bits(&mut table.common);
+                table.attr = table.common.attr;
+                if table.raw_ctrl_data.len() >= common_obj_offsets::H_OFFSET.end {
+                    table.raw_ctrl_data[common_obj_offsets::FLAGS]
+                        .copy_from_slice(&table.common.attr.to_le_bytes());
+                    table.raw_ctrl_data[common_obj_offsets::V_OFFSET]
+                        .copy_from_slice(&0u32.to_le_bytes());
+                    table.raw_ctrl_data[common_obj_offsets::H_OFFSET]
+                        .copy_from_slice(&0u32.to_le_bytes());
+                }
+            }
+            let stored_end_for_reset = crate::renderer::composer::paragraph_flow_end(
+                &self.document.sections[section_idx].paragraphs[parent_para_idx],
+            );
+            self.reflow_paragraph(section_idx, parent_para_idx);
+            crate::renderer::composer::recalculate_section_vpos(
+                &mut self.document.sections[section_idx].paragraphs,
+                parent_para_idx,
+                None,
+                stored_end_for_reset,
+                &self.styles,
+                self.dpi,
+                self.document.is_hwp3_variant,
+            );
         }
 
         self.document.sections[section_idx].raw_stream = None;
