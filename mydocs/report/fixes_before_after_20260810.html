@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>오늘의 수리 전/후 — TAC 표·캐럿·조합 (2026-08-10)</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface: #fcfcfb; --page: #f9f9f7;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --ring: rgba(11,11,11,.10);
+  --blue: #2a78d6; --green: #1baf7a; --red: #d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface: #1a1a19; --page: #0d0d0d;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --ring: rgba(255,255,255,.10);
+    --blue: #3987e5; --green: #199e70; --red: #e66767;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.75 system-ui, -apple-system, "Apple SD Gothic Neo", sans-serif; }
+.wrap { max-width: 960px; margin: 0 auto; padding: 40px 24px 120px; }
+h1 { font-size: 26px; margin: 20px 0 8px; }
+h2 { font-size: 21px; margin: 56px 0 8px; padding-top: 20px; border-top: 1px solid var(--grid); }
+h2 .no { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--ink); color: var(--page); font-size: 15px; margin-right: 10px; vertical-align: -4px; }
+.sub { color: var(--ink-2); margin: 0 0 8px; }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; padding: 14px; }
+figcaption { color: var(--ink-2); font-size: 14px; margin-top: 10px; line-height: 1.6; }
+.ba { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+.ba figure::before { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 10px; border-radius: 20px; margin-bottom: 10px; }
+.ba figure.before::before { content: "수리 전"; background: color-mix(in oklab, var(--red) 14%, var(--surface)); color: var(--red); }
+.ba figure.after::before { content: "수리 후"; background: color-mix(in oklab, var(--green) 14%, var(--surface)); color: var(--green); }
+img { width: 100%; border: 1px solid var(--grid); border-radius: 6px; image-rendering: pixelated; background: #fff; }
+table { border-collapse: collapse; width: 100%; margin: 14px 0; background: var(--surface); font-size: 14px; }
+th, td { border: 1px solid var(--grid); padding: 7px 10px; text-align: left; }
+th { background: color-mix(in oklab, var(--surface) 92%, var(--ink)); }
+.ok { color: var(--green); font-weight: 700; }
+.bad { color: var(--red); font-weight: 700; }
+.talk { background: var(--surface); border: 1px solid var(--ring); border-left: 4px solid var(--blue); border-radius: 10px; padding: 14px 18px; margin: 16px 0; }
+.mock { background: #fff; border: 1px solid var(--grid); border-radius: 6px; padding: 26px 20px; font-size: 20px; color: #000; }
+.mock .black { background: #000; color: #fff; padding: 1px 3px; animation: blink 1s step-end infinite; }
+.mock .caret-ul { border-bottom: 3px solid #87CEEB; animation: blink 1s step-end infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+code { background: color-mix(in oklab, var(--surface) 90%, var(--ink)); padding: 1px 5px; border-radius: 4px; font-size: 14px; }
+.foot { margin-top: 60px; padding-top: 16px; border-top: 1px solid var(--grid); color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>오늘의 수리 전/후 — TAC 표·캐럿·조합</h1>
+<p class="sub">2026-08-10 하루 동안 신고·적발되어 수리한 6건의 전/후 실측. 상세 계측과 한컴 실측 근거는
+<a href="caret_selection_analysis_20260809.html">캐럿·선택 정밀 분석 보고서</a> §5·§6.</p>
+
+<h2><span class="no">1</span>배포 엔진 교체 — TAC 표가 줄 머리로 이탈하던 조판</h2>
+<p>배포본(sc-hazel-kappa)의 vendor wasm이 <b>8/1 구엔진</b>이라, 텍스트 사이에 앵커된 글자처럼
+취급 표가 줄 머리로 이탈하고 그림의 기준선 잠김이 없었다. 8/9 롤업 + 오늘 수리를 포함한 신엔진으로
+재벤더링했다.</p>
+<div class="ba">
+<figure class="before"><img src="assets/caret-20260809/ba-engine-old.png" alt="구엔진 조판"><figcaption>구엔진(8/1): 줄1이 <b>[표]가나다라</b> — 표가 줄 머리로 이탈, 텍스트가 전부 오른쪽으로 밀림.</figcaption></figure>
+<figure class="after"><img src="assets/caret-20260809/ba-engine-new.png" alt="신엔진 조판"><figcaption>신엔진: <b>가나[표]다라</b> 원문 순서 그대로. 기준선 잠김도 한컴 정합(0.15·H−1px, ±1px).</figcaption></figure>
+</div>
+
+<h2><span class="no">2</span>TAC 표 문단의 캐럿·선택 좌표 붕괴</h2>
+<p>표 문단 전용 레이아웃이 <code>char_start</code>를 텍스트 좌표로 기록해(워커는 논리 좌표 기대)
+표 뒤 글자의 밑줄 캐럿이 두 글자 폭이 되고 마지막 글자 선택 rect가 비었다. Home/End 캐럿은 줄
+상자(표 높이)만큼 커졌다.</p>
+<table>
+<tr><th>항목</th><th class="bad">수리 전 (실측)</th><th class="ok">수리 후 (실측)</th></tr>
+<tr><td>표 뒤 '다' 뒤 밑줄 캐럿</td><td class="bad">32px (두 글자 폭), y 어긋남</td><td class="ok">16px (한 글자 폭)</td></tr>
+<tr><td>마지막 글자 '라' 선택 rect</td><td class="bad">빈 배열 → 끝 캐럿 오락가락</td><td class="ok">x274.7 w16 정상</td></tr>
+<tr><td>Home/End 캐럿 높이</td><td class="bad">35.5px (표 높이)</td><td class="ok">16px (텍스트 높이 — 한컴 정합)</td></tr>
+</table>
+<figure class="after" style="max-width:480px"><img src="assets/caret-20260809/ba-tac-caret-after.png" alt="수리 후 표 라인 캐럿"><figcaption>수리 후: 가나[표]다라에서 논리 오프셋 0~5 전 위치 캐럿 정상 (문단 끝 = '라' 폭 밑줄).</figcaption></figure>
+
+<h2><span class="no">3</span>IME 조합 표시 — 검은 박스 깜빡임 → 유령 글자 → 정상</h2>
+<p>조합 글자는 엔진이 문서에 넣어 캔버스가 이미 그리는데, 그 위에 <b>블랙박스+흰 글자 오버레이</b>가
+한 장 더 있었다(1차 신고: 검은 사각형 깜빡임). 오버레이를 투명 글자로 바꾸자 캔버스 글자와 이중
+표시돼 줌/스크롤 어긋난 곳에 유령 글자가 보였다(2차 신고). <b>오버레이를 제거</b>하고 밑줄 캐럿만
+남겼다.</p>
+<div class="ba">
+<figure class="before"><div class="mock">텍스<span class="black">트</span> <span style="color:var(--muted);font-size:13px">← 신고 재현 모형</span></div><figcaption>수리 전: 조합 중 글자가 검은 박스로 반전되어 통째로 깜빡임. 중간판에선 같은 글자가 두 곳에 겹쳐 보임.</figcaption></figure>
+<figure class="after"><div class="mock">텍스<span class="caret-ul">트</span></div><figcaption>수리 후 규칙(실측 캡처는 아래): 조합 글자는 정상 표시 고정, <b>하늘색 밑줄만</b> 깜빡임 — 한컴과 동일.</figcaption></figure>
+</div>
+<figure class="after" style="max-width:420px"><img src="assets/caret-20260809/ba-comp-after.png" alt="배포본 조합 실측"><figcaption>배포본 실측: 표 오른쪽에서 '하' 조합 중 — 글자 한 번만 + 밑줄 캐럿(16×2px).</figcaption></figure>
+
+<h2><span class="no">4</span>공백 이동 캐럿 — 텍스트로 점프해 보이던 문제</h2>
+<p>"확정 글자 뒤 = 그 글자 폭 밑줄" 스펙은 공백 앞으로 이동하면 캐럿이 직전 글자 밑에 그려져 공백을
+건너뛴 것처럼 보였다. 한컴 규칙(이동/클릭 = 세로 캐럿, 밑줄은 조합 중만)으로 정합.</p>
+<table>
+<tr><th>"가나␣" 에서 ← 이동</th><th class="bad">수리 전</th><th class="ok">수리 후 (실측 x)</th></tr>
+<tr><td>공백 뒤 → 공백 앞</td><td class="bad">'나' 밑에 밑줄 (공백 건너뛴 듯 보임)</td><td class="ok">세로 캐럿 x265→257 — 공백 폭만큼만 이동</td></tr>
+<tr><td>공백 앞 → 나 앞</td><td class="bad">'가' 밑에 밑줄</td><td class="ok">세로 캐럿 x257→241 (글자 폭)</td></tr>
+</table>
+
+<h2><span class="no">5</span>표 마지막 셀에서 ↓ 탈출 — 스페이스가 표를 밀던 버그</h2>
+<p>엔진 <code>exit_table_vertical</code>의 문서 끝 분기가 <b>(문단 0, 오프셋 0) 하드코딩</b>이라,
+표가 마지막 문단일 때 마지막 셀에서 ↓로 나오면 커서가 <b>표 앞</b>에 놓였다. 캐럿은 표에 붙어
+보이는데 스페이스를 치면 표 앞에 삽입돼 표가 밀렸다. 한컴 규칙(아래 탈출 = 표 뒤)으로 수리.</p>
+<div class="ba">
+<figure class="before"><img src="assets/caret-20260809/ba-tblexit-before-space.png" alt="수리 전 표 밀림"><figcaption>수리 전: ↓ 탈출 후 Space — 공백이 표 <b>앞</b>에 들어가 표 전체가 오른쪽으로 밀림.</figcaption></figure>
+<figure class="after"><img src="assets/caret-20260809/ba-tblexit-after.png" alt="수리 후"><figcaption>수리 후: ↓ 탈출 = 표 뒤(논리 끝) — Space가 표 뒤에 들어가고 표는 제자리.</figcaption></figure>
+</div>
+
+<h2><span class="no">6</span>표 뒤 한글 입력 — 첫 자모가 잔류하던 이중 입력</h2>
+<p>IME preedit 교체는 커서 <b>논리</b> 좌표로 삽입·삭제하는데, 엔진에 논리 삭제 API가 없어 텍스트
+좌표 <code>deleteText</code>로 지우면 TAC 표 문단에서 한 칸 밀렸다 — 첫 자모가 안 지워지고 남아
+"니들" → <b>"ㄴ니들"</b>. 또 논리 삽입이 표 뒤 위치를 표 앞으로 밀어 넣는 천장도 함께 수리
+(<code>deleteTextLogical</code> 신설 + 컨트롤 뒤 삽입 규약).</p>
+<div class="ba">
+<figure class="before"><img src="assets/caret-20260809/ba-dup-before.png" alt="수리 전 자모 잔류"><figcaption>수리 전: 표 뒤에 "니들" 입력 → <b>"ㄴ니들"</b> — 첫 조합의 ㄴ이 잔류. (표가 파랗게 선택되는 부작용도 보임)</figcaption></figure>
+<figure class="after"><img src="assets/caret-20260809/ba-dup-after.png" alt="수리 후"><figcaption>수리 후: 같은 입력 — "니들" 그대로. 논리 삽입·삭제 왕복 원문 보존 핀 테스트 추가.</figcaption></figure>
+</div>
+
+<div class="talk"><b>핀 테스트</b> — <code>officex_tac_table_caret_selection.rs</code>(3),
+<code>officex_tac_table_exit_nav.rs</code>(2: ↓탈출=표 뒤 / 논리 삽입·삭제 왕복 원문 보존) +
+픽스처 2본(한컴 원본 <code>officex_tac_mid_anchor.hwpx</code>, 표 단독
+<code>officex_tac_last_para.hwpx</code>). 전체 게이트 nextest 통과 후 배포.</div>
+
+<p class="foot">실측: 스튜디오/배포본 직접 타이핑 재현 + 픽셀 계측 · 한컴 실측 근거는 캐럿·선택 정밀
+분석 보고서 §5·§6 · 2026-08-10</p>
+
+</div>
+</body>
+</html>
