@@ -24,6 +24,7 @@
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { EventBus } from '@/core/event-bus';
 import type { CharProperties, ParaProperties } from '@/core/types';
+import type { CommandServices } from '@/command/types';
 import { ModalDialog } from './dialog';
 
 interface StyleEntry {
@@ -62,6 +63,7 @@ export class StyleDialog extends ModalDialog {
   constructor(
     private wasm: WasmBridge,
     private eventBus: EventBus,
+    private services?: CommandServices,
   ) {
     super('스타일', 560);
   }
@@ -264,7 +266,21 @@ export class StyleDialog extends ModalDialog {
     if (!style) return;
     if (!confirm(`'${style.name}' 스타일을 삭제하시겠습니까?\n이 스타일을 사용 중인 문단은 바탕글로 변경됩니다.`)) return;
     try {
-      this.wasm.deleteStyle(this.selectedId);
+      // 스타일 삭제도 undo 대상이다 — 편집 라우터를 통과시켜 스냅샷으로
+      // 기록한다 (#1320 계약). services 미주입 환경에서만 직접 적용 fallback.
+      const ih = this.services?.getInputHandler();
+      if (ih) {
+        ih.executeOperation({
+          kind: 'snapshot',
+          operationType: 'styleDelete',
+          operation: () => {
+            this.wasm.deleteStyle(this.selectedId);
+            return ih.getCursorPosition();
+          },
+        });
+      } else {
+        this.wasm.deleteStyle(this.selectedId);
+      }
       this.selectedId = 0;
       this.loadStyles();
       this.updateInfo();

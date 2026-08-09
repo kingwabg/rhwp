@@ -1,16 +1,19 @@
 import { ModalDialog } from './dialog';
 import type { EventBus } from '@/core/event-bus';
+import type { CommandServices } from '@/command/types';
 
 export class NewNumberDialog extends ModalDialog {
   private wasm: any;
   private eventBus: EventBus;
+  private services: CommandServices | undefined;
   private cursorPos: { sec: number; para: number; offset: number };
   private numInput!: HTMLInputElement;
 
-  constructor(wasm: any, eventBus: EventBus, pos: { sec: number; para: number; offset: number }) {
+  constructor(wasm: any, eventBus: EventBus, pos: { sec: number; para: number; offset: number }, services?: CommandServices) {
     super('새 번호로 시작', 300);
     this.wasm = wasm;
     this.eventBus = eventBus;
+    this.services = services;
     this.cursorPos = pos;
   }
 
@@ -54,10 +57,26 @@ export class NewNumberDialog extends ModalDialog {
     const num = parseInt(this.numInput.value, 10);
     if (isNaN(num) || num < 1 || num > 65535) return false;
     try {
-      this.wasm.insertNewNumber(
-        this.cursorPos.sec, this.cursorPos.para, this.cursorPos.offset, num,
-      );
-      this.eventBus.emit('document-changed');
+      // 새 번호 삽입도 undo 대상이다 — 편집 라우터를 통과시켜 스냅샷으로
+      // 기록한다 (#1320 계약). services 미주입 환경에서만 직접 적용 fallback.
+      const ih = this.services?.getInputHandler();
+      if (ih) {
+        ih.executeOperation({
+          kind: 'snapshot',
+          operationType: 'insertNewNumber',
+          operation: () => {
+            this.wasm.insertNewNumber(
+              this.cursorPos.sec, this.cursorPos.para, this.cursorPos.offset, num,
+            );
+            return ih.getCursorPosition();
+          },
+        });
+      } else {
+        this.wasm.insertNewNumber(
+          this.cursorPos.sec, this.cursorPos.para, this.cursorPos.offset, num,
+        );
+        this.eventBus.emit('document-changed');
+      }
     } catch (e) {
       console.warn('[NewNumberDialog] 삽입 실패:', e);
     }

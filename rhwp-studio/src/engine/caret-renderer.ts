@@ -66,11 +66,12 @@ export class CaretRenderer {
     const pageOffset = this.virtualScroll.getPageOffset(pageIndex);
     const pageLeft = this.calcPageLeft(pageIndex);
 
-    // 밑줄형: 줄 바닥에 글자 폭 근사(높이×0.6)의 가로 바를 깐다
-    const thickness = 2;
+    // 밑줄형: 기준선 바로 아래에 글자 폭 근사(높이×0.6)의 가로 바를 깐다.
+    // 엔진 rect 는 y = 기준선 − 0.8·height 이므로 기준선 = y + 0.8·height.
+    // 상자 바닥(y+height)은 기준선보다 디센더만큼 아래라 캐럿이 글자에서 떨어져 보인다.
     const width = Math.max(6, height * 0.6 * zoom);
     this.caretEl.style.left = `${pageLeft + x * zoom}px`;
-    this.caretEl.style.top = `${pageOffset + (y + height) * zoom - thickness}px`;
+    this.caretEl.style.top = `${pageOffset + (y + height * 0.8) * zoom}px`;
     this.caretEl.style.width = `${width}px`;
   }
 

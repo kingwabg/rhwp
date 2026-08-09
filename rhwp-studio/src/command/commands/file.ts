@@ -457,7 +457,7 @@ export const fileCommands: CommandDef[] = [
     shortcutLabel: 'F7',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
-      const dialog = new PageSetupDialog(services.wasm, services.eventBus, 0);
+      const dialog = new PageSetupDialog(services.wasm, services.eventBus, 0, services);
       dialog.show();
     },
   },

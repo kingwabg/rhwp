@@ -1116,6 +1116,40 @@ export class MoveShapeCommand implements EditCommand {
 }
 
 
+// ─── 직선 끝점 이동 명령 ───────────────────────────────
+
+/**
+ * 직선 끝점 드래그처럼 드래그 중 WASM에 이미 반영된 끝점 이동을
+ * Undo/Redo 스택에 기록하기 위한 명령. 좌표는 [sx, sy, ex, ey] (HWPUNIT).
+ */
+export class MoveLineEndpointCommand implements EditCommand {
+  readonly type = 'moveLineEndpoint';
+  readonly timestamp: number;
+
+  constructor(
+    private sec: number,
+    private ppi: number,
+    private ci: number,
+    private before: [number, number, number, number],
+    private after: [number, number, number, number],
+    timestamp?: number,
+  ) {
+    this.timestamp = timestamp ?? Date.now();
+  }
+
+  execute(wasm: WasmBridge): DocumentPosition {
+    wasm.moveLineEndpoint(this.sec, this.ppi, this.ci, ...this.after);
+    return { sectionIndex: this.sec, paragraphIndex: this.ppi, charOffset: 0 };
+  }
+
+  undo(wasm: WasmBridge): DocumentPosition {
+    wasm.moveLineEndpoint(this.sec, this.ppi, this.ci, ...this.before);
+    return { sectionIndex: this.sec, paragraphIndex: this.ppi, charOffset: 0 };
+  }
+
+  mergeWith(): null { return null; }
+}
+
 // ─── 개체 크기/위치 속성 변경 명령 ─────────────────────
 
 export type ObjectResizeTarget = {
@@ -1200,14 +1234,21 @@ export class SnapshotCommand implements EditCommand {
    * @param operationType 작업 종류 (예: 'pasteInternal', 'deleteControl')
    * @param cursorBefore 작업 전 커서 위치
    * @param operation 실제 작업을 수행하는 함수. 작업 후 커서 위치를 반환.
+   * @param ids 이미 반영된 mutation을 record 전용으로 기록할 때, 호출부가 직접
+   *   저장한 before/after 스냅샷 id (kind:'record' 경로 — execute 미호출 전제).
    */
   constructor(
     operationType: string,
     private cursorBefore: DocumentPosition,
     private cursorAfter: DocumentPosition,
     private operation: ((wasm: WasmBridge) => DocumentPosition) | null,
+    ids?: { beforeId: number; afterId: number },
   ) {
     this.type = `snapshot:${operationType}`;
+    if (ids) {
+      this.beforeId = ids.beforeId;
+      this.afterId = ids.afterId;
+    }
   }
 
   execute(wasm: WasmBridge): DocumentPosition {

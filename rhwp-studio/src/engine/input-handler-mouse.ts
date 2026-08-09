@@ -2,6 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import type { ContextMenuItem } from '@/ui/context-menu';
+import { MoveLineEndpointCommand, SnapshotCommand } from './command';
 import * as _connector from './input-handler-connector';
 
 function protectedCellKey(hit: any): string | null {
@@ -568,6 +569,11 @@ export function onClick(this: any, e: MouseEvent): void {
                   endpoint: dir === 'sw' ? 'start' : 'end',
                   pageIndex: picBbox.pageIndex,
                   pageLeft: pl, pageOffset: po, zoom,
+                  // 드래그 시작 시 끝점 (HWPUNIT) — undo 기록용 (#1320 계약)
+                  origEndpoints: [
+                    Math.round(picBbox.x1 * 75), Math.round(picBbox.y1 * 75),
+                    Math.round(picBbox.x2 * 75), Math.round(picBbox.y2 * 75),
+                  ],
                 };
                 this.container.style.cursor = 'crosshair';
                 document.addEventListener('mouseup', this.onMouseUpBound, { once: true });
@@ -1524,6 +1530,7 @@ export function onMouseMove(this: any, e: MouseEvent): void {
           ? [newX, newY, gx2, gy2]
           : [gx1, gy1, newX, newY];
         this.wasm.moveLineEndpoint(st.ref.sec, st.ref.ppi, st.ref.ci, sx, sy, ex, ey);
+        st.lastEndpoints = [sx, sy, ex, ey];
         this.eventBus.emit('document-changed');
         this.renderPictureObjectSelection();
       } catch { /* ignore */ }
@@ -1878,6 +1885,18 @@ export function onMouseUp(this: any, _e: MouseEvent): void {
 
   // 직선 끝점 드래그 종료
   if (this.isLineEndpointDragging) {
+    const st = this.lineEndpointState;
+    // 드래그 중 즉시 반영된 끝점 이동도 undo 대상이다 — 시작/최종 끝점을
+    // record 로 기록한다 (#1320 계약).
+    if (st?.lastEndpoints && st.origEndpoints &&
+        String(st.lastEndpoints) !== String(st.origEndpoints)) {
+      this.executeOperation({
+        kind: 'record',
+        command: new MoveLineEndpointCommand(
+          st.ref.sec, st.ref.ppi, st.ref.ci, st.origEndpoints, st.lastEndpoints,
+        ),
+      });
+    }
     this.isLineEndpointDragging = false;
     this.lineEndpointState = null;
     this.container.style.cursor = '';
@@ -1942,7 +1961,24 @@ export function onMouseUp(this: any, _e: MouseEvent): void {
 function bringShapeToFront(this: any, picHit: any): void {
   if (picHit.type === 'shape' || picHit.type === 'line' || picHit.type === 'group' || picHit.type === 'ole') {
     try {
-      this.wasm.changeShapeZOrder(picHit.sec, picHit.ppi, picHit.ci, 'front');
+      // 클릭 시 맨 앞 이동도 undo 대상이다 (#1320 계약). 단, 이미 맨 앞이면
+      // wasm 이 no-op 이므로 z-order 가 실제로 변한 경우에만 기록한다 —
+      // 매 클릭마다 빈 undo 엔트리가 쌓이는 것을 막는다.
+      let beforeZ: number | undefined;
+      try { beforeZ = this.wasm.getShapeProperties(picHit.sec, picHit.ppi, picHit.ci).zOrder; } catch { /* ignore */ }
+      const beforeId = this.wasm.saveSnapshot();
+      const result = this.wasm.changeShapeZOrder(picHit.sec, picHit.ppi, picHit.ci, 'front');
+      if (result.ok && result.zOrder !== undefined && result.zOrder !== beforeZ) {
+        const pos = this.cursor.getPosition();
+        this.executeOperation({
+          kind: 'record',
+          command: new SnapshotCommand('objectZOrder', pos, pos, null, {
+            beforeId, afterId: this.wasm.saveSnapshot(),
+          }),
+        });
+      } else {
+        this.wasm.discardSnapshot(beforeId);
+      }
       this.eventBus.emit('document-changed');
     } catch { /* ignore */ }
   }

@@ -11,6 +11,7 @@
 import { ModalDialog } from './dialog';
 import { makeOption } from './dom-utils';
 import type { EventBus } from '@/core/event-bus';
+import type { CommandServices } from '@/command/types';
 
 interface FormulaContext {
   sec: number;
@@ -62,6 +63,7 @@ const FORMATS = [
 export class FormulaDialog extends ModalDialog {
   private wasm: any;
   private eventBus: EventBus;
+  private services: CommandServices | undefined;
   private ctx: FormulaContext;
   private formulaInput!: HTMLInputElement;
   private funcSelect!: HTMLSelectElement;
@@ -69,10 +71,11 @@ export class FormulaDialog extends ModalDialog {
   private commaCheck!: HTMLInputElement;
   private errorMsg!: HTMLDivElement;
 
-  constructor(wasm: any, eventBus: EventBus, ctx: FormulaContext) {
+  constructor(wasm: any, eventBus: EventBus, ctx: FormulaContext, services?: CommandServices) {
     super('계산식', 420);
     this.wasm = wasm;
     this.eventBus = eventBus;
+    this.services = services;
     this.ctx = ctx;
   }
 
@@ -206,31 +209,47 @@ export class FormulaDialog extends ModalDialog {
       }
 
       // 검증 통과 → 실제 적용 (write_result=true)
-      this.wasm.evaluateTableFormula(
-        this.ctx.sec, this.ctx.ppi, this.ctx.ci,
-        row, col, formula, true,
-      );
+      const applyFormula = () => {
+        this.wasm.evaluateTableFormula(
+          this.ctx.sec, this.ctx.ppi, this.ctx.ci,
+          row, col, formula, true,
+        );
 
-      // 형식 + 쉼표 처리
-      let displayValue = validated.result;
-      const fmt = this.formatSelect.value;
-      if (fmt === 'integer') displayValue = Math.round(displayValue);
-      else if (fmt === 'decimal1') displayValue = Number(displayValue.toFixed(1));
-      else if (fmt === 'decimal2') displayValue = Number(displayValue.toFixed(2));
+        // 형식 + 쉼표 처리
+        let displayValue = validated.result;
+        const fmt = this.formatSelect.value;
+        if (fmt === 'integer') displayValue = Math.round(displayValue);
+        else if (fmt === 'decimal1') displayValue = Number(displayValue.toFixed(1));
+        else if (fmt === 'decimal2') displayValue = Number(displayValue.toFixed(2));
 
-      if (this.commaCheck.checked && typeof displayValue === 'number') {
-        const parts = displayValue.toString().split('.');
-        parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-        const formatted = parts.join('.');
-        try {
-          this.wasm.insertTextInCell(
-            this.ctx.sec, this.ctx.ppi, this.ctx.ci,
-            this.ctx.cellIndex, 0, 0, formatted,
-          );
-        } catch { /* 쉼표 포맷 기록 실패 시 기본값 유지 */ }
+        if (this.commaCheck.checked && typeof displayValue === 'number') {
+          const parts = displayValue.toString().split('.');
+          parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+          const formatted = parts.join('.');
+          try {
+            this.wasm.insertTextInCell(
+              this.ctx.sec, this.ctx.ppi, this.ctx.ci,
+              this.ctx.cellIndex, 0, 0, formatted,
+            );
+          } catch { /* 쉼표 포맷 기록 실패 시 기본값 유지 */ }
+        }
+      };
+      // 계산식 적용도 undo 대상이다 — 편집 라우터를 통과시켜 스냅샷으로
+      // 기록한다 (#1320 계약). services 미주입 환경에서만 직접 적용 fallback.
+      const ih = this.services?.getInputHandler();
+      if (ih) {
+        ih.executeOperation({
+          kind: 'snapshot',
+          operationType: 'insertFormula',
+          operation: () => {
+            applyFormula();
+            return ih.getCursorPosition();
+          },
+        });
+      } else {
+        applyFormula();
+        this.eventBus.emit('document-changed');
       }
-
-      this.eventBus.emit('document-changed');
       return true; // 성공 → 대화상자 닫기
     } catch (e: any) {
       this.showError('계산식 실행 실패: ' + (e.message || e));

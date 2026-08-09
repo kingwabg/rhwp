@@ -23,6 +23,7 @@
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { EventBus } from '@/core/event-bus';
 import type { CharProperties, ParaProperties } from '@/core/types';
+import type { CommandServices } from '@/command/types';
 import { ModalDialog } from './dialog';
 import { CharShapeDialog } from './char-shape-dialog';
 import { ParaShapeDialog } from './para-shape-dialog';
@@ -64,6 +65,7 @@ export class StyleEditDialog extends ModalDialog {
     mode: 'add' | 'edit',
     styleInfo?: StyleInfo,
     baseInfo?: StyleBaseInfo,
+    private services?: CommandServices,
   ) {
     super(mode === 'add' ? '스타일 추가하기' : '스타일 편집하기', 480);
     this.addMode = mode === 'add';
@@ -280,24 +282,41 @@ export class StyleEditDialog extends ModalDialog {
     }
 
     try {
-      if (this.addMode) {
-        const baseParaShapeId = this.baseInfo.paraProps?.paraShapeId;
-        const baseCharShapeId = this.baseInfo.charProps?.charShapeId;
-        const newId = this.wasm.createStyle(JSON.stringify({
-          name, englishName, type: styleType, nextStyleId,
-          ...(typeof baseParaShapeId === 'number' ? { baseParaShapeId } : {}),
-          ...(typeof baseCharShapeId === 'number' ? { baseCharShapeId } : {}),
-        }));
-        if (this.charModsJson !== '{}' || this.paraModsJson !== '{}') {
-          this.wasm.updateStyleShapes(newId, this.charModsJson, this.paraModsJson);
+      const applyStyle = () => {
+        if (this.addMode) {
+          const baseParaShapeId = this.baseInfo.paraProps?.paraShapeId;
+          const baseCharShapeId = this.baseInfo.charProps?.charShapeId;
+          const newId = this.wasm.createStyle(JSON.stringify({
+            name, englishName, type: styleType, nextStyleId,
+            ...(typeof baseParaShapeId === 'number' ? { baseParaShapeId } : {}),
+            ...(typeof baseCharShapeId === 'number' ? { baseCharShapeId } : {}),
+          }));
+          if (this.charModsJson !== '{}' || this.paraModsJson !== '{}') {
+            this.wasm.updateStyleShapes(newId, this.charModsJson, this.paraModsJson);
+          }
+        } else {
+          this.wasm.updateStyle(this.styleInfo.id, JSON.stringify({
+            name, englishName, nextStyleId,
+          }));
+          if (this.charModsJson !== '{}' || this.paraModsJson !== '{}') {
+            this.wasm.updateStyleShapes(this.styleInfo.id, this.charModsJson, this.paraModsJson);
+          }
         }
+      };
+      // 스타일 추가/편집도 undo 대상이다 — 관련 호출을 하나의 스냅샷으로 묶어
+      // 기록한다 (#1320 계약). services 미주입 환경에서만 직접 적용 fallback.
+      const ih = this.services?.getInputHandler();
+      if (ih) {
+        ih.executeOperation({
+          kind: 'snapshot',
+          operationType: 'styleEdit',
+          operation: () => {
+            applyStyle();
+            return ih.getCursorPosition();
+          },
+        });
       } else {
-        this.wasm.updateStyle(this.styleInfo.id, JSON.stringify({
-          name, englishName, nextStyleId,
-        }));
-        if (this.charModsJson !== '{}' || this.paraModsJson !== '{}') {
-          this.wasm.updateStyleShapes(this.styleInfo.id, this.charModsJson, this.paraModsJson);
-        }
+        applyStyle();
       }
       this.onSave?.();
     } catch (err) {

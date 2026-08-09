@@ -3,6 +3,7 @@ import { appendSvgMarkup } from './dom-utils';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { PageDef } from '@/core/types';
 import type { EventBus } from '@/core/event-bus';
+import type { CommandServices } from '@/command/types';
 
 const HWPUNIT_PER_MM = 7200 / 25.4; // ≈283.46
 const PAPER_PRESET_TOLERANCE_HU = 3;
@@ -57,6 +58,7 @@ export class PageSetupDialog extends ModalDialog {
   private wasm: WasmBridge;
   private eventBus: EventBus;
   private sectionIdx: number;
+  private services: CommandServices | undefined;
   private pageDef!: PageDef;
 
   // 입력 필드 참조
@@ -68,11 +70,12 @@ export class PageSetupDialog extends ModalDialog {
   private marginInputs!: Record<string, HTMLInputElement>;
   private scopeSelect!: HTMLSelectElement;
 
-  constructor(wasm: WasmBridge, eventBus: EventBus, sectionIdx: number) {
+  constructor(wasm: WasmBridge, eventBus: EventBus, sectionIdx: number, services?: CommandServices) {
     super('편집 용지', 440);
     this.wasm = wasm;
     this.eventBus = eventBus;
     this.sectionIdx = sectionIdx;
+    this.services = services;
   }
 
   show(): void {
@@ -226,9 +229,23 @@ export class PageSetupDialog extends ModalDialog {
       binding: parseInt(this.bindingRadios.find(r => r.checked)?.value ?? '0'),
     };
 
-    const result = this.wasm.setPageDef(this.sectionIdx, newDef);
-    if (result.ok) {
-      this.eventBus.emit('document-changed');
+    // 편집 용지 변경도 undo 대상이다 — 편집 라우터를 통과시켜 스냅샷으로
+    // 기록한다 (#1320 계약). services 미주입 환경에서만 직접 적용 fallback.
+    const ih = this.services?.getInputHandler();
+    if (ih) {
+      ih.executeOperation({
+        kind: 'snapshot',
+        operationType: 'pageSetup',
+        operation: () => {
+          this.wasm.setPageDef(this.sectionIdx, newDef);
+          return ih.getCursorPosition();
+        },
+      });
+    } else {
+      const result = this.wasm.setPageDef(this.sectionIdx, newDef);
+      if (result.ok) {
+        this.eventBus.emit('document-changed');
+      }
     }
   }
 

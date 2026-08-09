@@ -1,6 +1,7 @@
 import { ModalDialog } from './dialog';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { EventBus } from '@/core/event-bus';
+import type { CommandServices } from '@/command/types';
 
 const HWPUNIT_PER_MM = 7200 / 25.4;
 
@@ -18,17 +19,19 @@ export class ColumnSettingsDialog extends ModalDialog {
   private wasm: WasmBridge;
   private eventBus: EventBus;
   private sectionIdx: number;
+  private services: CommandServices | undefined;
 
   private countInput!: HTMLInputElement;
   private typeSelect!: HTMLSelectElement;
   private sameWidthCheck!: HTMLInputElement;
   private spacingInput!: HTMLInputElement;
 
-  constructor(wasm: WasmBridge, eventBus: EventBus, sectionIdx: number) {
+  constructor(wasm: WasmBridge, eventBus: EventBus, sectionIdx: number, services?: CommandServices) {
     super('다단 설정', 360);
     this.wasm = wasm;
     this.eventBus = eventBus;
     this.sectionIdx = sectionIdx;
+    this.services = services;
   }
 
   show(): void {
@@ -110,8 +113,22 @@ export class ColumnSettingsDialog extends ModalDialog {
     const sameWidth = this.sameWidthCheck.checked ? 1 : 0;
     const spacingHu = Math.max(0, Math.min(32767, mmToHwpunit(parseFloat(this.spacingInput.value) || 0)));
     try {
-      this.wasm.setColumnDef(this.sectionIdx, count, type, sameWidth, spacingHu);
-      this.eventBus.emit('document-changed');
+      // 다단 설정 변경도 undo 대상이다 — 편집 라우터를 통과시켜 스냅샷으로
+      // 기록한다 (#1320 계약). services 미주입 환경에서만 직접 적용 fallback.
+      const ih = this.services?.getInputHandler();
+      if (ih) {
+        ih.executeOperation({
+          kind: 'snapshot',
+          operationType: 'columnSettings',
+          operation: () => {
+            this.wasm.setColumnDef(this.sectionIdx, count, type, sameWidth, spacingHu);
+            return ih.getCursorPosition();
+          },
+        });
+      } else {
+        this.wasm.setColumnDef(this.sectionIdx, count, type, sameWidth, spacingHu);
+        this.eventBus.emit('document-changed');
+      }
     } catch (err) {
       console.warn('[ColumnSettingsDialog] 다단 설정 실패:', err);
     }

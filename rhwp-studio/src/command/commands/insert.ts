@@ -148,12 +148,20 @@ export const insertCommands: CommandDef[] = [
       try {
         const defaultFontSize = 1000; // 10pt → HWPUNIT
         const defaultColor = 0x00000000; // 검정
-        const result = services.wasm.insertEquation(
-          pos.sectionIndex, pos.paragraphIndex, pos.charOffset,
-          '', defaultFontSize, defaultColor
-        );
-        if (result.ok) {
-          services.eventBus.emit('document-changed');
+        // 수식 삽입도 undo 대상이다 — 편집 라우터의 스냅샷으로 기록한다 (#1320 계약).
+        let result: any;
+        ih.executeOperation({
+          kind: 'snapshot',
+          operationType: 'insertEquation',
+          operation: () => {
+            result = services.wasm.insertEquation(
+              pos.sectionIndex, pos.paragraphIndex, pos.charOffset,
+              '', defaultFontSize, defaultColor
+            );
+            return ih.getCursorPosition();
+          },
+        });
+        if (result?.ok) {
           if (!equationEditorDialog) {
             equationEditorDialog = new EquationEditorDialog(services.wasm, services.eventBus, services);
           }
@@ -176,21 +184,28 @@ export const insertCommands: CommandDef[] = [
       fieldInsertDialog = new FieldInsertDialog();
       fieldInsertDialog.onApply = (props) => {
         try {
-          const result = services.wasm.insertClickHereField(
-            pos,
-            props.guide,
-            props.memo,
-            props.name,
-            props.editable,
-          );
-          if (result.ok) {
-            const insertedPos = { ...pos, charOffset: result.charOffset ?? pos.charOffset };
-            ih.moveCursorTo(insertedPos);
-            ih.markCurrentFieldEndOutside();
-            services.wasm.clearActiveField();
-            services.eventBus.emit('document-mutated', 'insert-field');
-            services.eventBus.emit('document-changed');
-          }
+          // 누름틀 삽입도 undo 대상이다 — 편집 라우터의 스냅샷으로 기록한다 (#1320 계약).
+          ih.executeOperation({
+            kind: 'snapshot',
+            operationType: 'insertField',
+            operation: () => {
+              const result = services.wasm.insertClickHereField(
+                pos,
+                props.guide,
+                props.memo,
+                props.name,
+                props.editable,
+              );
+              if (result.ok) {
+                const insertedPos = { ...pos, charOffset: result.charOffset ?? pos.charOffset };
+                ih.moveCursorTo(insertedPos);
+                ih.markCurrentFieldEndOutside();
+                services.wasm.clearActiveField();
+                services.eventBus.emit('document-mutated', 'insert-field');
+              }
+              return ih.getCursorPosition();
+            },
+          });
         } catch (err) {
           console.warn('[insert:field] 누름틀 삽입 실패:', err);
         }
@@ -220,9 +235,17 @@ export const insertCommands: CommandDef[] = [
       if (!ih) return;
       const pos = ih.getPosition();
       try {
-        const result = services.wasm.insertFootnote(pos.sectionIndex, pos.paragraphIndex, pos.charOffset);
-        if (result.ok) {
-          services.eventBus.emit('document-changed');
+        // 각주 삽입도 undo 대상이다 — 편집 라우터의 스냅샷으로 기록한다 (#1320 계약).
+        let result: any;
+        ih.executeOperation({
+          kind: 'snapshot',
+          operationType: 'insertFootnote',
+          operation: () => {
+            result = services.wasm.insertFootnote(pos.sectionIndex, pos.paragraphIndex, pos.charOffset);
+            return ih.getCursorPosition();
+          },
+        });
+        if (result?.ok) {
           enterNoteEditing(services, ih, pos.sectionIndex, result.paraIdx, result.controlIdx);
         }
       } catch (err) {
@@ -241,9 +264,17 @@ export const insertCommands: CommandDef[] = [
       if (!ih) return;
       const pos = ih.getPosition();
       try {
-        const result = services.wasm.insertEndnote(pos.sectionIndex, pos.paragraphIndex, pos.charOffset);
-        if (result.ok) {
-          services.eventBus.emit('document-changed');
+        // 미주 삽입도 undo 대상이다 — 편집 라우터의 스냅샷으로 기록한다 (#1320 계약).
+        let result: any;
+        ih.executeOperation({
+          kind: 'snapshot',
+          operationType: 'insertEndnote',
+          operation: () => {
+            result = services.wasm.insertEndnote(pos.sectionIndex, pos.paragraphIndex, pos.charOffset);
+            return ih.getCursorPosition();
+          },
+        });
+        if (result?.ok) {
           enterNoteEditing(services, ih, pos.sectionIndex, result.paraIdx, result.controlIdx);
         }
       } catch (err) {
@@ -275,7 +306,7 @@ export const insertCommands: CommandDef[] = [
     execute(services) {
       const pos = services.getInputHandler()?.getPosition();
       const sectionIdx = pos?.sectionIndex ?? 0;
-      endnoteShapeDialog = new EndnoteShapeDialog(services.wasm, services.eventBus, sectionIdx);
+      endnoteShapeDialog = new EndnoteShapeDialog(services.wasm, services.eventBus, sectionIdx, services);
       endnoteShapeDialog.show();
     },
   },
@@ -418,7 +449,15 @@ export const insertCommands: CommandDef[] = [
       if (!ih) return;
       const ref = ih.getSelectedPictureRef();
       if (!ref || ref.type !== 'shape') return;
-      services.wasm.changeShapeZOrder(ref.sec, ref.ppi, ref.ci, 'front');
+      // 개체 순서 변경도 undo 대상이다 — 편집 라우터의 스냅샷으로 기록한다 (#1320 계약).
+      ih.executeOperation({
+        kind: 'snapshot',
+        operationType: 'objectZOrder',
+        operation: () => {
+          services.wasm.changeShapeZOrder(ref.sec, ref.ppi, ref.ci, 'front');
+          return ih.getCursorPosition();
+        },
+      });
       ih.exitPictureObjectSelectionAndAfterEdit();
     },
   },
@@ -431,7 +470,14 @@ export const insertCommands: CommandDef[] = [
       if (!ih) return;
       const ref = ih.getSelectedPictureRef();
       if (!ref || ref.type !== 'shape') return;
-      services.wasm.changeShapeZOrder(ref.sec, ref.ppi, ref.ci, 'forward');
+      ih.executeOperation({
+        kind: 'snapshot',
+        operationType: 'objectZOrder',
+        operation: () => {
+          services.wasm.changeShapeZOrder(ref.sec, ref.ppi, ref.ci, 'forward');
+          return ih.getCursorPosition();
+        },
+      });
       ih.exitPictureObjectSelectionAndAfterEdit();
     },
   },
@@ -444,7 +490,14 @@ export const insertCommands: CommandDef[] = [
       if (!ih) return;
       const ref = ih.getSelectedPictureRef();
       if (!ref || ref.type !== 'shape') return;
-      services.wasm.changeShapeZOrder(ref.sec, ref.ppi, ref.ci, 'backward');
+      ih.executeOperation({
+        kind: 'snapshot',
+        operationType: 'objectZOrder',
+        operation: () => {
+          services.wasm.changeShapeZOrder(ref.sec, ref.ppi, ref.ci, 'backward');
+          return ih.getCursorPosition();
+        },
+      });
       ih.exitPictureObjectSelectionAndAfterEdit();
     },
   },
@@ -457,7 +510,14 @@ export const insertCommands: CommandDef[] = [
       if (!ih) return;
       const ref = ih.getSelectedPictureRef();
       if (!ref || ref.type !== 'shape') return;
-      services.wasm.changeShapeZOrder(ref.sec, ref.ppi, ref.ci, 'back');
+      ih.executeOperation({
+        kind: 'snapshot',
+        operationType: 'objectZOrder',
+        operation: () => {
+          services.wasm.changeShapeZOrder(ref.sec, ref.ppi, ref.ci, 'back');
+          return ih.getCursorPosition();
+        },
+      });
       ih.exitPictureObjectSelectionAndAfterEdit();
     },
   },
@@ -470,15 +530,23 @@ export const insertCommands: CommandDef[] = [
       if (!ih) return;
       const ref = ih.getSelectedPictureRef();
       if (!ref) return;
-      if (ref.type === 'shape' || ref.type === 'line' || ref.type === 'group') {
-        services.wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
-      } else if (ref.type === 'equation') {
-        services.wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
-      } else if (ref.cellPath && ref.cellPath.length > 0) {
-        services.wasm.deleteCellPictureControlByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci);
-      } else {
-        services.wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
-      }
+      // 개체 지우기도 undo 대상이다 — 편집 라우터의 스냅샷으로 기록한다 (#1320 계약).
+      ih.executeOperation({
+        kind: 'snapshot',
+        operationType: 'objectDelete',
+        operation: () => {
+          if (ref.type === 'shape' || ref.type === 'line' || ref.type === 'group') {
+            services.wasm.deleteShapeControl(ref.sec, ref.ppi, ref.ci);
+          } else if (ref.type === 'equation') {
+            services.wasm.deleteEquationControl(ref.sec, ref.ppi, ref.ci);
+          } else if (ref.cellPath && ref.cellPath.length > 0) {
+            services.wasm.deleteCellPictureControlByPath(ref.sec, ref.ppi, ref.cellPath, ref.ci);
+          } else {
+            services.wasm.deletePictureControl(ref.sec, ref.ppi, ref.ci);
+          }
+          return ih.getCursorPosition();
+        },
+      });
       ih.exitPictureObjectSelectionAndAfterEdit();
     },
   },
@@ -495,7 +563,17 @@ export const insertCommands: CommandDef[] = [
       const sec = refs[0].sec;
       const targets = refs.map(r => ({ paraIdx: r.ppi, controlIdx: r.ci }));
       try {
-        const result = services.wasm.groupShapes(sec, targets);
+        // 개체 묶기도 undo 대상이다 — 편집 라우터의 스냅샷으로 기록한다 (#1320 계약).
+        let result: any;
+        ih.executeOperation({
+          kind: 'snapshot',
+          operationType: 'objectGroup',
+          operation: () => {
+            result = services.wasm.groupShapes(sec, targets);
+            return ih.getCursorPosition();
+          },
+        });
+        if (!result) return;
         ih.exitPictureObjectSelectionAndAfterEdit();
         // 생성된 GroupShape를 선택
         ih.selectPictureObject(sec, result.paraIdx, result.controlIdx, 'group');
@@ -514,7 +592,15 @@ export const insertCommands: CommandDef[] = [
       const ref = ih.getSelectedPictureRef();
       if (!ref || ref.type !== 'group') return;
       try {
-        services.wasm.ungroupShape(ref.sec, ref.ppi, ref.ci);
+        // 개체 풀기도 undo 대상이다 — 편집 라우터의 스냅샷으로 기록한다 (#1320 계약).
+        ih.executeOperation({
+          kind: 'snapshot',
+          operationType: 'objectUngroup',
+          operation: () => {
+            services.wasm.ungroupShape(ref.sec, ref.ppi, ref.ci);
+            return ih.getCursorPosition();
+          },
+        });
         ih.exitPictureObjectSelectionAndAfterEdit();
       } catch (err) {
         console.warn('[ungroup-shapes] 개체 풀기 실패:', err);
@@ -628,8 +714,15 @@ function applyRotationDelta(services: import('../types').CommandServices, delta:
   // -180 ~ 180 범위로 정규화
   next = ((next % 360) + 360) % 360;
   if (next > 180) next -= 360;
-  setProps(services, ref, { rotationAngle: next });
-  services.eventBus.emit('document-changed');
+  // 회전도 undo 대상이다 — 편집 라우터의 스냅샷으로 기록한다 (#1320 계약).
+  ih.executeOperation({
+    kind: 'snapshot',
+    operationType: 'objectRotate',
+    operation: () => {
+      setProps(services, ref, { rotationAngle: next });
+      return ih.getCursorPosition();
+    },
+  });
 }
 
 /** horzFlip/vertFlip을 토글한다 (shape + image 지원). */
@@ -641,6 +734,13 @@ function toggleFlip(services: import('../types').CommandServices, key: 'horzFlip
   const props = getProps(services, ref);
   if (props.sizeProtect) return;
   const cur = !!props[key];
-  setProps(services, ref, { [key]: !cur });
-  services.eventBus.emit('document-changed');
+  // 대칭도 undo 대상이다 — 편집 라우터의 스냅샷으로 기록한다 (#1320 계약).
+  ih.executeOperation({
+    kind: 'snapshot',
+    operationType: 'objectFlip',
+    operation: () => {
+      setProps(services, ref, { [key]: !cur });
+      return ih.getCursorPosition();
+    },
+  });
 }

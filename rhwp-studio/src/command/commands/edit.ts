@@ -240,14 +240,21 @@ export const editCommands: CommandDef[] = [
       };
       dialog.onApply = (newProps) => {
         console.log('[field:edit] apply:', newProps);
-        const result = services.wasm.updateClickHereProps(
-          fi.fieldId, newProps.guide, newProps.memo, newProps.name, newProps.editable,
-        );
-        console.log('[field:edit] updateResult:', result);
-        if (result.ok) {
-          services.eventBus.emit('document-mutated', 'field-edit');
-          services.eventBus.emit('document-changed', 'field-edit');
-        }
+        // 누름틀 속성 변경도 undo 대상이다 — 편집 라우터의 스냅샷으로 기록한다 (#1320 계약).
+        ih.executeOperation({
+          kind: 'snapshot',
+          operationType: 'updateField',
+          operation: () => {
+            const result = services.wasm.updateClickHereProps(
+              fi.fieldId, newProps.guide, newProps.memo, newProps.name, newProps.editable,
+            );
+            console.log('[field:edit] updateResult:', result);
+            if (result.ok) {
+              services.eventBus.emit('document-mutated', 'field-edit');
+            }
+            return ih.getCursorPosition();
+          },
+        });
       };
       dialog.onClose = restoreEditorFocus;
       dialog.showWith({

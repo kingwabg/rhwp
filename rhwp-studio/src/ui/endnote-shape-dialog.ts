@@ -3,6 +3,7 @@ import type { EventBus } from '@/core/event-bus';
 import type { EndnoteShapeSettings } from '@/core/types';
 import { HWPUNIT_PER_MM } from '@/core/hwp-constants';
 import type { WasmBridge } from '@/core/wasm-bridge';
+import type { CommandServices } from '@/command/types';
 
 type LineTypeChoice = {
   value: string;
@@ -141,6 +142,7 @@ export class EndnoteShapeDialog extends ModalDialog {
     private wasm: WasmBridge,
     private eventBus: EventBus,
     private sectionIdx: number,
+    private services?: CommandServices,
   ) {
     super('미주', 620);
   }
@@ -199,8 +201,22 @@ export class EndnoteShapeDialog extends ModalDialog {
       placement: this.placementSection.checked ? 'sectionEnd' : 'documentEnd',
     };
 
-    this.wasm.applyEndnoteShape(this.sectionIdx, next);
-    this.eventBus.emit('document-changed');
+    // 미주 모양 변경도 undo 대상이다 — 편집 라우터를 통과시켜 스냅샷으로
+    // 기록한다 (#1320 계약). services 미주입 환경에서만 직접 적용 fallback.
+    const ih = this.services?.getInputHandler();
+    if (ih) {
+      ih.executeOperation({
+        kind: 'snapshot',
+        operationType: 'endnoteShape',
+        operation: () => {
+          this.wasm.applyEndnoteShape(this.sectionIdx, next);
+          return ih.getCursorPosition();
+        },
+      });
+    } else {
+      this.wasm.applyEndnoteShape(this.sectionIdx, next);
+      this.eventBus.emit('document-changed');
+    }
   }
 
   private populate(): void {
