@@ -76,11 +76,16 @@ fn tac_toggle_on_puts_following_text_right_of_table() {
     let props: serde_json::Value =
         serde_json::from_str(&doc.get_table_properties(0, pi, ci).unwrap()).unwrap();
     assert_eq!(props["treatAsChar"], true);
-    assert_eq!(props["vertRelTo"], "Para", "TAC 전환 시 vert_rel_to=Para 리셋");
-    assert_eq!(props["horzRelTo"], "Para", "TAC 전환 시 horz_rel_to=Para 리셋");
+    assert_eq!(
+        props["vertRelTo"], "Para",
+        "TAC 전환 시 vert_rel_to=Para 리셋"
+    );
+    assert_eq!(
+        props["horzRelTo"], "Para",
+        "TAC 전환 시 horz_rel_to=Para 리셋"
+    );
     assert_eq!(props["vertOffset"], 0, "TAC 전환 시 세로 오프셋 0 리셋");
     assert_eq!(props["horzOffset"], 0, "TAC 전환 시 가로 오프셋 0 리셋");
-
 
     // 렌더: 표 앵커가 텍스트 뒤(end-anchor 형)이므로 [텍스트][표] 같은 줄 인라인 —
     // officex_tac_end_anchor_own_line 의 소형 표 기하와 동형.
