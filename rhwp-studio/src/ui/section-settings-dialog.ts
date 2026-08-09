@@ -2,6 +2,7 @@ import { ModalDialog } from './dialog';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { SectionDef } from '@/core/types';
 import type { EventBus } from '@/core/event-bus';
+import type { CommandServices } from '@/command/types';
 
 const HWPUNIT_PER_PT = 100; // 1pt = 100 HWPUNIT (HWP 내부 단위)
 
@@ -26,6 +27,7 @@ export class SectionSettingsDialog extends ModalDialog {
   private wasm: WasmBridge;
   private eventBus: EventBus;
   private sectionIdx: number;
+  private services: CommandServices | undefined;
   private sectionDef!: SectionDef;
 
   // 입력 필드
@@ -41,11 +43,12 @@ export class SectionSettingsDialog extends ModalDialog {
   private defaultTabSpacingInput!: HTMLInputElement;
   private applyScopeSelect!: HTMLSelectElement;
 
-  constructor(wasm: WasmBridge, eventBus: EventBus, sectionIdx: number) {
+  constructor(wasm: WasmBridge, eventBus: EventBus, sectionIdx: number, services?: CommandServices) {
     super('구역 설정', 400);
     this.wasm = wasm;
     this.eventBus = eventBus;
     this.sectionIdx = sectionIdx;
+    this.services = services;
   }
 
   show(): void {
@@ -153,15 +156,27 @@ export class SectionSettingsDialog extends ModalDialog {
     };
 
     const scope = this.applyScopeSelect.value;
-    let result: { ok: boolean };
-    if (scope === 'all') {
-      result = this.wasm.setSectionDefAll(newDef);
-    } else {
+    const applyDef = (): { ok: boolean } => scope === 'all'
+      ? this.wasm.setSectionDefAll(newDef)
       // 'current' 또는 'selection' (선택 문자열은 현재 구역과 동일하게 처리)
-      result = this.wasm.setSectionDef(this.sectionIdx, newDef);
-    }
-    if (result.ok) {
-      this.eventBus.emit('document-changed');
+      : this.wasm.setSectionDef(this.sectionIdx, newDef);
+    // 구역 설정 변경도 undo 대상이다 — 편집 라우터를 통과시켜 스냅샷으로
+    // 기록한다 (#1320 계약). services 미주입 환경에서만 직접 적용 fallback.
+    const ih = this.services?.getInputHandler();
+    if (ih) {
+      ih.executeOperation({
+        kind: 'snapshot',
+        operationType: 'sectionSettings',
+        operation: () => {
+          applyDef();
+          return ih.getCursorPosition();
+        },
+      });
+    } else {
+      const result = applyDef();
+      if (result.ok) {
+        this.eventBus.emit('document-changed');
+      }
     }
   }
 

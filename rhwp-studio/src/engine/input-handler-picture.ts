@@ -1137,6 +1137,23 @@ export function updatePictureRotateDrag(this: any, e: MouseEvent): void {
 
 /** 회전 드래그 종료: 핸들을 최종 회전 위치로 스냅 */
 export function finishPictureRotateDrag(this: any, _e: MouseEvent): void {
+  const s = this.pictureRotateState;
+  if (s) {
+    // 드래그 중 즉시 반영된 회전각도 undo 대상이다 — 리사이즈 드래그와 동일하게
+    // before/after 각도를 record 로 기록한다 (#1320 계약).
+    try {
+      const cur = (getObjectProperties.call(this, s.ref).rotationAngle ?? 0) as number;
+      if (cur !== s.origAngle) {
+        this.executeOperation({
+          kind: 'record',
+          command: new ResizeObjectCommand([{
+            sec: s.ref.sec, ppi: s.ref.ppi, ci: s.ref.ci, type: s.ref.type, cellPath: s.ref.cellPath,
+            before: { rotationAngle: s.origAngle }, after: { rotationAngle: cur },
+          }]),
+        });
+      }
+    } catch { /* ignore */ }
+  }
   this.isPictureRotateDragging = false;
   this.pictureRotateState = null;
   this.container.style.cursor = '';

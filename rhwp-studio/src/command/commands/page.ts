@@ -177,7 +177,7 @@ export const pageCommands: CommandDef[] = [
       const ih = services.getInputHandler();
       const cursor = ih ? (ih as any).cursor : null;
       const sectionIdx = cursor?.getPosition()?.sectionIndex ?? 0;
-      const dialog = new PageSetupDialog(services.wasm, services.eventBus, sectionIdx);
+      const dialog = new PageSetupDialog(services.wasm, services.eventBus, sectionIdx, services);
       dialog.show();
     },
   },
@@ -189,7 +189,7 @@ export const pageCommands: CommandDef[] = [
       const ih = services.getInputHandler();
       const cursor = ih ? (ih as any).cursor : null;
       const sectionIdx = cursor?.getPosition()?.sectionIndex ?? 0;
-      const dialog = new PageBorderDialog(services.wasm, services.eventBus, sectionIdx);
+      const dialog = new PageBorderDialog(services.wasm, services.eventBus, sectionIdx, services);
       dialog.show();
     },
   },
@@ -297,7 +297,7 @@ export const pageCommands: CommandDef[] = [
       if (!wasm || !eventBus) return;
       const dlg = new NewNumberDialog(wasm, eventBus, {
         sec: pos.sectionIndex, para: pos.paragraphIndex, offset: pos.charOffset,
-      });
+      }, services);
       dlg.show();
     },
   },
@@ -526,7 +526,7 @@ export const pageCommands: CommandDef[] = [
       const ih = services.getInputHandler();
       if (!ih) return;
       const pos = ih.getPosition();
-      const dlg = new ColumnSettingsDialog(services.wasm, services.eventBus, pos.sectionIndex);
+      const dlg = new ColumnSettingsDialog(services.wasm, services.eventBus, pos.sectionIndex, services);
       dlg.show();
     },
   },
@@ -540,7 +540,7 @@ export const pageCommands: CommandDef[] = [
       if (!ih) return;
       const cursor = (ih as any).cursor;
       const sectionIdx = cursor?.getPosition()?.sectionIndex ?? 0;
-      const dialog = new SectionSettingsDialog(services.wasm, services.eventBus, sectionIdx);
+      const dialog = new SectionSettingsDialog(services.wasm, services.eventBus, sectionIdx, services);
       dialog.show();
     },
   },

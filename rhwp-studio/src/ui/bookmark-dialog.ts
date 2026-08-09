@@ -279,16 +279,24 @@ export class BookmarkDialog {
     if (!ih) return;
     const pos = ih.getCursorPosition();
 
-    const result = this.services.wasm.addBookmark(
-      pos.sectionIndex, pos.paragraphIndex, pos.charOffset, name,
-    );
+    // 책갈피 추가도 undo 대상이다 — 편집 라우터의 스냅샷으로 기록한다 (#1320 계약).
+    let result: { ok: boolean; error?: string } | undefined;
+    ih.executeOperation({
+      kind: 'snapshot',
+      operationType: 'bookmark',
+      operation: () => {
+        result = this.services.wasm.addBookmark(
+          pos.sectionIndex, pos.paragraphIndex, pos.charOffset, name,
+        );
+        return ih.getCursorPosition();
+      },
+    });
 
-    if (result.ok) {
-      this.services.eventBus.emit('document-changed');
+    if (result?.ok) {
       this.hide();
     } else {
       this.statusLabel.style.color = '#c00';
-      this.statusLabel.textContent = result.error ?? '책갈피 추가 실패';
+      this.statusLabel.textContent = result?.error ?? '책갈피 추가 실패';
     }
   }
 
@@ -318,9 +326,24 @@ export class BookmarkDialog {
 
     if (!confirm(`선택한 책갈피 '${bm.name}'를 지울까요?`)) return;
 
-    const result = this.services.wasm.deleteBookmark(bm.sec, bm.para, bm.ctrlIdx);
-    if (result.ok) {
-      this.services.eventBus.emit('document-changed');
+    // 책갈피 삭제도 undo 대상이다 — 편집 라우터의 스냅샷으로 기록한다 (#1320 계약).
+    // services 의 input handler 부재 시에만 직접 적용 fallback.
+    const ih = this.services.getInputHandler();
+    let result: { ok: boolean } | undefined;
+    if (ih) {
+      ih.executeOperation({
+        kind: 'snapshot',
+        operationType: 'bookmark',
+        operation: () => {
+          result = this.services.wasm.deleteBookmark(bm.sec, bm.para, bm.ctrlIdx);
+          return ih.getCursorPosition();
+        },
+      });
+    } else {
+      result = this.services.wasm.deleteBookmark(bm.sec, bm.para, bm.ctrlIdx);
+      if (result.ok) this.services.eventBus.emit('document-changed');
+    }
+    if (result?.ok) {
       this.refreshList();
       this.statusLabel.textContent = '';
     }

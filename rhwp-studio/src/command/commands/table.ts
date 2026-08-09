@@ -104,7 +104,7 @@ function openFormulaDialog(services: Parameters<CommandDef['execute']>[0]): void
     ppi: pos.parentParaIndex,
     ci: pos.controlIndex,
     cellIndex: pos.cellIndex,
-  });
+  }, services);
   dialog.show();
 }
 

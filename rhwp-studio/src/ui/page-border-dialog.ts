@@ -2,6 +2,7 @@ import { ModalDialog } from './dialog';
 import type { EventBus } from '@/core/event-bus';
 import type { PageBorderFillSettings, BorderLineProps } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
+import type { CommandServices } from '@/command/types';
 
 const HWPUNIT_PER_MM = 7200 / 25.4;
 
@@ -59,6 +60,7 @@ export class PageBorderDialog extends ModalDialog {
     private wasm: WasmBridge,
     private eventBus: EventBus,
     private sectionIdx: number,
+    private services?: CommandServices,
   ) {
     super('쪽 테두리/배경', 560);
   }
@@ -133,8 +135,22 @@ export class PageBorderDialog extends ModalDialog {
       applyPage: applyPage === 'exceptFirst' ? 'exceptFirst' : 'all',
     };
 
-    this.wasm.setPageBorderFill(this.sectionIdx, next);
-    this.eventBus.emit('document-changed');
+    // 쪽 테두리/배경 변경도 undo 대상이다 — 편집 라우터를 통과시켜 스냅샷으로
+    // 기록한다 (#1320 계약). services 미주입 환경에서만 직접 적용 fallback.
+    const ih = this.services?.getInputHandler();
+    if (ih) {
+      ih.executeOperation({
+        kind: 'snapshot',
+        operationType: 'pageBorder',
+        operation: () => {
+          this.wasm.setPageBorderFill(this.sectionIdx, next);
+          return ih.getCursorPosition();
+        },
+      });
+    } else {
+      this.wasm.setPageBorderFill(this.sectionIdx, next);
+      this.eventBus.emit('document-changed');
+    }
   }
 
   private buildBorderTab(): HTMLElement {
