@@ -1618,6 +1618,21 @@ impl LayoutEngine {
         let mut next_break: usize = 0;
         let control_positions = para.control_text_positions();
 
+        // char_start 논리 변환 — run 시작 **글자**의 논리 위치. 같은 텍스트 위치의
+        // 컨트롤은 글자보다 앞이므로 pos <= idx 로 센다. (text_to_logical_offset 은
+        // pos == idx 를 안 세는 커서 경계 규약이라 여기 목적과 다르다.)
+        let logical_char_start = |text_idx: usize| -> usize {
+            text_idx
+                + para
+                    .controls
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| crate::document_core::is_logical_inline_control(c))
+                    .filter_map(|(ci, _)| control_positions.get(ci))
+                    .filter(|&&pos| pos <= text_idx)
+                    .count()
+        };
+
         for (s, e) in &segments {
             // 텍스트 세그먼트 렌더링 (줄바꿈 지원)
             if *s < *e {
@@ -1669,7 +1684,11 @@ impl LayoutEngine {
                                         para_shape_id: Some(para_style_id as u16),
                                         section_index: Some(section_index),
                                         para_index: Some(para_index),
-                                        char_start: Some(line_run_start),
+                                        // char_start 는 논리 좌표(인라인 컨트롤 = 1칸) — 커서/선택
+                                        // 워커가 논리 오프셋으로 대조한다. 이 경로의 line_run_start 는
+                                        // 텍스트 인덱스라 표 뒤 run 이 1칸 밀려, 표 뒤 '글자 뒤 캐럿'
+                                        // 밑줄이 두 글자 폭이 되고 마지막 글자 선택 rect 가 비었다.
+                                        char_start: Some(logical_char_start(line_run_start)),
                                         cell_context: None,
                                         is_para_end: false,
                                         is_line_break_end: false,
@@ -1783,7 +1802,7 @@ impl LayoutEngine {
                                     para_shape_id: Some(para_style_id as u16),
                                     section_index: Some(section_index),
                                     para_index: Some(para_index),
-                                    char_start: Some(line_run_start),
+                                    char_start: Some(logical_char_start(line_run_start)),
                                     cell_context: None,
                                     is_para_end: false,
                                     is_line_break_end: false,
@@ -1850,7 +1869,7 @@ impl LayoutEngine {
                                 para_shape_id: Some(para_style_id as u16),
                                 section_index: Some(section_index),
                                 para_index: Some(para_index),
-                                char_start: Some(line_run_start),
+                                char_start: Some(logical_char_start(line_run_start)),
                                 cell_context: None,
                                 is_para_end: false,
                                 is_line_break_end: false,

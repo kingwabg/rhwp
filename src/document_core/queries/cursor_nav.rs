@@ -1086,13 +1086,23 @@ impl DocumentCore {
                     // 이 run이 목표 줄의 char_range에 겹치는지 확인
                     if cs < char_range.1 && cs + cc > char_range.0 {
                         let positions = compute_char_positions(&tr.text, &tr.style);
+                        // 캐럿 y/h 는 run bbox(줄 상자)가 아니라 글자 규격 — TAC 개체가
+                        // 있는 줄에서 run bbox 는 개체 높이라, Home/줄이동 캐럿이 줄
+                        // 전체로 커졌다(한컴 실측: 캐럿은 항상 글자 높이).
+                        let font_size = tr.style.font_size;
+                        let ascent = font_size * 0.8;
+                        let (caret_y, caret_h) = if tr.baseline > 0.0 && font_size > 0.0 {
+                            (node.bbox.y + tr.baseline - ascent, font_size)
+                        } else {
+                            (node.bbox.y, node.bbox.height)
+                        };
                         result.push(RunMatch {
                             char_start: cs,
                             char_count: cc,
                             char_positions: positions,
                             bbox_x: node.bbox.x,
-                            bbox_y: node.bbox.y,
-                            bbox_h: node.bbox.height,
+                            bbox_y: caret_y,
+                            bbox_h: caret_h,
                         });
                     }
                 }
