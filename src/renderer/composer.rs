@@ -339,6 +339,18 @@ pub(crate) fn tac_box_hwp(ctrl: &Control) -> Option<TacBox> {
 
 /// 문단을 줄별 텍스트 런으로 분할한다.
 pub fn compose_paragraph(para: &Paragraph) -> ComposedParagraph {
+    compose_paragraph_with_seg_fallback(para, 0)
+}
+
+/// [seg_width 통일] `compose_paragraph` + TAC 인라인 판정 seg_width 폴백.
+/// 저장 segment_width 가 0(자체 생성 표 host, NO_LS 기계생성)인 문단에서
+/// 호출자가 아는 단/셀 폭으로 판정해, layout 쪽 폴백 진영과 인라인/블록
+/// 판정을 일치시킨다 — 판정 분열이 표 폭 미계상(우변 관통)·순서 역전의
+/// 반복 발생기였다.
+pub fn compose_paragraph_with_seg_fallback(
+    para: &Paragraph,
+    fallback_seg_width_hu: i32,
+) -> ComposedParagraph {
     // [Task #991] HWP5 parser 의 inline marker 누락 보정 (rendering 전용)
     let synth_para = synthesize_marker_paragraph(para);
     let para = synth_para.as_ref().unwrap_or(para);
@@ -348,7 +360,12 @@ pub fn compose_paragraph(para: &Paragraph) -> ComposedParagraph {
 
     // treat_as_char 컨트롤의 텍스트 위치와 HWPUNIT 너비 수집
     let tac_positions = find_render_inline_control_positions(para);
-    let seg_width = para.line_segs.first().map(|s| s.segment_width).unwrap_or(0);
+    let stored_seg = para.line_segs.first().map(|s| s.segment_width).unwrap_or(0);
+    let seg_width = if stored_seg > 0 {
+        stored_seg
+    } else {
+        fallback_seg_width_hu.max(0)
+    };
     let tac_controls: Vec<(usize, i32, usize)> = para
         .controls
         .iter()
@@ -1434,7 +1451,10 @@ pub(crate) fn no_ls_short_label_cell(
     }
     let mut em_sum = 0.0f64;
     for p in &cell.paragraphs {
-        let mut comp = compose_paragraph(p);
+        let mut comp = compose_paragraph_with_seg_fallback(
+            p,
+            super::px_to_hwpunit(cell_inner_width, crate::renderer::DEFAULT_DPI),
+        );
         recompose_for_cell_width(&mut comp, p, cell_inner_width, styles);
         if comp.lines.len() > 1 {
             return false;
@@ -1642,6 +1662,22 @@ pub fn recompose_for_cell_width(
         .get(para.para_shape_id as usize)
         .map(|ps| ps.condense_min_space as f64 / 100.0)
         .unwrap_or(0.0);
+    // [#TAC 폭 계상] 재래핑도 TAC 컨트롤(표·그림·수식·양식) 폭을 계상한다 —
+    // 종전에는 폭 0 가정으로 텍스트를 재분할해 실렌더에서 줄 우변을 뚫었다
+    // (819px 관통 계열의 잔존 경로). 폭은 compose 가 수집한 tac_controls(HWPUNIT)
+    // 그대로. ponytail: DEFAULT_DPI 고정 변환 — 이 함수는 dpi 를 안 받고,
+    // 실운용 dpi 는 96 단일이다.
+    let tac_px: Vec<(usize, f64)> = {
+        let mut v: Vec<(usize, f64)> = composed
+            .tac_controls
+            .iter()
+            .map(|&(pos, w_hu, _ci)| {
+                (pos, super::hwpunit_to_px(w_hu, crate::renderer::DEFAULT_DPI))
+            })
+            .collect();
+        v.sort_by_key(|&(pos, _)| pos);
+        v
+    };
     // [#2070] 강제 줄바꿈(\n, has_line_break) 경계는 병합·재분할에서 보존한다.
     // 종전에는 전 줄을 한 줄로 합쳐 폭 기준 재분할 → \n 경계 소실로 생성계
     // NO_LS 셀이 과소 (80168 pi=362 조문 표: 한글 11줄 vs 8줄, -58px).
@@ -1683,7 +1719,25 @@ pub fn recompose_for_cell_width(
         // 내어쓰기 첫 줄 폭은 문단의 첫 줄에만 적용 — \n 이후 그룹은 전부 연속 폭.
         let g_first = if gi == 0 { eff_first_px } else { eff_cont_px };
         let start = composed.lines.len();
-        let total_width = estimate_composed_line_width(&combined_line, styles);
+        // [#TAC 폭 계상] 그룹 범위 (start, end] 에 앵커된 TAC 폭 — 줄 귀속 규칙은
+        // layout 의 tac_offsets 판정(run_char_pos < pos <= line_end)과 동일.
+        let g_start = combined_line.char_start;
+        let g_end = g_start
+            + combined_line
+                .runs
+                .iter()
+                .map(|r| r.text.chars().count())
+                .sum::<usize>();
+        // 시작 앵커(pos==문단 시작)는 첫 그룹에만 귀속 — 그룹 경계(prev end == cur
+        // start)의 컨트롤은 앞 그룹이 가져가므로 (pos<=g_end) 이중 계상 없음.
+        let group_tacs: Vec<(usize, f64)> = tac_px
+            .iter()
+            .copied()
+            .filter(|&(pos, _)| pos > g_start && pos <= g_end || (gi == 0 && pos == g_start))
+            .collect();
+        let group_tac_w: f64 = group_tacs.iter().map(|&(_, w)| w).sum();
+        let total_width =
+            estimate_composed_line_width(&combined_line, styles) + group_tac_w;
         // [#2070] 행미 공백 hanging — 한글은 줄 끝 공백을 폭 판정에서 제외한다.
         // trailing 공백 포함 폭으로 분할하면 공백만의 유령 둘째 줄이 생겨
         // NO_LS 셀 행높이가 배가된다 (시장구조조사 "100.0␣␣" 22→50.4px,
@@ -1712,6 +1766,7 @@ pub fn recompose_for_cell_width(
                 styles,
                 char_break,
                 space_condense,
+                &group_tacs,
             );
             // 분할 결과의 공백-단독 조각도 hanging — 직전 조각에 흡수한다.
             let mut folded: Vec<ComposedLine> = Vec::with_capacity(frags.len());
@@ -1924,6 +1979,9 @@ fn split_composed_line_by_width(
     styles: &ResolvedStyleSet,
     char_break: bool,
     space_condense: f64,
+    // [#TAC 폭 계상] 이 줄 범위의 TAC 컨트롤 (절대 char pos, px 폭) — pos 오름차순.
+    // 재래핑이 표/그림 폭을 0 으로 가정해 텍스트가 우변을 뚫던 잔존 경로의 봉합.
+    tacs: &[(usize, f64)],
 ) -> Vec<ComposedLine> {
     let mut result: Vec<ComposedLine> = Vec::new();
     // [#2070] 내어쓰기(intent<0) 이중 폭: 첫 출력 줄은 first_width, 이후 연속
@@ -1987,6 +2045,44 @@ fn split_composed_line_by_width(
         }
     };
 
+    // [#TAC 폭 계상] abs_next(다음에 소비할 char 의 절대 pos)까지 앵커된 TAC 폭을
+    // 현재 줄 폭에 계상한다. 안 들어가면 줄을 넘긴다(BreakToken::Object 정합 —
+    // 빈 줄에는 강제 배치). 컨트롤은 char 를 소비하지 않으므로 char_start 무영향.
+    // ponytail: 어절 모드에선 단어 경계에서만 적용 — 단어 중간 앵커는 그 단어
+    // 폭만큼 늦게 계상된다. 정밀화는 실측 회귀 표본이 나올 때.
+    let mut next_tac = 0usize;
+    let apply_tacs = |abs_next: usize,
+                      next_tac: &mut usize,
+                      result: &mut Vec<ComposedLine>,
+                      runs: &mut Vec<ComposedTextRun>,
+                      run_text: &mut String,
+                      template: &Option<ComposedTextRun>,
+                      current_char_start: &mut usize,
+                      chars_in_line: &mut usize,
+                      current_width: &mut f64,
+                      space_w: &mut f64,
+                      hung: &mut bool| {
+        while *next_tac < tacs.len() && tacs[*next_tac].0 <= abs_next {
+            let w = tacs[*next_tac].1;
+            let fits_limit = if result.is_empty() {
+                first_width_px
+            } else {
+                cont_width_px
+            };
+            if *current_width - *space_w * space_condense + w > fits_limit
+                && (*chars_in_line > 0 || !run_text.is_empty())
+            {
+                flush_run(runs, run_text, template);
+                push_line(result, runs, current_char_start, chars_in_line, current_width);
+                *space_w = 0.0;
+                *hung = false;
+            }
+            *current_width += w;
+            *next_tac += 1;
+        }
+    };
+    let mut abs_next = src.char_start;
+
     for run in &src.runs {
         let ts = resolved_to_text_style(styles, run.char_style_id, run.lang_index);
         // 현재 run 의 template 변경 (char_style 다른 run 들 처리)
@@ -2007,6 +2103,19 @@ fn split_composed_line_by_width(
         // "또/는", "필요/한" 글자 분리, 한글 5줄 vs 어절 래핑 6줄).
         if char_break {
             for ch in run.text.chars() {
+                apply_tacs(
+                    abs_next,
+                    &mut next_tac,
+                    &mut result,
+                    &mut current_runs,
+                    &mut current_run_text,
+                    &current_run_template,
+                    &mut current_char_start,
+                    &mut chars_in_line,
+                    &mut current_width,
+                    &mut space_w,
+                    &mut hung,
+                );
                 let ch_str: String = std::iter::once(ch).collect();
                 let ch_width = crate::renderer::layout::estimate_text_width_unrounded(&ch_str, &ts);
                 if std::env::var("RHWP_RAZOR").is_ok()
@@ -2079,6 +2188,7 @@ fn split_composed_line_by_width(
                     space_w += ch_width;
                 }
                 chars_in_line += 1;
+                abs_next += 1;
             }
             continue;
         }
@@ -2086,8 +2196,22 @@ fn split_composed_line_by_width(
         let mut word = String::new();
         for ch in run.text.chars() {
             word.push(ch);
+            abs_next += 1;
             // 공백 또는 마지막 글자 직전이 단어 경계
             if ch == ' ' || ch == '\t' {
+                apply_tacs(
+                    abs_next - word.chars().count(),
+                    &mut next_tac,
+                    &mut result,
+                    &mut current_runs,
+                    &mut current_run_text,
+                    &current_run_template,
+                    &mut current_char_start,
+                    &mut chars_in_line,
+                    &mut current_width,
+                    &mut space_w,
+                    &mut hung,
+                );
                 let word_width = crate::renderer::layout::estimate_text_width_unrounded(&word, &ts);
                 // 현재 단어가 추가되면 max_width 초과하는지 검사
                 if current_width - space_w * space_condense + word_width > limit(&result)
@@ -2149,6 +2273,19 @@ fn split_composed_line_by_width(
         }
         // run 끝에 남은 단어 처리
         if !word.is_empty() {
+            apply_tacs(
+                abs_next - word.chars().count(),
+                &mut next_tac,
+                &mut result,
+                &mut current_runs,
+                &mut current_run_text,
+                &current_run_template,
+                &mut current_char_start,
+                &mut chars_in_line,
+                &mut current_width,
+                &mut space_w,
+                &mut hung,
+            );
             let word_width = crate::renderer::layout::estimate_text_width_unrounded(&word, &ts);
             if current_width - space_w * space_condense + word_width > limit(&result)
                 && (chars_in_line > 0 || !current_run_text.is_empty())

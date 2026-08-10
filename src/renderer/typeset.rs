@@ -3056,7 +3056,7 @@ impl TypesetEngine {
                 );
             }
             // 표 컨트롤 감지
-            let has_table = self.paragraph_has_table(para);
+            let has_table = self.paragraph_has_table(para, st.layout.column_width_hu());
             if std::env::var("RHWP_DIAG_FLOW").is_ok() {
                 eprintln!("DIAG_ROUTE pi={} has_table={}", para_idx, has_table);
             }
@@ -16805,9 +16805,14 @@ impl TypesetEngine {
     /// `Table.attr` bit0 은 HWPX 파스에서 불완전하다(section.rs
     /// `materialize_hwpx_table_attrs`). 미러를 읽으면 같은 문서가 컨테이너
     /// 포맷에 따라 인라인/블록으로 갈린다.
-    fn paragraph_has_table(&self, para: &Paragraph) -> bool {
+    fn paragraph_has_table(&self, para: &Paragraph, fallback_seg_width_hu: i32) -> bool {
         use crate::renderer::height_measurer::is_tac_table_inline_in_para;
-        let seg_width = para.line_segs.first().map(|s| s.segment_width).unwrap_or(0);
+        let stored_seg = para.line_segs.first().map(|s| s.segment_width).unwrap_or(0);
+        let seg_width = if stored_seg > 0 {
+            stored_seg
+        } else {
+            fallback_seg_width_hu.max(0)
+        };
         para.controls.iter().any(|c| {
             matches!(c, Control::Table(t) if !t.common.treat_as_char
                 || !is_tac_table_inline_in_para(t, seg_width, para))

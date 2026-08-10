@@ -75,7 +75,11 @@ struct TacPostF081cLine {
     lang_index: usize,
 }
 
-fn effective_tac_segment_width_hu(para: &Paragraph, fallback_width_hu: i32) -> i32 {
+/// TAC 인라인/블록 판정용 seg_width 단일 헬퍼 — 저장 segment_width 가 0(자체 생성
+/// 표 host 문단, NO_LS 기계생성 HWPX)이면 호출자가 아는 단/셀 폭으로 폴백한다.
+/// 판정 지점마다 unwrap_or(0) 과 폴백이 갈려 composer/measurer 는 블록,
+/// layout/pagination 은 인라인으로 판정이 분열되던 회귀 발생기의 봉합점.
+pub(crate) fn effective_tac_segment_width_hu(para: &Paragraph, fallback_width_hu: i32) -> i32 {
     let seg_width = para.line_segs.first().map(|s| s.segment_width).unwrap_or(0);
     if seg_width > 0 {
         seg_width

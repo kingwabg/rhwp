@@ -548,7 +548,14 @@ impl HeightMeasurer {
             let comp = composed.get(para_idx);
 
             // 블록 표 컨트롤 감지 (일반 표 + treat_as_char 블록형)
-            let seg_width = para.line_segs.first().map(|s| s.segment_width).unwrap_or(0);
+            let stored_seg = para.line_segs.first().map(|s| s.segment_width).unwrap_or(0);
+            let seg_width = if stored_seg > 0 {
+                stored_seg
+            } else {
+                column_width_px
+                    .map(|w| crate::renderer::px_to_hwpunit(w, self.dpi))
+                    .unwrap_or(0)
+            };
             let has_table = para.controls.iter().any(|c| {
                 matches!(c, Control::Table(t) if !t.common.treat_as_char
                     || (t.common.treat_as_char && !is_tac_table_inline_in_para(t, seg_width, para)))
@@ -1157,7 +1164,11 @@ impl HeightMeasurer {
                         .iter()
                         .enumerate()
                         .map(|(pidx, p)| {
-                            let mut comp = compose_paragraph(p);
+                            let mut comp =
+                                crate::renderer::composer::compose_paragraph_with_seg_fallback(
+                                    p,
+                                    crate::renderer::px_to_hwpunit(cell_inner_width, self.dpi),
+                                );
                             // [Task #671] line_segs 비어 있는 셀 paragraph 의 단일 ComposedLine
                             // 압축 결과를 셀 가용 너비에 맞춰 다중 ComposedLine 으로 재분할.
                             // 측정/렌더링 일관성 (layout 의 recompose_for_cell_width 호출과 동일).
@@ -1532,7 +1543,11 @@ impl HeightMeasurer {
                     cell.paragraphs
                         .last()
                         .map(|p| {
-                            let mut comp = compose_paragraph(p);
+                            let mut comp =
+                                crate::renderer::composer::compose_paragraph_with_seg_fallback(
+                                    p,
+                                    crate::renderer::px_to_hwpunit(cell_inner_width, self.dpi),
+                                );
                             crate::renderer::composer::recompose_for_cell_width(
                                 &mut comp,
                                 p,
@@ -1711,7 +1726,11 @@ impl HeightMeasurer {
                         .iter()
                         .enumerate()
                         .map(|(pidx, p)| {
-                            let mut comp = compose_paragraph(p);
+                            let mut comp =
+                                crate::renderer::composer::compose_paragraph_with_seg_fallback(
+                                    p,
+                                    crate::renderer::px_to_hwpunit(cell_inner_width, self.dpi),
+                                );
                             // [Task #671] line_segs 비어 있는 셀 paragraph 의 단일 ComposedLine
                             // 압축 결과를 셀 가용 너비에 맞춰 다중 ComposedLine 으로 재분할.
                             crate::renderer::composer::recompose_for_cell_width(
@@ -2085,7 +2104,10 @@ impl HeightMeasurer {
                     let para_count = cell.paragraphs.len();
 
                     for (pi, p) in cell.paragraphs.iter().enumerate() {
-                        let comp = compose_paragraph(p);
+                        let comp = crate::renderer::composer::compose_paragraph_with_seg_fallback(
+                            p,
+                            cell.width as i32,
+                        );
                         let para_style = styles.para_styles.get(p.para_shape_id as usize);
                         let is_last_para = pi + 1 == para_count;
                         // compute_cell_line_ranges와 동일 규칙:
@@ -2298,7 +2320,14 @@ impl HeightMeasurer {
             let comp = composed.get(para_idx);
 
             // 블록 표 컨트롤 감지 (일반 표 + treat_as_char 블록형)
-            let seg_width_r = para.line_segs.first().map(|s| s.segment_width).unwrap_or(0);
+            let stored_seg = para.line_segs.first().map(|s| s.segment_width).unwrap_or(0);
+            let seg_width_r = if stored_seg > 0 {
+                stored_seg
+            } else {
+                column_width_px
+                    .map(|w| crate::renderer::px_to_hwpunit(w, self.dpi))
+                    .unwrap_or(0)
+            };
             let has_table = para.controls.iter().any(|c| {
                 matches!(c, Control::Table(t) if !t.common.treat_as_char
                     || (t.common.treat_as_char && !is_tac_table_inline_in_para(t, seg_width_r, para)))
@@ -2399,7 +2428,14 @@ impl HeightMeasurer {
             // dirty 문단: 재측정
             let comp = composed.get(para_idx);
             // 블록 표 컨트롤 감지 (일반 표 + treat_as_char 블록형)
-            let seg_width_r = para.line_segs.first().map(|s| s.segment_width).unwrap_or(0);
+            let stored_seg = para.line_segs.first().map(|s| s.segment_width).unwrap_or(0);
+            let seg_width_r = if stored_seg > 0 {
+                stored_seg
+            } else {
+                column_width_px
+                    .map(|w| crate::renderer::px_to_hwpunit(w, self.dpi))
+                    .unwrap_or(0)
+            };
             let has_table = para.controls.iter().any(|c| {
                 matches!(c, Control::Table(t) if !t.common.treat_as_char
                     || (t.common.treat_as_char && !is_tac_table_inline_in_para(t, seg_width_r, para)))
