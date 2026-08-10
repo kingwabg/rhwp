@@ -139,10 +139,15 @@ fn text_line_before_table_is_not_justified() {
 fn no_vertical_desync_nor_block_caret_beside_table() {
     let mut doc = make_doc_with_end_anchor_table();
     let ((_tx, ty, _tw, th), (_xx, xy, _xw, xh)) = table_and_text_bbox(&mut doc);
+    // [2026-08-11 정밀화] r-분할에서 표-지배 줄은 ink_top ≈ line_top + 바깥여백상
+    // (bd=0.85·lh, lh≈h+여백 → bd−r·(h+여백)≈0). 기본 바깥여백 283HU=3.77px.
+    // 종전 ±10px 관용은 r-분할 5px급 회귀를 통과시켰다 — 여백상±1.5px 로 조인다.
+    let om_top_px = 283.0 * 96.0 / 7200.0;
     assert!(
-        (ty - xy).abs() < 10.0,
-        "표 top({ty})과 텍스트 줄 top({xy})이 한 줄(바깥여백)급을 넘어 어긋났다 — \
-         종전 46px 데싱크 회귀"
+        (ty - xy - om_top_px).abs() < 1.5,
+        "표 top({ty}) − 텍스트 줄 top({xy}) = {:.2} ≠ 바깥여백상 {om_top_px:.2}±1.5 — \
+         세로 r-분할 데싱크 (종전 46px 회귀 포함)",
+        ty - xy
     );
     for offset in [0u32, 1, 2] {
         let r: serde_json::Value =
