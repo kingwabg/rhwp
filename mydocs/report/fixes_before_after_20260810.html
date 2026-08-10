@@ -116,6 +116,24 @@ code { background: color-mix(in oklab, var(--surface) 90%, var(--ink)); padding:
 <figure class="after"><img src="assets/caret-20260809/ba-dup-after.png" alt="수리 후"><figcaption>수리 후: 같은 입력 — "니들" 그대로. 논리 삽입·삭제 왕복 원문 보존 핀 테스트 추가.</figcaption></figure>
 </div>
 
+<h2><span class="no">7</span>표 UX 후속 신고 5건 (같은 날 저녁)</h2>
+<table>
+<tr><th>#</th><th>신고</th><th class="bad">수리 전</th><th class="ok">수리 후</th></tr>
+<tr><td>1</td><td>텍스트 끝 Enter 시 마지막 글자가 새 문단으로 딸려 내려감</td><td class="bad">"…알어?" → Enter → 다음 문단에 "?" (분할점 이중 변환)</td><td class="ok">빈 문단 생성, "?" 제자리 — 분할 좌표 논리 통일</td></tr>
+<tr><td>2</td><td>표 개체 선택 전/후 모양</td><td colspan="2">현 빌드 이미 정합 — 선택 전/중/후 보더 좌표 픽셀 동일 실측, 한컴식 오버레이(⊘핸들+틴트)만 덧그림</td></tr>
+<tr><td>3</td><td>표 외곽 경계 리사이즈 호버/그립</td><td class="bad">외곽 ±4px 클릭을 그립이 소비</td><td class="ok">외곽 제거(내부 경계만 유지) — 외곽 클릭 = 개체 선택(한컴 정합)</td></tr>
+<tr><td>4</td><td>표 드래그 선택</td><td class="bad">본문 드래그가 표를 지나면 선택 소멸</td><td class="ok">표를 한 글자로 클램프 — 파란 밴드가 표 통째로 덮음</td></tr>
+<tr><td>5</td><td>2쪽 이상에서 쪽이 옆으로 밀림</td><td class="bad">새 쪽 left가 풀 재사용 캔버스의 직전 폭으로 계산됨 (실측 x 111/111/358)</td><td class="ok">폭 확정 뒤 스냅 — 전 쪽 left 동일 (실측 20/20/20)</td></tr>
+</table>
+<div class="ba">
+<figure class="before"><img src="assets/caret-20260809/ba-drag-before.png" alt="드래그 선택 수리 전"><figcaption>수리 전: 텍스트→표 방향 드래그 — 선택이 아예 사라짐.</figcaption></figure>
+<figure class="after"><img src="assets/caret-20260809/ba-drag-after.png" alt="드래그 선택 수리 후"><figcaption>수리 후: 같은 드래그 — 표 전체가 텍스트처럼 파란 밴드에 잡힘.</figcaption></figure>
+</div>
+<div class="ba">
+<figure class="before"><img src="assets/caret-20260809/ba-enter-before.png" alt="Enter 분할 수리 전"><figcaption>수리 전: "…알어?" 끝에서 Enter — "?"가 다음 문단으로 내려감.</figcaption></figure>
+<figure class="after"><img src="assets/caret-20260809/ba-objsel.png" alt="표 개체 선택 모양"><figcaption>참고: 표 외곽 클릭 시 개체 선택 — 한컴식(⊘ 핸들·연파랑 틴트), 표 기하는 선택 전/후 픽셀 동일.</figcaption></figure>
+</div>
+
 <div class="talk"><b>핀 테스트</b> — <code>officex_tac_table_caret_selection.rs</code>(3),
 <code>officex_tac_table_exit_nav.rs</code>(2: ↓탈출=표 뒤 / 논리 삽입·삭제 왕복 원문 보존) +
 픽스처 2본(한컴 원본 <code>officex_tac_mid_anchor.hwpx</code>, 표 단독
