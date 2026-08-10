@@ -112,3 +112,19 @@ fn tac_table_paragraph_selection_rects_after_table_are_single_char() {
         "'라' rect 위치/폭: {ra}"
     );
 }
+
+/// 선택 밴드는 **줄간격을 포함한 줄 전체 높이**를 덮어야 한다 — 한컴 실측(2026-08-10:
+/// 잉크의 1.66배, 12pt/160%). 종전엔 캐럿 규격(글자 상자)이라 줄 사이 간격이 선택에서
+/// 빠져 보였다(사용자 신고: "간격에 대한 드래그를 안 한다").
+#[test]
+fn selection_band_covers_line_spacing_not_just_glyph_box() {
+    let doc = load_doc();
+    let caret = doc.get_cursor_rect(0, 0, 0).expect("캐럿");
+    let caret_h = json_number(&caret, "height");
+    let sel = doc.get_selection_rects(0, 0, 0, 0, 5).expect("선택 rect");
+    let band_h = json_number(&sel, "height");
+    assert!(
+        band_h > caret_h * 1.3,
+        "선택 밴드는 글자 상자보다 확실히 커야(줄간격 포함): 캐럿 h={caret_h} 밴드 h={band_h} json={sel}"
+    );
+}
