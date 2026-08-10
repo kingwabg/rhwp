@@ -65,6 +65,28 @@ fn tac_table_paragraph_line_edge_cursor_height_is_text_height() {
     }
 }
 
+/// 표 오른쪽 본문 텍스트 위 클릭은 그 텍스트 오프셋으로 — 표 우측 히트 밴드가
+/// 무한대라 텍스트 클릭·드래그 앵커까지 '표 뒤(1)'로 삼키던 회귀 핀.
+#[test]
+fn click_on_text_right_of_table_hits_text_not_table_band() {
+    let doc = load_doc();
+    // '라' 글리프 중앙쯤 (x≈282, 줄 y≈160) — 표 뒤 텍스트 두 번째 글자
+    let json = doc.hit_test(0, 282.0, 160.0).expect("hitTest");
+    let off = {
+        let pattern = "\"charOffset\":";
+        let start = json.find(pattern).expect("charOffset") + pattern.len();
+        let rest = &json[start..];
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        rest[..end].parse::<usize>().expect("usize")
+    };
+    assert!(
+        off >= 3,
+        "표 오른쪽 텍스트 클릭이 표 밴드(1)에 삼켜짐: off={off} json={json}"
+    );
+}
+
 /// 표 뒤 글자들의 선택 rect: '다'(논리 3..4) = 한 글자 폭, '라'(논리 4..5) = 비지 않음.
 #[test]
 fn tac_table_paragraph_selection_rects_after_table_are_single_char() {

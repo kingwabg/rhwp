@@ -1396,6 +1396,10 @@ impl DocumentCore {
             bbox_y: f64,
             bbox_w: f64,
             bbox_h: f64,
+            // 캐럿 규격(y = bbox_y + baseline − ascent, h = font) 계산용 — TAC 개체가 있는
+            // 줄에서 run bbox 는 줄 상자(개체 높이)라 클릭 커서가 줄 전체로 커졌다.
+            font_size: f64,
+            baseline: f64,
             // 셀/글상자 컨텍스트 (본문 텍스트는 None)
             cell_context: Option<CellContext>,
             is_textbox: bool,
@@ -1654,6 +1658,8 @@ impl DocumentCore {
                             bbox_y: node.bbox.y,
                             bbox_w: node.bbox.width,
                             bbox_h: node.bbox.height,
+                            font_size: text_run.style.font_size,
+                            baseline: text_run.baseline,
                             cell_context,
                             is_textbox: false,
                             column_index: col,
@@ -1723,9 +1729,19 @@ impl DocumentCore {
                     run.bbox_x
                 }
             };
+            // 캐럿 규격 y/h — run bbox(줄 상자)를 그대로 쓰면 TAC 개체 줄에서 커서가
+            // 줄 전체 높이로 나온다(get_cursor_rect 와 어긋남).
+            let (caret_y, caret_h) = if run.baseline > 0.0 && run.font_size > 0.0 {
+                (
+                    run.bbox_y + run.baseline - run.font_size * 0.8,
+                    run.font_size,
+                )
+            } else {
+                (run.bbox_y, run.bbox_h)
+            };
             let cursor_rect = format!(
                 ",\"cursorRect\":{{\"pageIndex\":{},\"x\":{:.1},\"y\":{:.1},\"height\":{:.1}}}",
-                page_num, cursor_x, run.bbox_y, run.bbox_h
+                page_num, cursor_x, caret_y, caret_h
             );
             if let Some(ref ctx) = run.cell_context {
                 let outer = &ctx.path[0];
@@ -2038,12 +2054,26 @@ impl DocumentCore {
                 .any(|cb| cb.x > right + 1.0 && cb.y < iy + ih && cb.y + cb.h > iy);
             // 오른쪽에 이웃 셀이 있으면(나란한 표) 밴드를 아예 끈다 — 좁은 밴드조차
             // 표 사이 좁은 간격을 삼켜 셀 클릭을 가로챈다(exam_social 2단 표 실측).
-            // 오른쪽에 이웃 셀이 있으면(나란한 표) 밴드를 끈다 — 표 사이 클릭은 셀로.
-            // 없으면 표 오른쪽은 줄 끝까지 빈 여백이므로, 멀리 클릭해도 표 뒤로 보낸다.
+            // 없으면 빈 여백만큼 표 뒤로 보내되, **같은 줄 오른쪽 본문 텍스트 앞까지만** —
+            // 종전 무한 밴드는 표 오른쪽 텍스트 위 클릭·드래그 앵커까지 전부 '표 뒤'로
+            // 삼켜 그 텍스트를 마우스로 선택할 수 없었다(2026-08-10 신고).
+            let right_text_start = runs
+                .iter()
+                .filter(|r| {
+                    r.section_index == si
+                        && r.paragraph_index == pi
+                        && r.cell_context.is_none()
+                        && r.char_count > 0
+                        && r.bbox_x >= right - 1.0
+                        && r.bbox_y < iy + ih
+                        && r.bbox_y + r.bbox_h > iy
+                })
+                .map(|r| r.bbox_x)
+                .fold(f64::INFINITY, f64::min);
             let right_band = if has_right_neighbor {
                 0.0
             } else {
-                f64::INFINITY
+                (right_text_start - right).max(0.0)
             };
             let _ = sole;
             if right_band > 0.0 && x >= right && x <= right + right_band && y >= iy && y <= iy + ih
@@ -2058,7 +2088,22 @@ impl DocumentCore {
                     caret_h,
                 ));
             }
-            if x < ix && x >= ix - caret_h && y >= iy && y <= iy + ih {
+            // 왼쪽 밴드도 본문 텍스트가 붙어 있으면 양보 — 직전 글자 클릭을 삼키지 않는다.
+            let left_text_end = runs
+                .iter()
+                .filter(|r| {
+                    r.section_index == si
+                        && r.paragraph_index == pi
+                        && r.cell_context.is_none()
+                        && r.char_count > 0
+                        && r.bbox_x + r.bbox_w <= ix + 1.0
+                        && r.bbox_y < iy + ih
+                        && r.bbox_y + r.bbox_h > iy
+                })
+                .map(|r| r.bbox_x + r.bbox_w)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let left_band = (ix - left_text_end).clamp(0.0, caret_h);
+            if x < ix && x >= ix - left_band && y >= iy && y <= iy + ih {
                 return Ok(format_body_inline_image_hit(
                     page_num,
                     si,
