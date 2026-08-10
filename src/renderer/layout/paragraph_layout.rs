@@ -352,6 +352,8 @@ struct EmptyRunsLineVars {
     y: f64,
     baseline: f64,
     raw_lh: f64,
+    /// 보정 줄 높이(px) — `tac_ink_top` r-분할의 분모.
+    line_height: f64,
     runs_all_whitespace: bool,
     max_fs: f64,
     line_spacing_px: f64,
@@ -384,6 +386,9 @@ struct TacPictureLineVars {
     y: f64,
     baseline: f64,
     raw_lh: f64,
+    /// 보정 줄 높이(px) — `tac_ink_top` r-분할의 분모. raw_lh 와 달리
+    /// corrected_line_metrics_for_source 를 거친 값.
+    line_height: f64,
     section_index: usize,
     para_index: usize,
 }
@@ -2182,6 +2187,7 @@ impl LayoutEngine {
             y,
             baseline,
             raw_lh,
+            line_height,
             section_index,
             para_index,
         } = v;
@@ -2204,7 +2210,8 @@ impl LayoutEngine {
                             if raw_lh + 4.0 >= pic_h {
                                 *reserved_tac_picture_height = Some(pic_h);
                             }
-                            let img_y = (y + baseline - pic_h).max(y);
+                            let img_y =
+                                tac_ink_top(y, baseline, line_height, pic_h, Some(ctrl), self.dpi);
                             let bin_data_id = pic.image_attr.bin_data_id;
                             let image_data = find_bin_data(bdc, bin_data_id).map(|c| c.data.load());
                             let crop = {
@@ -2265,6 +2272,7 @@ impl LayoutEngine {
         mut x: f64,
         y: f64,
         baseline: f64,
+        line_height: f64,
         section_index: usize,
         para_index: usize,
         placed_forms: &mut std::collections::HashSet<usize>,
@@ -2282,7 +2290,14 @@ impl LayoutEngine {
                     }
                     if let Some(Control::Form(f)) = p.controls.get(tac_ci) {
                         let form_h = hwpunit_to_px(f.height as i32, self.dpi);
-                        let form_y = (y + baseline - form_h).max(y);
+                        let form_y = tac_ink_top(
+                            y,
+                            baseline,
+                            line_height,
+                            form_h,
+                            p.controls.get(tac_ci),
+                            self.dpi,
+                        );
                         let cell_location = cell_ctx.map(|ctx| {
                             let e = &ctx.path[0];
                             (
@@ -3952,6 +3967,7 @@ impl LayoutEngine {
                     y,
                     baseline,
                     raw_lh,
+                    line_height,
                     section_index,
                     para_index,
                 },
@@ -3967,6 +3983,7 @@ impl LayoutEngine {
                 x,
                 y,
                 baseline,
+                line_height,
                 section_index,
                 para_index,
                 &mut placed_forms,
@@ -3998,6 +4015,7 @@ impl LayoutEngine {
                         y,
                         baseline,
                         raw_lh,
+                        line_height,
                         runs_all_whitespace,
                         max_fs,
                         line_spacing_px,
@@ -5085,7 +5103,14 @@ impl LayoutEngine {
                                 let base_img_y = if label_extra > 0.0 {
                                     y + label_extra
                                 } else {
-                                    (y + baseline - pic_h).max(y)
+                                    tac_ink_top(
+                                        y,
+                                        baseline,
+                                        line_height,
+                                        pic_h,
+                                        p.controls.get(tac_ci),
+                                        self.dpi,
+                                    )
                                 };
                                 let img_y = base_img_y + sibling_reserved_px;
                                 let bin_data_id = pic.image_attr.bin_data_id;
@@ -5171,7 +5196,14 @@ impl LayoutEngine {
                             let shape_y = if label_extra > 0.0 {
                                 y + label_extra
                             } else {
-                                (y + baseline - shape_h).max(y)
+                                tac_ink_top(
+                                    y,
+                                    baseline,
+                                    line_height,
+                                    shape_h,
+                                    p.controls.get(tac_ci),
+                                    self.dpi,
+                                )
                             };
                             // 인라인 좌표 등록 → shape_layout.rs에서 이 Shape를 스킵
                             tree.set_inline_shape_position(
@@ -5364,7 +5396,14 @@ impl LayoutEngine {
                     if let Some(p) = para {
                         if let Some(Control::Form(f)) = p.controls.get(tac_ci) {
                             let form_h = hwpunit_to_px(f.height as i32, self.dpi);
-                            let form_y = (y + baseline - form_h).max(y);
+                            let form_y = tac_ink_top(
+                                y,
+                                baseline,
+                                line_height,
+                                form_h,
+                                p.controls.get(tac_ci),
+                                self.dpi,
+                            );
                             // 셀 내부인 경우 cell_location 채우기
                             let cell_location = cell_ctx.as_ref().map(|ctx| {
                                 let e = &ctx.path[0];
@@ -6173,7 +6212,14 @@ impl LayoutEngine {
                             let shape_h_hu = (common.height as i32)
                                 .max(shape.shape_attr().current_height as i32);
                             let shape_h = hwpunit_to_px(shape_h_hu, self.dpi);
-                            let shape_y = (vars.y + vars.baseline - shape_h).max(vars.y);
+                            let shape_y = tac_ink_top(
+                                vars.y,
+                                vars.baseline,
+                                vars.line_height,
+                                shape_h,
+                                p.controls.get(tac_ci),
+                                self.dpi,
+                            );
                             tree.set_inline_shape_position(
                                 vars.section_index,
                                 vars.para_index,
@@ -6213,7 +6259,14 @@ impl LayoutEngine {
                             let base_img_y = if label_extra > 0.0 {
                                 vars.y + label_extra
                             } else {
-                                (vars.y + vars.baseline - pic_h).max(vars.y)
+                                tac_ink_top(
+                                    vars.y,
+                                    vars.baseline,
+                                    vars.line_height,
+                                    pic_h,
+                                    p.controls.get(tac_ci),
+                                    self.dpi,
+                                )
                             };
                             let img_y = base_img_y + sibling_reserved_px;
                             let bin_data_id = pic.image_attr.bin_data_id;
