@@ -3263,8 +3263,15 @@ mod issue_1151_v2_tac_toggle_tests {
         let table_para_idx = parse_idx(&table_res, "paraIdx");
         let table_ctrl_idx = parse_idx(&table_res, "controlIdx");
 
-        // 셀 height 를 한컴 정합 size (12498 HU) 와 유사하게 조절.
-        // default cell.height = 1282 → delta = 12498 - 1282 = 11216
+        // 셀 height 를 한컴 정합 size 와 유사하게 조절.
+        // 기준 높이는 **생성 직후 실제 값**에서 읽는다 — 셀 기본 여백(0.5mm 등)이 바뀌면
+        // 절대값 핀이 깨지므로 delta 만 검증한다(2026-08-11 여백 142HU 조정에서 실측).
+        let base_height = match &core.document.sections[0].paragraphs[table_para_idx].controls
+            [table_ctrl_idx]
+        {
+            Control::Table(t) => t.cells[0].height,
+            _ => panic!(),
+        };
         core.resize_table_cells_native(
             0,
             table_para_idx,
@@ -3272,6 +3279,7 @@ mod issue_1151_v2_tac_toggle_tests {
             r#"[{"cellIdx":0,"heightDelta":11216}]"#,
         )
         .expect("resize cell");
+        let expected_height = base_height + 11216;
 
         // v6 fix 1: resize 후 table.common.height 가 cell.height 와 동기화
         let table =
@@ -3280,10 +3288,10 @@ mod issue_1151_v2_tac_toggle_tests {
                 _ => panic!(),
             };
         assert_eq!(
-            table.common.height, 11498,
+            table.common.height, expected_height,
             "v6 fix: table.common.height 가 cell 조절 후 동기화 (raw_ctrl_data 뿐 아니라 self.common 도)"
         );
-        assert_eq!(table.cells[0].height, 11498);
+        assert_eq!(table.cells[0].height, expected_height);
 
         // picture 삽입 (v1 path)
         let cell_path: Vec<(usize, usize, usize)> = vec![(table_ctrl_idx, 0, 0)];

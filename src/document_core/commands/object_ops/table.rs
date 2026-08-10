@@ -9,6 +9,15 @@ use crate::model::event::DocumentEvent;
 use crate::model::paragraph::Paragraph;
 use crate::model::shape::{common_obj_offsets, ShapeObject};
 
+/// 표 생성 기본 테두리 굵기 = [`crate::model::style::BORDER_WIDTHS`] 인덱스 1 (0.12mm).
+/// 한컴 표 만들기 기본값. 종전엔 "굵기 인덱스 ≥ 1 인 아무 BorderFill 재사용"이라
+/// 문서에 굵은 테두리(예: 인덱스 4 = 0.25mm)가 이미 있으면 그걸 물려받아 기본 표가
+/// 두껍게 만들어졌다(2026-08-11 클립보드 실측에서 인덱스 4 검출).
+const DEFAULT_BORDER_WIDTH_IDX: u8 = 1;
+
+/// 표 생성 기본 바깥 여백 = 1.00mm (283 HWPUNIT). 한컴 기본값.
+const DEFAULT_OUTER_MARGIN: i16 = 283;
+
 impl DocumentCore {
     /// [Task #1151 v7] cell_path JSON → Vec<(controlIdx, cellIdx, cellParaIdx)>.
     /// 4 개 by_path setter/getter (cell picture/shape × set/get) 의 공통 파싱.
@@ -452,11 +461,13 @@ impl DocumentCore {
             .unwrap_or_else(|| vec![content_width / col_count as u32; col_count as usize]);
         let col_width = col_ws[0];
         // 한컴 기본: 셀 패딩 L=510 R=510 T=141 B=141
+        // 한컴 실측 기본값(2026-08-11): 좌우 510HU(1.80mm), 상하 142HU(0.50mm).
+        // 종전 141 은 0.497mm 로 한컴(142)과 1HU 어긋나 셀 높이(=상+하)가 282 vs 284 였다.
         let cell_pad = crate::model::Padding {
             left: 510,
             right: 510,
-            top: 141,
-            bottom: 141,
+            top: 142,
+            bottom: 142,
         };
         // 한컴 기본: 셀 높이 = top + bottom padding (빈 셀 최소 높이)
         let cell_height: u32 = (cell_pad.top + cell_pad.bottom) as u32;
@@ -477,7 +488,7 @@ impl DocumentCore {
             let existing = self.document.doc_info.border_fills.iter().position(|bf| {
                 bf.borders
                     .iter()
-                    .all(|b| b.line_type == BorderLineType::Solid && b.width >= 1)
+                    .all(|b| b.line_type == BorderLineType::Solid && b.width == DEFAULT_BORDER_WIDTH_IDX)
             });
             if let Some(idx) = existing {
                 (idx + 1) as u16 // 1-based
@@ -485,7 +496,7 @@ impl DocumentCore {
                 // 실선 BorderFill이 없으면 새로 생성
                 let solid_border = BorderLine {
                     line_type: BorderLineType::Solid,
-                    width: 1,
+                    width: DEFAULT_BORDER_WIDTH_IDX,
                     color: 0,
                 };
                 let new_bf = BorderFill {
@@ -567,7 +578,7 @@ impl DocumentCore {
         // vert=Para(2), horz=Para(3), wrap=TopAndBottom(1)
         // width_criterion=Absolute(4), height_criterion=Absolute(2)
         let flags: u32 = (2 << 3) | (3 << 8) | (4 << 15) | (2 << 18) | (1 << 21);
-        let outer_margin: i16 = 283; // ~1mm
+        let outer_margin: i16 = DEFAULT_OUTER_MARGIN;
         let mut raw_ctrl_data = vec![0u8; 38];
         raw_ctrl_data[common_obj_offsets::FLAGS].copy_from_slice(&flags.to_le_bytes());
         // vertical_offset/horizontal_offset/z_order = 0
@@ -601,8 +612,8 @@ impl DocumentCore {
             padding: crate::model::Padding {
                 left: 510,
                 right: 510,
-                top: 141,
-                bottom: 141,
+                top: 142,
+                bottom: 142,
             },
             row_sizes,
             border_fill_id: cell_border_fill_id, // 한컴: 표와 셀이 같은 BorderFill 사용
@@ -621,12 +632,20 @@ impl DocumentCore {
                 horz_align: crate::model::shape::HorzAlign::Left,
                 width: total_width,
                 height: total_height,
+                // 바깥 여백 1.00mm — outer_margin_* 과 같은 값으로 채운다. 표 속성
+                // 대화상자는 common.margin 을 읽어서, 종전엔 0 으로 보였다(이중 진실).
+                margin: crate::model::Padding {
+                    left: DEFAULT_OUTER_MARGIN,
+                    right: DEFAULT_OUTER_MARGIN,
+                    top: DEFAULT_OUTER_MARGIN,
+                    bottom: DEFAULT_OUTER_MARGIN,
+                },
                 ..Default::default()
             },
-            outer_margin_left: 283,
-            outer_margin_right: 283,
-            outer_margin_top: 283,
-            outer_margin_bottom: 283,
+            outer_margin_left: DEFAULT_OUTER_MARGIN,
+            outer_margin_right: DEFAULT_OUTER_MARGIN,
+            outer_margin_top: DEFAULT_OUTER_MARGIN,
+            outer_margin_bottom: DEFAULT_OUTER_MARGIN,
             raw_ctrl_data,
             raw_table_record_attr: 0x00000006, // 한컴 기본값 (bit1=셀분리금지, bit2=repeat_header)
             raw_table_record_extra: vec![0u8; 2],
@@ -876,7 +895,7 @@ impl DocumentCore {
         // ── 인라인 TAC 표 생성 ──
 
         let pd = &self.document.sections[section_idx].section_def.page_def;
-        let outer_margin: i16 = 283;
+        let outer_margin: i16 = DEFAULT_OUTER_MARGIN;
         let outer_margin_lr = (outer_margin * 2) as i32;
         let content_width =
             (pd.width as i32 - pd.margin_left as i32 - pd.margin_right as i32 - outer_margin_lr)
@@ -912,11 +931,13 @@ impl DocumentCore {
         };
         let total_width: u32 = col_ws.iter().sum();
 
+        // 한컴 실측 기본값(2026-08-11): 좌우 510HU(1.80mm), 상하 142HU(0.50mm).
+        // 종전 141 은 0.497mm 로 한컴(142)과 1HU 어긋나 셀 높이(=상+하)가 282 vs 284 였다.
         let cell_pad = crate::model::Padding {
             left: 510,
             right: 510,
-            top: 141,
-            bottom: 141,
+            top: 142,
+            bottom: 142,
         };
         let min_row_height: u32 = cell_pad.top as u32 + 1000 + cell_pad.bottom as u32;
         let row_heights: Vec<u32> = if let Some(heights) = row_heights_hu {
@@ -935,14 +956,14 @@ impl DocumentCore {
             let existing = self.document.doc_info.border_fills.iter().position(|bf| {
                 bf.borders
                     .iter()
-                    .all(|b| b.line_type == BorderLineType::Solid && b.width >= 1)
+                    .all(|b| b.line_type == BorderLineType::Solid && b.width == DEFAULT_BORDER_WIDTH_IDX)
             });
             if let Some(idx) = existing {
                 (idx + 1) as u16
             } else {
                 let solid_border = BorderLine {
                     line_type: BorderLineType::Solid,
-                    width: 1,
+                    width: DEFAULT_BORDER_WIDTH_IDX,
                     color: 0,
                 };
                 let new_bf = BorderFill {
@@ -1072,6 +1093,14 @@ impl DocumentCore {
                 horz_align: crate::model::shape::HorzAlign::Left,
                 width: total_width,
                 height: total_height,
+                // 바깥 여백 1.00mm — outer_margin_* 과 같은 값으로 채운다. 표 속성
+                // 대화상자는 common.margin 을 읽어서, 종전엔 0 으로 보였다(이중 진실).
+                margin: crate::model::Padding {
+                    left: DEFAULT_OUTER_MARGIN,
+                    right: DEFAULT_OUTER_MARGIN,
+                    top: DEFAULT_OUTER_MARGIN,
+                    bottom: DEFAULT_OUTER_MARGIN,
+                },
                 ..Default::default()
             },
             outer_margin_left: outer_margin,

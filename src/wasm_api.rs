@@ -989,6 +989,35 @@ impl HwpDocument {
         Ok(-1)
     }
 
+    /// 컨트롤 인덱스 → 논리 오프셋 (getInlineControlIndexAtLogical 의 역방향).
+    /// 인라인(글자취급) 컨트롤이 아니거나 범위 밖이면 -1. studio 가 표 개체
+    /// 선택 해제 시 캐럿을 "개체 바로 뒤"(반환값+1)에 놓는 용도 — 종전에는
+    /// 다음 문단으로 점프해 TAC 표의 문단 내 위치가 유실됐다.
+    #[wasm_bindgen(js_name = getControlLogicalPosition)]
+    pub fn get_control_logical_position(
+        &self,
+        section_idx: u32,
+        para_idx: u32,
+        control_idx: u32,
+    ) -> Result<i32, JsValue> {
+        let sec = section_idx as usize;
+        let pi = para_idx as usize;
+        if sec >= self.document.sections.len() || pi >= self.document.sections[sec].paragraphs.len()
+        {
+            return Err(JsValue::from_str("인덱스 범위 초과"));
+        }
+        let para = &self.document.sections[sec].paragraphs[pi];
+        let ci = control_idx as usize;
+        let Some(ctrl) = para.controls.get(ci) else {
+            return Ok(-1);
+        };
+        if !crate::document_core::helpers::is_logical_inline_control(ctrl) {
+            return Ok(-1);
+        }
+        let positions = crate::document_core::helpers::find_logical_control_positions(para);
+        Ok(positions.get(ci).map(|&p| p as i32).unwrap_or(-1))
+    }
+
     /// 문단에서 텍스트를 삭제한다.
     ///
     /// 삭제 후 구역을 재구성하고 재페이지네이션한다.
