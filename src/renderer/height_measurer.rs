@@ -120,6 +120,36 @@ pub fn is_tac_table_inline_in_para(table: &Table, seg_width: i32, para: &Paragra
         return false;
     }
 
+    // end-anchor(앞에만 실제 텍스트) 표도 텍스트 순서 보존을 위해 인라인 — 편집으로
+    // 만든 대형(단폭 90% 이상) 표가 아래 폭 휴리스틱에서 블록 취급되어 앞 텍스트
+    // **위**로 올라가던 순서 역전 수리(2026-08-10 신고: "가나"+140mm 표 → 표가 1줄,
+    // 가나가 2줄). 폭이 안 남으면 BreakToken::Object 규칙이 표를 텍스트 **다음 줄**로
+    // 내린다(oracle §1-B). 저장 파일의 자기 줄 인코딩(위 textless 게이트)과 전면급
+    // 증거는 계속 우선한다.
+    let this_table_pos = para
+        .controls
+        .iter()
+        .enumerate()
+        .find(|(_, c)| matches!(c, Control::Table(cand) if std::ptr::eq(cand.as_ref(), table)))
+        .and_then(|(ci, _)| control_positions.get(ci).copied());
+    if let Some(pos) = this_table_pos {
+        let before_has_text = chars
+            .get(..pos)
+            .is_some_and(|before| before.iter().any(|ch| ch.is_alphanumeric()));
+        // 단폭을 아예 넘는 표(예: issue_2319 신청서 표 858px > 567px)는 줄 공유가
+        // 불가능하고 인라인 높이 계측도 무의미하므로 기존 블록 규칙에 맡긴다.
+        let table_width: i64 = table
+            .get_column_widths()
+            .iter()
+            .map(|w| *w as i64)
+            .sum::<i64>()
+            + table.outer_margin_left as i64
+            + table.outer_margin_right as i64;
+        if before_has_text && table_width <= seg_width as i64 {
+            return true;
+        }
+    }
+
     is_tac_table_inline(table, seg_width, &para.text, &para.controls)
 }
 
@@ -2976,11 +3006,10 @@ mod tests {
         let Control::Table(trailing_table) = &trailing.controls[0] else {
             unreachable!()
         };
-        assert!(!is_tac_table_inline_in_para(
-            trailing_table,
-            1000,
-            &trailing
-        ));
+        // [2026-08-10] 끝-앵커라도 **앞에 실제 텍스트가 있으면 인라인** — 종전 블록
+        // 취급은 표를 앞 텍스트 위 줄로 올려 순서를 역전시켰다(신고 실측). 폭이
+        // 안 남으면 BreakToken::Object 가 표를 텍스트 다음 줄로 내린다.
+        assert!(is_tac_table_inline_in_para(trailing_table, 1000, &trailing));
     }
 
     #[test]
@@ -3004,7 +3033,8 @@ mod tests {
             unreachable!()
         };
         assert!(is_tac_table_inline_in_para(middle_table, 1000, &para));
-        assert!(!is_tac_table_inline_in_para(trailing_table, 1000, &para));
+        // 뒤 표도 앞에 실제 텍스트(A🎉)가 있으므로 인라인 — 순서 보존(2026-08-10).
+        assert!(is_tac_table_inline_in_para(trailing_table, 1000, &para));
     }
 
     #[test]

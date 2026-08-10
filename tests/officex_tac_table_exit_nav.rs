@@ -60,3 +60,19 @@ fn logical_insert_delete_roundtrip_after_table() {
         "논리 삽입·삭제 왕복은 원문 보존이어야 함 — 자모 잔류 회귀"
     );
 }
+
+/// 단폭 이내지만 앞 텍스트와 한 줄에 안 들어가는 광폭(140mm) 끝-앵커 TAC 표:
+/// 표는 앞 텍스트 **다음 줄**로 내려간다(순서 보존). 종전 90% 폭 휴리스틱이
+/// 블록 취급해 표가 앞 텍스트 위 줄로 올라갔다(2026-08-10 신고).
+#[test]
+fn wide_end_anchor_table_wraps_below_preceding_text() {
+    let doc = load("officex_tac_wide_end_anchor.hwpx");
+    let text_json = doc.get_cursor_rect(0, 0, 1).expect("가 뒤 캐럿(텍스트 줄)");
+    let after_json = doc.get_cursor_rect(0, 0, 3).expect("표 뒤 캐럿");
+    let y = |j: &str| json_usize(j, "y");
+    assert!(
+        y(&after_json) > y(&text_json) + 10,
+        "표 뒤 캐럿은 앞 텍스트 **다음 줄**이어야(표가 위 줄로 올라가면 역전): \
+         text={text_json} after={after_json}"
+    );
+}
