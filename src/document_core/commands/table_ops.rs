@@ -2819,9 +2819,14 @@ impl DocumentCore {
         // 바깥 여백 (CommonObjAttr margin ranges, parse_common_obj_attr 정합).
         // 물리를 먼저 쓴다 — 종전엔 바이트 길이 가드가 물리 대입까지 감싸서 HWPX
         // 로드 표(raw_ctrl_data 비어 있음)의 바깥 여백 지정이 조용히 무시됐다.
+        // ⚠ 표 여백은 3중 표현(outer_margin_* / common.margin / raw 바이트)이며
+        // 렌더러·직렬화기가 읽는 쪽이 서로 다르다 — 셋을 항상 같이 쓴다.
+        // 종전엔 outer_margin_* 을 방치해 렌더는 옛 값, getter·HWP5 저장은 새 값을
+        // 읽는 이중 진실("표가 뜬다/밀린다" + 재로드 돌변)의 유일한 활성 생성기였다.
         let has_raw_margins = table.raw_ctrl_data.len() >= common_obj_offsets::MARGIN_BOTTOM.end;
         if let Some(v) = json_i16(json, "outerLeft") {
             table.common.margin.left = v;
+            table.outer_margin_left = v;
             if has_raw_margins {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_LEFT]
                     .copy_from_slice(&v.to_le_bytes());
@@ -2829,6 +2834,7 @@ impl DocumentCore {
         }
         if let Some(v) = json_i16(json, "outerRight") {
             table.common.margin.right = v;
+            table.outer_margin_right = v;
             if has_raw_margins {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_RIGHT]
                     .copy_from_slice(&v.to_le_bytes());
@@ -2836,6 +2842,7 @@ impl DocumentCore {
         }
         if let Some(v) = json_i16(json, "outerTop") {
             table.common.margin.top = v;
+            table.outer_margin_top = v;
             if has_raw_margins {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_TOP]
                     .copy_from_slice(&v.to_le_bytes());
@@ -2843,6 +2850,7 @@ impl DocumentCore {
         }
         if let Some(v) = json_i16(json, "outerBottom") {
             table.common.margin.bottom = v;
+            table.outer_margin_bottom = v;
             if has_raw_margins {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_BOTTOM]
                     .copy_from_slice(&v.to_le_bytes());
@@ -3761,6 +3769,63 @@ mod table_attr_save_roundtrip_tests {
         assert!(
             matches!(vrel, VertRelTo::Para),
             "vertRelTo 변경이 HWP5 저장에서 유실됨 (실제: {vrel:?})"
+        );
+    }
+
+    /// 바깥 여백 setter 는 3중 표현(outer_margin_* / common.margin / raw 바이트)을
+    /// 전부 갱신해야 한다 — outer_margin_* 방치 시 렌더(outer 다수파)는 옛 값,
+    /// getter·HWP5 저장(common/raw)은 새 값을 읽는 이중 진실로 "표가 뜬다/밀린다"
+    /// + HWPX 저장 유실이 발생한다 (2026-08-11 감사 확정).
+    #[test]
+    fn outer_margin_setter_updates_all_three_representations() {
+        let mut core = load();
+        let (pi, ci) = find_first_table(&core);
+        let json = r#"{"outerLeft":142,"outerRight":143,"outerTop":144,"outerBottom":145}"#;
+        core.set_table_properties_native(0, pi, ci, json)
+            .expect("set_table_properties_native");
+
+        let t = match &core.document().sections[0].paragraphs[pi].controls[ci] {
+            Control::Table(t) => t,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            (
+                t.outer_margin_left,
+                t.outer_margin_right,
+                t.outer_margin_top,
+                t.outer_margin_bottom
+            ),
+            (142, 143, 144, 145),
+            "outer_margin_* 미갱신 — 렌더러 다수파가 옛 여백으로 조판"
+        );
+        assert_eq!(
+            (
+                t.common.margin.left,
+                t.common.margin.right,
+                t.common.margin.top,
+                t.common.margin.bottom
+            ),
+            (142, 143, 144, 145),
+            "common.margin 미갱신 — getter/HWP5 저장이 옛 여백"
+        );
+
+        // HWPX 직렬화는 outer_margin_* 만 읽는다 — 저장 왕복 보존 확인.
+        let saved = core.export_hwpx_native().expect("export_hwpx_native");
+        let reloaded = DocumentCore::from_bytes(&saved).expect("재로드");
+        let (pi2, ci2) = find_first_table(&reloaded);
+        let t2 = match &reloaded.document().sections[0].paragraphs[pi2].controls[ci2] {
+            Control::Table(t) => t,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            (
+                t2.outer_margin_left,
+                t2.outer_margin_right,
+                t2.outer_margin_top,
+                t2.outer_margin_bottom
+            ),
+            (142, 143, 144, 145),
+            "바깥 여백 변경이 HWPX 저장에서 유실됨"
         );
     }
 }
