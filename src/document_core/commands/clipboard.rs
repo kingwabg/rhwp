@@ -1535,8 +1535,12 @@ impl DocumentCore {
     pub(crate) fn table_to_html(&self, table: &crate::model::table::Table) -> String {
         use crate::renderer::style_resolver::ResolvedBorderStyle;
 
-        let mut html = String::from(
-            "<table style=\"border-collapse:collapse;\" cellpadding=\"0\" cellspacing=\"0\">\n",
+        // [클립보드 왕복 2026-08-11] 표/셀 크기를 pt 로 내보낸다 — 종전엔 크기가 아예
+        // 빠져 붙여넣는 쪽이 임의로 균등 분할했다(열 폭·행 높이 유실). HWPUNIT/100 = pt.
+        let total_width: u32 = table.get_column_widths().iter().sum();
+        let mut html = format!(
+            "<table style=\"border-collapse:collapse;width:{:.1}pt;\" cellpadding=\"0\" cellspacing=\"0\">\n",
+            total_width as f64 / 100.0
         );
 
         // 행별로 그룹화
@@ -1561,8 +1565,22 @@ impl DocumentCore {
                     }
                 }
 
-                // 셀 패딩
-                td_style.push_str("padding:1px 5px;");
+                // 셀 크기(pt) — 병합 셀은 span 된 실제 폭/높이 그대로
+                td_style.push_str(&format!(
+                    "width:{:.1}pt;height:{:.1}pt;",
+                    cell.width as f64 / 100.0,
+                    cell.height as f64 / 100.0
+                ));
+
+                // 셀 안 여백 — 저장값 그대로(종전 하드코딩 1px 5px 은 왕복마다 여백이 바뀌었다)
+                let pad = cell.effective_padding(&table.padding);
+                td_style.push_str(&format!(
+                    "padding:{:.1}pt {:.1}pt {:.1}pt {:.1}pt;",
+                    pad.top.max(0) as f64 / 100.0,
+                    pad.right.max(0) as f64 / 100.0,
+                    pad.bottom.max(0) as f64 / 100.0,
+                    pad.left.max(0) as f64 / 100.0
+                ));
 
                 // vertical-align
                 td_style.push_str("vertical-align:top;");
@@ -1611,10 +1629,11 @@ impl DocumentCore {
         let sides = ["left", "right", "top", "bottom"];
         for (i, side) in sides.iter().enumerate() {
             let bl = &bs.borders[i];
-            if bl.width > 0 {
+            if bl.line_type != crate::model::style::BorderLineType::None {
                 let color = clipboard_color_to_css(bl.color);
-                let px = (bl.width as f64).max(1.0);
-                css.push_str(&format!("border-{}:{:.1}px solid {};", side, px, color));
+                // width 는 mm 표의 **인덱스** — pt 로 환산해 내보낸다(수입측이 mm 로 복원).
+                let pt = crate::document_core::helpers::hwp_border_width_idx_to_pt(bl.width);
+                css.push_str(&format!("border-{}:{:.2}pt solid {};", side, pt, color));
             }
         }
     }

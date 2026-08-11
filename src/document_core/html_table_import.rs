@@ -377,6 +377,25 @@ impl DocumentCore {
             }
         }
 
+        // [붙여넣기 폭 클램프 2026-08-11] 바깥에서 온 표가 본문 폭을 넘으면 비율을 지켜
+        // 줄인다 — 종전엔 그대로 들어와 표가 용지 밖으로 삐져나갔다(한컴은 붙여넣기 때
+        // 본문 폭에 맞춘다). 이미 들어오는 폭이 본문 이내면 손대지 않는다.
+        let total_w: u64 = col_widths.iter().map(|w| *w as u64).sum();
+        if total_w > default_page_width as u64 && total_w > 0 {
+            let scale = default_page_width as f64 / total_w as f64;
+            let mut acc: u64 = 0;
+            let last = col_widths.len() - 1;
+            for (i, w) in col_widths.iter_mut().enumerate() {
+                if i == last {
+                    // 반올림 잔차는 마지막 열이 흡수 — 합이 정확히 본문 폭
+                    *w = (default_page_width as u64).saturating_sub(acc).max(1) as u32;
+                } else {
+                    *w = ((*w as f64 * scale).round() as u32).max(1);
+                    acc += *w as u64;
+                }
+            }
+        }
+
         // 행별 높이
         let mut row_heights = vec![0u32; row_count as usize];
         for cp in &cell_positions {

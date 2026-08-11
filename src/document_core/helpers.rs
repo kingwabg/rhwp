@@ -1529,6 +1529,20 @@ pub(crate) fn parse_css_border_shorthand(val: &str) -> (f64, u32, u8) {
 
 /// CSS border 두께(pt)를 HWP border width 인덱스로 변환한다.
 /// HWP 스펙: width 값이 선 굵기 인덱스 (0: 0.1mm, 1: 0.12mm, 2: 0.15mm, 3: 0.2mm, 4: 0.25mm, 5: 0.3mm, 6: 0.4mm, 7: 0.5mm)
+/// HWP 테두리 굵기 **인덱스**(0~15) → pt. 클립보드 HTML 수출용.
+///
+/// ⚠ `BorderLine.width` 는 길이가 아니라 [`BORDER_WIDTHS`] mm 표의 인덱스다.
+/// 종전 수출은 이 인덱스를 그대로 px 로 적어(idx4 → "4.0px") 붙여넣기마다 테두리가
+/// 굵어졌다(실측 1.95배, 0.25mm → 0.5mm). pt 로 내보내면 수입측
+/// [`css_border_width_to_hwp`] 가 mm 로 되돌려 인덱스가 왕복 보존된다.
+pub(crate) fn hwp_border_width_idx_to_pt(idx: u8) -> f64 {
+    let mm = crate::model::style::BORDER_WIDTHS
+        .get(idx as usize)
+        .map(|(mm, _)| *mm)
+        .unwrap_or(0.1);
+    mm / 0.3528
+}
+
 pub(crate) fn css_border_width_to_hwp(pt: f64) -> u8 {
     let mm = pt * 0.3528; // 1pt ≈ 0.3528mm
     if mm < 0.11 {
