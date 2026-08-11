@@ -330,6 +330,9 @@ pub struct WebCanvasRenderer {
     /// independent of raw tree child order.
     active_replay_plane: Option<PaintReplayPlane>,
     render_profile: RenderProfile,
+    /// 표시 줌(CSS 스케일, 1.0=100%). 0 이면 미설정 — 헤어라인 스냅 비활성.
+    /// scale(백킹 스케일 = 줌×dpr)과 달리 CSS 픽셀 격자를 정의한다.
+    display_zoom: f64,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -353,7 +356,13 @@ impl WebCanvasRenderer {
             transparent_page_background: false,
             active_replay_plane: None,
             render_profile: RenderProfile::Screen,
+            display_zoom: 0.0,
         })
+    }
+
+    /// 표시 줌(CSS 스케일) 설정 — 헤어라인 CSS 픽셀 스냅 격자.
+    pub fn set_display_zoom(&mut self, zoom: f64) {
+        self.display_zoom = zoom;
     }
 
     /// 줌 스케일 설정 (1.0 = 100%, 2.0 = 200%)
@@ -2695,7 +2704,35 @@ impl Renderer for WebCanvasRenderer {
             }
             _ => {
                 // Single line
-                self.ctx.set_line_width(width);
+                // [헤어라인 크리스프] 0.12mm(0.5px) 급 얇은 축 정렬 선은 CSS 픽셀 격자에
+                // 스냅 + 폭 바닥 1 CSS px — 한컴 화면 두께 정합. 소수 좌표 AA 로 선마다
+                // 진하기가 달라지던 결함(2026-08-11 정밀분석: canvas2d 백엔드가 실경로,
+                // 선 op 는 균일한데 래스터에서 갈렸다). 화살표/그림자/겹선은 제외.
+                let mut draw_w = width;
+                let zoom = self.display_zoom;
+                if zoom > 0.0
+                    && style.shadow.is_none()
+                    && style.start_arrow == super::ArrowStyle::None
+                    && style.end_arrow == super::ArrowStyle::None
+                {
+                    let css_w = width * zoom;
+                    if css_w < 1.5 {
+                        let w_css = css_w.round().max(1.0);
+                        draw_w = w_css / zoom;
+                        let half = if (w_css as i64) % 2 != 0 { 0.5 } else { 0.0 };
+                        let snap = |v: f64| ((v * zoom).floor() + half) / zoom;
+                        if (ly1 - ly2).abs() < 1e-3 {
+                            let y = snap(ly1);
+                            ly1 = y;
+                            ly2 = y;
+                        } else if (lx1 - lx2).abs() < 1e-3 {
+                            let x = snap(lx1);
+                            lx1 = x;
+                            lx2 = x;
+                        }
+                    }
+                }
+                self.ctx.set_line_width(draw_w);
                 self.ctx.begin_path();
                 self.ctx.move_to(lx1, ly1);
                 self.ctx.line_to(lx2, ly2);

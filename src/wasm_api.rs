@@ -98,7 +98,11 @@ fn normalize_canvas_scale(
 
 #[cfg(target_arch = "wasm32")]
 fn scaled_canvas_extent(page_extent: f64, scale: f64) -> u32 {
-    (page_extent * scale).max(1.0).min(MAX_CANVAS_DIMENSION) as u32
+    // 짝수 스냅 — 홀수 백킹(예: A4×2=1587)은 CSS 크기가 793.5px(소수)가 되어
+    // 중앙정렬과 결합해 캔버스가 픽셀 격자에서 어긋난다(전면 서브픽셀 블러,
+    // canvaskit 경로의 2026-07-27 스냅과 동일 근거 — canvas2d 경로에 누락돼 있었다).
+    let e = (page_extent * scale).max(2.0).min(MAX_CANVAS_DIMENSION) as u32;
+    e & !1
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -176,6 +180,8 @@ fn collect_external_image_references(document: &Document) -> Vec<ExternalImageRe
 #[wasm_bindgen]
 pub struct HwpDocument {
     core: DocumentCore,
+    /// 표시 줌(CSS 스케일, 1.0=100%) — canvas2d 헤어라인 스냅 격자. 0=미설정.
+    display_zoom: std::cell::Cell<f64>,
 }
 
 impl std::ops::Deref for HwpDocument {
@@ -196,7 +202,7 @@ impl std::ops::DerefMut for HwpDocument {
 /// 테스트 및 CLI 환경에서 `HwpDocument::from_bytes()` 등을 직접 호출할 수 있도록 한다.
 impl HwpDocument {
     pub fn from_bytes(data: &[u8]) -> Result<HwpDocument, HwpError> {
-        DocumentCore::from_bytes(data).map(|core| HwpDocument { core })
+        DocumentCore::from_bytes(data).map(|core| HwpDocument { core, display_zoom: std::cell::Cell::new(0.0) })
     }
 
     pub fn find_initial_column_def(paragraphs: &[Paragraph]) -> ColumnDef {
@@ -342,8 +348,15 @@ impl HwpDocument {
     #[wasm_bindgen(constructor)]
     pub fn new(data: &[u8]) -> Result<HwpDocument, JsValue> {
         DocumentCore::from_bytes(data)
-            .map(|core| HwpDocument { core })
+            .map(|core| HwpDocument { core, display_zoom: std::cell::Cell::new(0.0) })
             .map_err(|e| e.into())
+    }
+
+    /// 표시 줌(CSS 스케일) 설정 — canvas2d 렌더의 헤어라인 CSS 픽셀 스냅 격자.
+    /// 스튜디오가 줌 변경 시 호출한다. 0 이면 스냅 비활성(기존 동작).
+    #[wasm_bindgen(js_name = setDisplayZoom)]
+    pub fn set_display_zoom(&self, zoom: f64) {
+        self.display_zoom.set(zoom.max(0.0));
     }
 
     /// 빈 문서 생성 (테스트/미리보기용)
@@ -361,7 +374,7 @@ impl HwpDocument {
         let mut document = Document::default();
         document.sections.push(section);
         core.set_document(document);
-        HwpDocument { core }
+        HwpDocument { core, display_zoom: std::cell::Cell::new(0.0) }
     }
 
     /// 내장 템플릿에서 빈 문서를 생성한다.
@@ -498,6 +511,7 @@ impl HwpDocument {
         renderer.show_paragraph_marks = self.show_paragraph_marks;
         renderer.show_control_codes = self.show_control_codes;
         renderer.set_scale(scale);
+        renderer.set_display_zoom(self.display_zoom.get());
         renderer.render_page(&tree).map_err(JsValue::from)?;
         Ok(())
     }
@@ -574,6 +588,7 @@ impl HwpDocument {
         renderer.show_paragraph_marks = self.show_paragraph_marks;
         renderer.show_control_codes = self.show_control_codes;
         renderer.set_scale(scale);
+        renderer.set_display_zoom(self.display_zoom.get());
         renderer.set_layer_filter(filter);
         renderer.render_page(&tree).map_err(JsValue::from)?;
         Ok(())
@@ -605,6 +620,7 @@ impl HwpDocument {
         renderer.show_paragraph_marks = self.show_paragraph_marks;
         renderer.show_control_codes = self.show_control_codes;
         renderer.set_scale(scale);
+        renderer.set_display_zoom(self.display_zoom.get());
         renderer.render_tree(&tree);
         Ok(())
     }
