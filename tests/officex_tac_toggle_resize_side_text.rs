@@ -93,3 +93,86 @@ fn side_text_position_survives_hwpx_roundtrip() {
         "왕복 후 옆 텍스트가 표 상단에 떠 있다: 텍스트 바닥={text_bottom:.1} ≤ 표 중앙={table_mid:.1}"
     );
 }
+
+/// [2026-08-11 신고 "표 글자처럼 취급 후 줄 간격이 안 먹는다"]
+/// 개체(표)만 있는 문단의 줄간격은 **문단 모양에서 다시 계산**돼야 한다. 종전 reflow 는
+/// 이전 line_seg 의 line_spacing 을 그대로 복제해, TAC 이후 줄간격을 바꿔도 저장 줄정보가
+/// 첫 값(기본 160%)에 고착됐다 — 적용 순서(토글↔줄간격)에 따라 결과도 갈렸다.
+#[test]
+fn tac_host_paragraph_line_spacing_applies_regardless_of_order() {
+    fn build(order_toggle_first: bool, spacing: u32) -> (i32, f64) {
+        let mut doc = HwpDocument::create_empty();
+        doc.create_blank_document().unwrap();
+        doc.insert_text(0, 0, 0, "가나").unwrap();
+        doc.split_paragraph(0, 0, 2).unwrap();
+        doc.insert_text(0, 1, 0, "뒷문단").unwrap();
+        let c: serde_json::Value = serde_json::from_str(
+            &doc.create_table_ex(
+                r#"{"sectionIdx":0,"paraIdx":0,"charOffset":2,"rowCount":2,"colCount":2,"treatAsChar":false}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let (pi, ci) = (
+            c["paraIdx"].as_u64().unwrap() as u32,
+            c["controlIdx"].as_u64().unwrap() as u32,
+        );
+        let json = format!(r#"{{"lineSpacing":{spacing},"lineSpacingType":"Percent"}}"#);
+        let apply_all = |doc: &mut HwpDocument| {
+            for p in 0..doc.get_paragraph_count(0).unwrap() {
+                let _ = doc.apply_para_format(0, p as usize, &json);
+            }
+        };
+        if order_toggle_first {
+            doc.set_table_properties(0, pi, ci, r#"{"treatAsChar":true}"#).unwrap();
+            apply_all(&mut doc);
+        } else {
+            apply_all(&mut doc);
+            doc.set_table_properties(0, pi, ci, r#"{"treatAsChar":true}"#).unwrap();
+        }
+        let seg_ls = doc.document().sections[0].paragraphs[pi as usize]
+            .line_segs
+            .first()
+            .map(|l| l.line_spacing)
+            .unwrap_or(-1);
+        // 표 줄 다음 문단의 y (줄간격이 실제 조판에 반영됐는지)
+        let tree = doc.build_page_render_tree(0).unwrap();
+        fn walk(n: &RenderNode, needle: &str, out: &mut Option<f64>) {
+            if let RenderNodeType::TextRun(tr) = &n.node_type {
+                if tr.text.contains(needle) && out.is_none() {
+                    *out = Some(n.bbox.y);
+                }
+            }
+            for c in &n.children {
+                walk(c, needle, out);
+            }
+        }
+        let mut y = None;
+        walk(&tree.root, "뒷문단", &mut y);
+        (seg_ls, y.expect("뒷문단 y"))
+    }
+
+    // ① 줄간격 100% 는 추가 여백 0
+    for toggle_first in [true, false] {
+        let (ls, _) = build(toggle_first, 100);
+        assert_eq!(
+            ls, 0,
+            "100% 인데 저장 줄간격이 {ls} (toggle_first={toggle_first}) — 옛 값 고착"
+        );
+    }
+    // ② 300% 는 추가 여백이 실제로 붙고, 적용 순서와 무관하게 같은 결과
+    let (ls_a, y_a) = build(true, 300);
+    let (ls_b, y_b) = build(false, 300);
+    assert!(ls_a > 0, "300% 인데 저장 줄간격이 0 — 줄간격 미반영");
+    assert_eq!(ls_a, ls_b, "적용 순서에 따라 줄간격이 달라짐 ({ls_a} vs {ls_b})");
+    assert!(
+        (y_a - y_b).abs() < 0.5,
+        "적용 순서에 따라 조판이 달라짐 (뒷문단 y {y_a} vs {y_b})"
+    );
+    // ③ 100% → 300% 로 키우면 표 줄 다음 문단이 확실히 내려간다
+    let (_, y100) = build(true, 100);
+    assert!(
+        y_a > y100 + 20.0,
+        "줄간격을 300% 로 올렸는데 조판이 그대로 (100%: {y100}, 300%: {y_a})"
+    );
+}

@@ -1383,7 +1383,10 @@ pub(crate) fn reflow_line_segs_with_bands(
                     .get(line_idx)
                     .or_else(|| orig_line_segs.first())
                 {
-                    seg.line_spacing = template.line_spacing;
+                    // ⚠ line_spacing 은 **상속하지 않는다** — 문단 모양에서 다시 계산한
+                    // make_line_seg 값을 쓴다. 종전 상속은 개체(표·그림)만 있는 문단의
+                    // 줄간격을 첫 값에 고착시켜, 글자처럼취급 이후 줄간격을 바꿔도
+                    // 화면이 그대로였다(2026-08-11 신고). 텍스트 문단은 원래 재계산한다.
                     seg.segment_width = if template.segment_width > 0 {
                         template.segment_width
                     } else {
