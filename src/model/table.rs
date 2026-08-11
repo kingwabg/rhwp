@@ -717,7 +717,7 @@ impl Table {
             return;
         }
         let total_width: HwpUnit = self.get_column_widths().iter().sum();
-        let total_height: HwpUnit = self.get_row_heights().iter().sum();
+        let total_height: HwpUnit = self.effective_row_heights().iter().sum();
         // (1) serialize source — raw_ctrl_data bytes (HWP 직렬화 시 사용).
         self.raw_ctrl_data[common_obj_offsets::WIDTH].copy_from_slice(&total_width.to_le_bytes());
         self.raw_ctrl_data[common_obj_offsets::HEIGHT].copy_from_slice(&total_height.to_le_bytes());
@@ -848,6 +848,34 @@ impl Table {
         self.update_ctrl_dimensions();
         self.rebuild_grid();
         Ok(())
+    }
+
+    /// 행별 **실효** 높이 — 저장 행높이에 글줄 바닥(패딩 상하 + 1000HU)을 적용한다.
+    ///
+    /// 한컴 저장 규약: 빈 셀의 `cell.height` 는 **패딩만**이다(한컴 저장 실물
+    /// officex_tac_mid_anchor.hwpx: 셀 284 = 142+142, common.height 2568 = 1284×2).
+    /// 저장 합산만으로 `common.height` 를 만들면 표가 글줄만큼 납작해져, 열폭
+    /// 조절 등 update_ctrl_dimensions 를 타는 순간 host lineseg 가 따라 무너지고
+    /// TAC 옆 텍스트가 표 상단에 떠 보였다(2026-08-11 신고의 뿌리).
+    /// ponytail: 글줄 바닥은 10pt 기준 1000HU 고정 — Table 은 doc_info(폰트)를
+    /// 모르며, 큰 글자 셀은 편집 경로가 stored 높이를 이미 키워 max 가 지켜진다.
+    pub fn effective_row_heights(&self) -> Vec<HwpUnit> {
+        const DEFAULT_LINE_HU: u32 = 1000;
+        let mut heights = self.get_row_heights();
+        for (row, h) in heights.iter_mut().enumerate() {
+            let pad_vert: u32 = self
+                .cells
+                .iter()
+                .filter(|c| c.row as usize == row && c.row_span <= 1)
+                .map(|c| {
+                    let p = c.effective_padding(&self.padding);
+                    (p.top.max(0) + p.bottom.max(0)) as u32
+                })
+                .max()
+                .unwrap_or((self.padding.top.max(0) + self.padding.bottom.max(0)) as u32);
+            *h = (*h).max(pad_vert + DEFAULT_LINE_HU);
+        }
+        heights
     }
 
     /// 행별 높이를 추출한다 (row_span==1인 셀 기준).

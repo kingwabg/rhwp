@@ -50,14 +50,21 @@ fn body_bboxes(doc: &mut HwpDocument) -> Vec<(&'static str, f64, f64, f64, f64)>
     out
 }
 
-/// 우변 불변식: 텍스트 우변은 단 우변 이내. 표/그림은 자기 폭이 단 폭 이내인
-/// 것만 검사한다(단 폭 초과 개체는 물리적으로 넘칠 수밖에 없다 — 한컴도 동일).
+/// 좌·우변 불변식: 본문 흐름 노드는 단 좌변보다 왼쪽으로 나가지 않고(2026-08-11
+/// '표가 여백 밖으로 나옴' 신고 계열), 텍스트/적재 가능 개체의 우변은 단 우변
+/// 이내다. 단 폭 초과 개체는 우변 검사에서 제외(물리적으로 넘칠 수밖에 없다 —
+/// 한컴 동일). Paper 앵커 자유 배치 표는 본문 흐름이 아니므로 이 핀 대상이 아니다
+/// (여기 시나리오는 전부 흐름 앵커).
 fn assert_right_edge_invariant(doc: &mut HwpDocument, ctx: &str) {
     let right = COL_LEFT + COL_WIDTH;
     for (kind, x, _y, w, _h) in body_bboxes(doc) {
         if w <= 0.0 {
             continue;
         }
+        assert!(
+            x >= COL_LEFT - 1.0,
+            "[{ctx}] {kind} 좌변 돌출: x={x:.1} < 단 좌변={COL_LEFT:.1}"
+        );
         let obj_fits = kind == "text" || w <= COL_WIDTH + 1.0;
         if obj_fits {
             assert!(
