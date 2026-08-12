@@ -320,11 +320,6 @@ fn right_leader_body_target_rel(style: &TextStyle) -> Option<f64> {
     }
 }
 
-/// 탭 문자의 위치로부터 탭 리더 정보를 추출한다.
-pub fn extract_tab_leaders(text: &str, positions: &[f64], style: &TextStyle) -> Vec<TabLeaderInfo> {
-    extract_tab_leaders_with_extended(text, positions, style, &[])
-}
-
 /// 탭 리더 추출 (tab_extended 지원)
 /// tab_extended: HWPX 인라인 탭 또는 HWP 탭 확장 데이터 (ext[1] = leader/fill_type)
 pub fn extract_tab_leaders_with_extended(
@@ -966,90 +961,6 @@ impl TextMeasurer for EmbeddedTextMeasurer {
 #[cfg(target_arch = "wasm32")]
 mod wasm_internals {
     use crate::renderer::TextStyle;
-    use std::cell::RefCell;
-    use wasm_bindgen::prelude::*;
-
-    // globalThis.measureTextWidth(font, text) → width in pixels
-    // editor.html/index.html의 <head>에 정의된 글로벌 함수를 호출한다.
-    #[wasm_bindgen]
-    extern "C" {
-        #[wasm_bindgen(js_namespace = globalThis, js_name = "measureTextWidth")]
-        fn js_measure_text_width(font: &str, text: &str) -> f64;
-    }
-
-    // ── JS measureText 결과 LRU 캐시 ──
-    //
-    // js_measure_text_width()는 항상 1000px 고정 크기로 측정하므로
-    // (measure_font, char) 쌍을 키로 캐싱하면 모든 font_size에서 재사용 가능하다.
-    // WASM은 단일 스레드이므로 thread_local + RefCell로 충분하다.
-
-    /// Vec 기반 LRU 캐시 (256 엔트리)
-    ///
-    /// 용량 ≤ 256이므로 선형 탐색(수 μs)이 JS 브릿지 호출(~50μs)보다 빠르다.
-    /// 용량 초과 시 가장 오래된 25%를 제거한다 (webhwp 방식).
-    struct MeasureCache {
-        entries: Vec<(u64, f64)>, // (key_hash, raw_px) — 접근 순서 (최근이 뒤)
-        capacity: usize,
-    }
-
-    impl MeasureCache {
-        fn new(capacity: usize) -> Self {
-            Self {
-                entries: Vec::with_capacity(capacity),
-                capacity,
-            }
-        }
-
-        fn get(&mut self, key: u64) -> Option<f64> {
-            if let Some(idx) = self.entries.iter().position(|(k, _)| *k == key) {
-                let entry = self.entries.remove(idx);
-                let val = entry.1;
-                self.entries.push(entry); // MRU로 이동
-                Some(val)
-            } else {
-                None
-            }
-        }
-
-        fn insert(&mut self, key: u64, value: f64) {
-            if self.entries.len() >= self.capacity {
-                // 가장 오래된 25% 제거
-                let remove_count = self.capacity / 4;
-                self.entries.drain(0..remove_count);
-            }
-            self.entries.push((key, value));
-        }
-    }
-
-    thread_local! {
-        static JS_MEASURE_CACHE: RefCell<MeasureCache> = RefCell::new(MeasureCache::new(256));
-    }
-
-    /// 캐시 키 생성: hash(measure_font + char)
-    fn measure_cache_key(measure_font: &str, c: char) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut h = DefaultHasher::new();
-        measure_font.hash(&mut h);
-        c.hash(&mut h);
-        h.finish()
-    }
-
-    /// JS measureText 캐싱 래퍼
-    ///
-    /// 캐시 히트 시 WASM↔JS 브릿지 호출 없이 즉시 반환.
-    /// 미스 시 js_measure_text_width() 호출 후 결과를 캐시에 저장.
-    fn cached_js_measure(measure_font: &str, c: char) -> f64 {
-        let key = measure_cache_key(measure_font, c);
-        JS_MEASURE_CACHE.with(|cache| {
-            if let Some(val) = cache.borrow_mut().get(key) {
-                return val;
-            }
-            let val = js_measure_text_width(measure_font, &c.to_string());
-            cache.borrow_mut().insert(key, val);
-            val
-        })
-    }
 
     /// 1000pt 측정용 CSS font 문자열 생성
     pub(super) fn build_1000pt_font_string(style: &TextStyle) -> String {
@@ -1592,20 +1503,6 @@ fn is_monospace_metric(metric: &font_metrics_data::FontMetric) -> bool {
     }
     // 표본이 충분할 때만 monospace 로 판정 (Latin 글리프가 거의 없는 폰트 오판 방지).
     count >= 16
-}
-
-/// 요청 폰트의 내장 메트릭 DB 등록 여부.
-///
-/// `compute_char_positions` 의 advance 가 실제 글리프 폭(메트릭 DB)에서
-/// 나온 값인지, 아니면 DB 미등록 폰트의 휴리스틱 폴백(`font_size * 0.5`
-/// 등)인지 구분하는 데 쓴다. WASM 캔버스 렌더러는 메트릭이 없는(=브라우저
-/// 대체 폰트로 치환되는) 폰트에 대해 글리프별 가로 스케일링(per-glyph
-/// x-scale)을 적용하면 안 된다 — 치환 폰트의 실제 advance 와 어긋나
-/// l/i/t 같은 좁은 글리프가 과도하게 늘어나기 때문이다 (한컴 바겐세일 M
-/// → Pretendard 치환 시 Vocabulary 열 왜곡).
-pub(crate) fn font_family_has_metrics(font_family: &str, bold: bool, italic: bool) -> bool {
-    let primary_name = font_family.split(',').next().unwrap_or(font_family).trim();
-    font_metrics_data::find_metric(primary_name, bold, italic).is_some()
 }
 
 /// 내장 폰트 메트릭으로 문자 폭 측정 (em 단위 → px 변환)

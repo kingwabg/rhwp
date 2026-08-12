@@ -481,12 +481,13 @@ pub(crate) fn create_border_line_nodes(
     match border.line_type {
         BorderLineType::None => vec![],
 
-        // 이중선 (동일 굵기)
-        BorderLineType::Double => {
-            let total = base_width.max(3.0);
-            let sub_w = (total * 0.3).max(0.4);
-            let gap = (total * 0.4).max(1.0);
-            let offset = (gap + sub_w) / 2.0;
+        // 겹선(이중·삼중) — 기하는 multi_line_geometry 단일 진실
+        BorderLineType::Double
+        | BorderLineType::ThinThickDouble
+        | BorderLineType::ThickThinDouble
+        | BorderLineType::ThinThickThinTriple => {
+            let lines = multi_line_geometry(border.line_type, base_width)
+                .expect("겹선 종류는 기하가 있다");
             create_parallel_lines(
                 tree,
                 border.color,
@@ -494,75 +495,10 @@ pub(crate) fn create_border_line_nodes(
                 y1,
                 x2,
                 y2,
-                &[(-offset, sub_w), (offset, sub_w)],
+                &lines,
                 StrokeDash::Solid,
             )
         }
-
-        // 가는선-굵은선 이중선
-        BorderLineType::ThinThickDouble => {
-            let total = base_width.max(3.0);
-            let thin_w = (total * 0.2).max(0.4);
-            let thick_w = (total * 0.4).max(0.6);
-            let gap = (total * 0.4).max(1.0);
-            let thin_offset = -(gap + thin_w) / 2.0;
-            let thick_offset = (gap + thick_w) / 2.0;
-            create_parallel_lines(
-                tree,
-                border.color,
-                x1,
-                y1,
-                x2,
-                y2,
-                &[(thin_offset, thin_w), (thick_offset, thick_w)],
-                StrokeDash::Solid,
-            )
-        }
-
-        // 굵은선-가는선 이중선
-        BorderLineType::ThickThinDouble => {
-            let total = base_width.max(3.0);
-            let thick_w = (total * 0.4).max(0.6);
-            let thin_w = (total * 0.2).max(0.4);
-            let gap = (total * 0.4).max(1.0);
-            let thick_offset = -(gap + thick_w) / 2.0;
-            let thin_offset = (gap + thin_w) / 2.0;
-            create_parallel_lines(
-                tree,
-                border.color,
-                x1,
-                y1,
-                x2,
-                y2,
-                &[(thick_offset, thick_w), (thin_offset, thin_w)],
-                StrokeDash::Solid,
-            )
-        }
-
-        // 가는선-굵은선-가는선 삼중선
-        BorderLineType::ThinThickThinTriple => {
-            let total = base_width.max(4.0);
-            let thin_w = (total * 0.15).max(0.4);
-            let thick_w = (total * 0.3).max(0.6);
-            let gap = (total * 0.15).max(0.8);
-            let outer_offset = thick_w / 2.0 + gap + thin_w / 2.0;
-            create_parallel_lines(
-                tree,
-                border.color,
-                x1,
-                y1,
-                x2,
-                y2,
-                &[
-                    (-outer_offset, thin_w),
-                    (0.0, thick_w),
-                    (outer_offset, thin_w),
-                ],
-                StrokeDash::Solid,
-            )
-        }
-
-        // 단일선 타입들
         _ => {
             if let Some(dash) = border_line_type_to_dash(border.line_type) {
                 create_single_line(tree, border.color, base_width, dash, x1, y1, x2, y2)
@@ -752,11 +688,13 @@ fn create_diagonal_line_nodes(
     let base_width = border_width_to_px(width_index);
     match line_type {
         BorderLineType::None => vec![],
-        BorderLineType::Double => {
-            let total = base_width.max(3.0);
-            let sub_w = (total * 0.3).max(0.4);
-            let gap = (total * 0.4).max(1.0);
-            let offset = (gap + sub_w) / 2.0;
+        // 겹선(이중·삼중) — 테두리와 같은 multi_line_geometry 를 쓴다
+        BorderLineType::Double
+        | BorderLineType::ThinThickDouble
+        | BorderLineType::ThickThinDouble
+        | BorderLineType::ThinThickThinTriple => {
+            let lines =
+                multi_line_geometry(line_type, base_width).expect("겹선 종류는 기하가 있다");
             create_parallel_lines_perpendicular(
                 tree,
                 color,
@@ -764,64 +702,7 @@ fn create_diagonal_line_nodes(
                 y1,
                 x2,
                 y2,
-                &[(-offset, sub_w), (offset, sub_w)],
-                StrokeDash::Solid,
-            )
-        }
-        BorderLineType::ThinThickDouble => {
-            let total = base_width.max(3.0);
-            let thin_w = (total * 0.2).max(0.4);
-            let thick_w = (total * 0.4).max(0.6);
-            let gap = (total * 0.4).max(1.0);
-            let thin_offset = -(gap + thin_w) / 2.0;
-            let thick_offset = (gap + thick_w) / 2.0;
-            create_parallel_lines_perpendicular(
-                tree,
-                color,
-                x1,
-                y1,
-                x2,
-                y2,
-                &[(thin_offset, thin_w), (thick_offset, thick_w)],
-                StrokeDash::Solid,
-            )
-        }
-        BorderLineType::ThickThinDouble => {
-            let total = base_width.max(3.0);
-            let thick_w = (total * 0.4).max(0.6);
-            let thin_w = (total * 0.2).max(0.4);
-            let gap = (total * 0.4).max(1.0);
-            let thick_offset = -(gap + thick_w) / 2.0;
-            let thin_offset = (gap + thin_w) / 2.0;
-            create_parallel_lines_perpendicular(
-                tree,
-                color,
-                x1,
-                y1,
-                x2,
-                y2,
-                &[(thick_offset, thick_w), (thin_offset, thin_w)],
-                StrokeDash::Solid,
-            )
-        }
-        BorderLineType::ThinThickThinTriple => {
-            let total = base_width.max(4.0);
-            let thin_w = (total * 0.15).max(0.4);
-            let thick_w = (total * 0.3).max(0.6);
-            let gap = (total * 0.15).max(0.8);
-            let outer_offset = thick_w / 2.0 + gap + thin_w / 2.0;
-            create_parallel_lines_perpendicular(
-                tree,
-                color,
-                x1,
-                y1,
-                x2,
-                y2,
-                &[
-                    (-outer_offset, thin_w),
-                    (0.0, thick_w),
-                    (outer_offset, thin_w),
-                ],
+                &lines,
                 StrokeDash::Solid,
             )
         }
@@ -895,6 +776,55 @@ pub(crate) fn body_page_border_outset(border: &BorderLine) -> f64 {
         | BorderLineType::ThickThinDouble
         | BorderLineType::ThinThickThinTriple => span * BODY_PAGE_DOUBLE_LINE_OUTSET_FACTOR,
         _ => span,
+    }
+}
+
+/// 겹선(이중·삼중) 한 벌의 기하 — `(선 중심 오프셋, 굵기)` 목록.
+///
+/// [구조 정리 2026-08-12] 같은 산식이 가로/세로 테두리(`create_border_line_nodes`)와
+/// 대각선(`create_diagonal_line_nodes`) 두 곳에 문자 단위로 복제돼 있었다. 한쪽만 고치면
+/// 대각선과 테두리의 겹선 간격이 갈라지므로 단일 진실로 뽑는다. **연산 순서를 그대로**
+/// 옮겨 부동소수 결과가 비트 단위로 같다(겹선 아닌 선 종류는 None).
+fn multi_line_geometry(line_type: BorderLineType, base_width: f64) -> Option<Vec<(f64, f64)>> {
+    match line_type {
+        BorderLineType::Double => {
+            let total = base_width.max(3.0);
+            let sub_w = (total * 0.3).max(0.4);
+            let gap = (total * 0.4).max(1.0);
+            let offset = (gap + sub_w) / 2.0;
+            Some(vec![(-offset, sub_w), (offset, sub_w)])
+        }
+        BorderLineType::ThinThickDouble => {
+            let total = base_width.max(3.0);
+            let thin_w = (total * 0.2).max(0.4);
+            let thick_w = (total * 0.4).max(0.6);
+            let gap = (total * 0.4).max(1.0);
+            let thin_offset = -(gap + thin_w) / 2.0;
+            let thick_offset = (gap + thick_w) / 2.0;
+            Some(vec![(thin_offset, thin_w), (thick_offset, thick_w)])
+        }
+        BorderLineType::ThickThinDouble => {
+            let total = base_width.max(3.0);
+            let thick_w = (total * 0.4).max(0.6);
+            let thin_w = (total * 0.2).max(0.4);
+            let gap = (total * 0.4).max(1.0);
+            let thick_offset = -(gap + thick_w) / 2.0;
+            let thin_offset = (gap + thin_w) / 2.0;
+            Some(vec![(thick_offset, thick_w), (thin_offset, thin_w)])
+        }
+        BorderLineType::ThinThickThinTriple => {
+            let total = base_width.max(4.0);
+            let thin_w = (total * 0.15).max(0.4);
+            let thick_w = (total * 0.3).max(0.6);
+            let gap = (total * 0.15).max(0.8);
+            let outer_offset = thick_w / 2.0 + gap + thin_w / 2.0;
+            Some(vec![
+                (-outer_offset, thin_w),
+                (0.0, thick_w),
+                (outer_offset, thin_w),
+            ])
+        }
+        _ => None,
     }
 }
 

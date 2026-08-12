@@ -288,10 +288,6 @@ fn cell_span_has_cellzone_diagonal(
     })
 }
 
-fn border_style_has_center_line(bs: &ResolvedBorderStyle) -> bool {
-    bs.center_line != CenterLine::None && bs.diagonal.diagonal_type != 0
-}
-
 fn table_grid_cell_has_own_diagonal(
     table: &crate::model::table::Table,
     styles: &ResolvedStyleSet,
@@ -1853,18 +1849,6 @@ impl LayoutEngine {
                 }
             }
         }
-    }
-
-    /// 셀 문단들의 콘텐츠 높이 합산 (spacing + line_height + line_spacing)
-    pub(crate) fn calc_cell_paragraphs_content_height(
-        &self,
-        paragraphs: &[Paragraph],
-        styles: &ResolvedStyleSet,
-        cell_inner_width_px: f64,
-    ) -> f64 {
-        let (line_based, object_based) =
-            self.calc_cell_paragraphs_content_parts(paragraphs, styles, cell_inner_width_px);
-        line_based.max(object_based)
     }
 
     /// [Task #2211] 셀 콘텐츠 높이를 (줄 기반, 개체 기반)으로 분리 반환.
@@ -4214,16 +4198,6 @@ impl LayoutEngine {
         }
     }
 
-    pub(crate) fn calc_cell_controls_height(
-        &self,
-        cell: &crate::model::table::Cell,
-        styles: &ResolvedStyleSet,
-    ) -> f64 {
-        let measurer = super::super::height_measurer::HeightMeasurer::new(self.dpi)
-            .with_hwp3_variant(self.is_hwp3_variant.get());
-        measurer.cell_controls_height(&cell.paragraphs, styles, 0, 0.0)
-    }
-
     /// 중첩 표의 총 높이를 계산한다 (행 높이 합 + cell_spacing).
     /// MeasuredCell.line_heights에서 중첩 표가 추가 줄로 포함될 때의 높이와 일관되게 계산.
     pub(crate) fn calc_nested_table_height(
@@ -4279,95 +4253,6 @@ impl LayoutEngine {
                 }
             })
             .fold(0.0f64, f64::max)
-    }
-
-    /// 셀의 content_offset 이후 실제 남은 콘텐츠 높이를 계산한다.
-    /// MeasuredCell과 동일한 높이 로직을 사용한다 (pagination 엔진이 MeasuredCell 기준으로
-    /// content_offset을 산출하므로 동일 기준이어야 함).
-    pub(crate) fn calc_cell_remaining_content_height(
-        &self,
-        cell: &crate::model::table::Cell,
-        styles: &ResolvedStyleSet,
-        content_offset: f64,
-    ) -> f64 {
-        // MeasuredCell과 동일한 높이 계산:
-        // 각 줄 h+ls, 단 셀의 마지막 줄(마지막 문단의 마지막 줄)은 ls 제외
-        let mut total = 0.0;
-        let cell_para_count = cell.paragraphs.len();
-        for (pidx, p) in cell.paragraphs.iter().enumerate() {
-            let comp = compose_paragraph(p);
-            let para_style = styles.para_styles.get(p.para_shape_id as usize);
-            let is_last_para = pidx + 1 == cell_para_count;
-            let spacing_before = if pidx > 0 {
-                para_style.map(|s| s.spacing_before).unwrap_or(0.0)
-            } else {
-                0.0
-            };
-            let spacing_after = if !is_last_para {
-                para_style.map(|s| s.spacing_after).unwrap_or(0.0)
-            } else {
-                0.0
-            };
-            if comp.lines.is_empty() {
-                // 중첩 표 컨트롤 문단: 실제 중첩 표 높이로 계산
-                let nested_h: f64 = p
-                    .controls
-                    .iter()
-                    .map(|ctrl| {
-                        if let Control::Table(t) = ctrl {
-                            self.calc_nested_table_height(t, styles)
-                        } else {
-                            0.0
-                        }
-                    })
-                    .sum();
-                let h = if nested_h > 0.0 {
-                    nested_h
-                } else {
-                    hwpunit_to_px(400, self.dpi)
-                };
-                total += spacing_before + h + spacing_after;
-            } else {
-                // 중첩 표가 있는 문단: LINE_SEG 높이와 실제 중첩 표 높이 중 큰 값 사용
-                let has_table_in_para = p.controls.iter().any(|c| matches!(c, Control::Table(_)));
-                let line_count = comp.lines.len();
-                let line_based_h: f64 = comp
-                    .lines
-                    .iter()
-                    .enumerate()
-                    .map(|(li, line)| {
-                        let h = hwpunit_to_px(line.line_height, self.dpi);
-                        let is_cell_last_line = is_last_para && li + 1 == line_count;
-                        let ls = if !is_cell_last_line {
-                            hwpunit_to_px(line.line_spacing, self.dpi)
-                        } else {
-                            0.0
-                        };
-                        spacing_before * (if li == 0 { 1.0 } else { 0.0 })
-                            + h
-                            + ls
-                            + spacing_after * (if li + 1 == line_count { 1.0 } else { 0.0 })
-                    })
-                    .sum();
-                if has_table_in_para {
-                    let nested_h: f64 = p
-                        .controls
-                        .iter()
-                        .map(|ctrl| {
-                            if let Control::Table(t) = ctrl {
-                                self.calc_nested_table_height(t, styles)
-                            } else {
-                                0.0
-                            }
-                        })
-                        .sum();
-                    total += nested_h.max(line_based_h);
-                } else {
-                    total += line_based_h;
-                }
-            }
-        }
-        (total - content_offset).max(0.0)
     }
 
     /// 셀 내 문단 줄 높이로부터 content_offset/content_limit 기준 줄 범위를 계산한다.
@@ -7444,26 +7329,6 @@ impl LayoutEngine {
             max_padding = max_padding.max(pad_top + pad_bottom);
         }
         max_padding
-    }
-
-    /// 줄 범위(line_ranges)에 해당하는 셀 콘텐츠의 실제 렌더링 높이를 계산한다.
-    /// compute_cell_line_ranges()의 결과를 받아서, 렌더링될 줄들의 높이를 합산한다.
-    /// MeasuredCell 규칙: 첫 문단 spacing_before 없음, 마지막 문단 spacing_after 없음,
-    /// 셀 마지막 줄 line_spacing 제외.
-    pub(crate) fn calc_visible_content_height_from_ranges(
-        &self,
-        composed_paras: &[ComposedParagraph],
-        paragraphs: &[crate::model::paragraph::Paragraph],
-        line_ranges: &[(usize, usize)],
-        styles: &ResolvedStyleSet,
-    ) -> f64 {
-        self.calc_visible_content_height_from_ranges_with_offset(
-            composed_paras,
-            paragraphs,
-            line_ranges,
-            styles,
-            0.0,
-        )
     }
 
     /// calc_visible_content_height_from_ranges 의 확장판 — split_start 의 content_offset 을 받아서

@@ -2088,7 +2088,7 @@ fn officex_shape_textwrap_survives_save_roundtrip() {
         "InFrontOfText",
     ] {
         let mut doc = HwpDocument::create_empty();
-        doc.create_blank_document();
+        doc.create_blank_document().unwrap();
         let (para, ctrl) = officex_make_shape(&mut doc, wrap, false, "rectangle");
         let before = doc
             .get_shape_properties_native(0, para, ctrl)
@@ -2114,7 +2114,7 @@ fn officex_shape_textwrap_default_is_unchanged() {
     // 미지정 호출의 기본값 계약(Task #1280 v2): floating 도형 = InFrontOfText,
     // inline 글상자 = Square. 이 값이 바뀌면 권위 샘플(textbox-under-image.hwp)과 어긋난다.
     let mut doc = HwpDocument::create_empty();
-    doc.create_blank_document();
+    doc.create_blank_document().unwrap();
     let (p1, c1) = officex_make_shape(&mut doc, "InFrontOfText", false, "rectangle");
     let floating = doc.get_shape_properties_native(0, p1, c1).expect("조회");
     assert!(

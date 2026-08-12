@@ -15,7 +15,7 @@ fn main() {
         let cr: serde_json::Value =
             serde_json::from_str(&doc.get_cursor_rect(0, p, 0).unwrap()).unwrap();
         let y = cr["y"].as_f64().unwrap();
-        let gap = prev.map(|q: f64| (y - q)).unwrap_or(0.0);
+        let gap = prev.map(|q: f64| y - q).unwrap_or(0.0);
         println!("p{p} y={y:.3} gap={gap:.3}");
         prev = Some(y);
     }
