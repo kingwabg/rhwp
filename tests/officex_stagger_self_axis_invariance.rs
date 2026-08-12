@@ -121,3 +121,100 @@ fn stagger_restore_roundtrip_preserves_height() {
     );
     assert_eq!(h0, h1, "복원 후 표 높이가 원복되지 않았다: {h0} → {h1}");
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// [2026-08-13 신고 3건] 어긋내기 상태 전이 — 재이동·복귀·과잉거부
+// ─────────────────────────────────────────────────────────────────────
+
+fn table_width(doc: &HwpDocument) -> (u32, Vec<u32>) {
+    for para in &doc.document().sections[0].paragraphs {
+        for ctrl in &para.controls {
+            if let rhwp::model::control::Control::Table(t) = ctrl {
+                return (t.common.width, t.get_column_widths());
+            }
+        }
+    }
+    panic!("표 없음");
+}
+
+/// 신고 ③: 같은 방향 반복 어긋내기가 표 폭을 키우면 안 된다(실측 559→600→620px).
+#[test]
+fn repeated_right_stagger_preserves_table_width() {
+    let (mut doc, pi, ci) = make_table();
+    let (w0, cols0) = table_width(&doc);
+    let sum0: u32 = cols0.iter().sum();
+    for k in 1..=4 {
+        doc.offset_cell_boundary_native(0, pi as usize, ci as usize, 3, true, 283)
+            .unwrap_or_else(|e| panic!("{k}회차 어긋내기 실패: {e:?}"));
+        let (w, cols) = table_width(&doc);
+        let sum: u32 = cols.iter().sum();
+        assert_eq!(
+            w, w0,
+            "{k}회차에 표 폭이 변했다: {w0} → {w} (cols={cols:?})"
+        );
+        assert_eq!(sum, sum0, "{k}회차에 열 폭 합이 변했다: {cols:?}");
+    }
+}
+
+/// 신고 ①③: 어긋낸 뒤 반대 방향 이동으로 되돌아올 수 있어야 한다(거부 금지).
+#[test]
+fn right_stagger_is_reversible_without_undo() {
+    let (mut doc, pi, ci) = make_table();
+    let (w0, cols0) = table_width(&doc);
+    // 3스텝 어긋냄 (치유 캐치 반경 밖)
+    for _ in 0..3 {
+        doc.offset_cell_boundary_native(0, pi as usize, ci as usize, 3, true, 283)
+            .expect("어긋내기");
+    }
+    let (w1, cols1) = table_width(&doc);
+    assert_eq!(w1, w0, "어긋내기가 표 폭을 바꿨다: {cols1:?}");
+    assert_ne!(cols1, cols0, "어긋내기가 격자에 반영되지 않았다");
+    // 같은 스텝으로 되돌리기 — 각 스텝이 거부되면 안 된다
+    for k in 1..=3 {
+        doc.offset_cell_boundary_native(0, pi as usize, ci as usize, 3, true, -283)
+            .unwrap_or_else(|e| panic!("{k}회차 복귀 거부(신고 ①): {e:?}"));
+    }
+    let (w2, cols2) = table_width(&doc);
+    assert_eq!(w2, w0, "복귀 후 표 폭이 원복되지 않았다: {w0} → {w2}");
+    assert_eq!(
+        cols2, cols0,
+        "복귀 후 격자가 원래대로 돌아오지 않았다: {cols2:?}"
+    );
+}
+
+/// 신고 ②: 한 행을 어긋내도 **다른 행**의 같은 경계는 계속 어긋낼 수 있어야 한다.
+#[test]
+fn staggering_one_row_does_not_block_other_rows() {
+    let (mut doc, pi, ci) = make_table();
+    let (w0, _c0) = table_width(&doc);
+    // 행 1(cellIdx 3)의 우변 어긋냄
+    doc.offset_cell_boundary_native(0, pi as usize, ci as usize, 3, true, 566)
+        .expect("첫 어긋내기");
+    // 행 0(cellIdx 0)의 같은 논리 경계 — 종전엔 "이미 어긋난 칸 쪽으로는..." 거부
+    doc.offset_cell_boundary_native(0, pi as usize, ci as usize, 0, true, 283)
+        .expect("다른 행 어긋내기가 거부됐다(신고 ②)");
+    let (w1, cols1) = table_width(&doc);
+    assert_eq!(w1, w0, "두 행 어긋내기 후 표 폭이 변했다: {cols1:?}");
+}
+
+/// 신고 ②(행 방향): 아래 경계를 어긋내도 같은 행 다른 칸이 막히면 안 된다.
+#[test]
+fn row_stagger_does_not_block_sibling_cells() {
+    let (mut doc, pi, ci) = make_table();
+    // 여유 확보(행 1 높이 키우기)
+    doc.resize_table_cells(
+        0,
+        pi,
+        ci,
+        r#"[{"cellIdx":3,"heightDelta":2000},{"cellIdx":4,"heightDelta":2000},{"cellIdx":5,"heightDelta":2000}]"#,
+    )
+    .unwrap();
+    let (h0, _e0, _c0) = table_state(&doc);
+    doc.offset_cell_boundary_native(0, pi as usize, ci as usize, 0, false, 566)
+        .expect("첫 행 어긋내기");
+    // 같은 행의 다른 칸(cellIdx 1) — 종전엔 아래 이웃 span 때문에 전면 거부
+    doc.offset_cell_boundary_native(0, pi as usize, ci as usize, 1, false, 283)
+        .expect("형제 칸 어긋내기가 거부됐다(신고 ②)");
+    let (h1, eff1, _c1) = table_state(&doc);
+    assert_eq!(h0, h1, "행 어긋내기가 표 높이를 바꿨다: {eff1:?}");
+}

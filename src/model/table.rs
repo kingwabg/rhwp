@@ -1876,6 +1876,121 @@ impl Table {
     /// ponytail: 경계가 파고드는 쪽 칸이 이미 병합(스팬>1)이면 v1 은 오류 — 스냅으로 기존
     /// 격자선에 맞춰 되돌리는 치유는 ⌘Z(스냅숏 undo)가 담당한다. 필요해지면 내부 격자선
     /// 탐색으로 확장.
+    /// 이 경계(대상 셀의 우변/하변에 해당하는 격자선)가 **정렬선**인가 —
+    /// 대상 줄 밖의 다른 셀도 이 격자선을 자기 경계로 쓰면 정렬, 아무도 안 쓰면
+    /// 어긋난 선이다. 어긋내기가 "신규"인지 "재이동"인지 가르는 단일 판정.
+    fn is_boundary_aligned(&self, t: &Cell, boundary: u16, edge_right: bool) -> bool {
+        self.cells.iter().any(|c| {
+            if edge_right {
+                c.row != t.row && (c.col == boundary || c.col + c.col_span == boundary)
+            } else {
+                c.col != t.col && (c.row == boundary || c.row + c.row_span == boundary)
+            }
+        })
+    }
+
+    /// 이미 어긋난 경계의 **재이동** — 격자(행·열 수, span)를 그대로 두고 대상/이웃의
+    /// 크기만 delta 만큼 주고받는다. 열 폭·행 높이는 span 제약으로 정확히 유도되므로
+    /// 표 전체 크기가 보존된다(신고 ③ 성장 종결). 이동 결과가 원래 정렬선에 닿거나
+    /// 넘으면 restore(치유)로 승격해 격자를 원래대로 접는다(신고 ① 복귀).
+    fn shift_offset_boundary(
+        &mut self,
+        cell_idx: usize,
+        n_idx: usize,
+        boundary: u16,
+        edge_right: bool,
+        delta: i32,
+    ) -> Result<(), String> {
+        const MIN_CELL: i32 = 200;
+        let t = self.cells[cell_idx].clone();
+        let n = self.cells[n_idx].clone();
+        let size = |c: &Cell| if edge_right { c.width } else { c.height } as i32;
+
+        // 원래 정렬선까지의 대상 크기 — 다른 줄이 쓰는 격자선 중 대상 시작 뒤 첫 번째.
+        let sizes: Vec<u32> = if edge_right {
+            self.get_column_widths()
+        } else {
+            self.get_row_heights()
+        };
+        let start = if edge_right { t.col } else { t.row };
+        let mut aligned_lines: Vec<u16> = self
+            .cells
+            .iter()
+            .filter(|c| {
+                if edge_right {
+                    c.row != t.row
+                } else {
+                    c.col != t.col
+                }
+            })
+            .flat_map(|c| {
+                if edge_right {
+                    [c.col, c.col + c.col_span]
+                } else {
+                    [c.row, c.row + c.row_span]
+                }
+            })
+            .filter(|&l| l > start)
+            .collect();
+        aligned_lines.sort_unstable();
+        let aligned_size: Option<i32> = aligned_lines.first().map(|&line| {
+            sizes[start as usize..(line as usize).min(sizes.len())]
+                .iter()
+                .sum::<u32>() as i32
+        });
+
+        let new_t = size(&t) + delta;
+        // 정렬선 통과 → 치유(복원)로 승격. 판정은 **어긋남의 부호**로 한다 — 크기 비교
+        // (new_t >= aligned)로 하면 이미 오른쪽으로 어긋난 상태에서 더 오른쪽으로 갈 때도
+        // 항상 참이 되어 두 번째 스텝마다 제자리로 튕겼다(2026-08-13 실측 R3-2).
+        if let Some(aw) = aligned_size {
+            let cur_off = size(&t) - aw;
+            let next_off = new_t - aw;
+            if cur_off != 0 && (next_off == 0 || cur_off.signum() != next_off.signum()) {
+                return self.restore_cell_boundary(cell_idx, edge_right);
+            }
+        }
+
+        // 최소 크기 클램프(행은 글줄 바닥) — 남는 쪽이 규약 밑으로 못 간다
+        let floors = self.cell_content_floors_hu();
+        let floor_of = |idx: usize| -> i32 {
+            if edge_right {
+                MIN_CELL
+            } else {
+                floors.get(idx).copied().unwrap_or(0).max(MIN_CELL as u32) as i32
+            }
+        };
+        let d = if delta > 0 {
+            delta.min(size(&n) - floor_of(n_idx))
+        } else {
+            -((-delta).min(size(&t) - floor_of(cell_idx)))
+        };
+        if d == 0 {
+            return Err(if delta > 0 {
+                if edge_right {
+                    "이웃 칸에 남는 폭이 없습니다".to_string()
+                } else {
+                    "이웃 칸에 남는 높이가 없습니다".to_string()
+                }
+            } else if edge_right {
+                "대상 칸에 남는 폭이 없습니다".to_string()
+            } else {
+                "대상 칸에 남는 높이가 없습니다".to_string()
+            });
+        }
+        let _ = boundary;
+        if edge_right {
+            self.cells[cell_idx].width = (size(&t) + d) as HwpUnit;
+            self.cells[n_idx].width = (size(&n) - d) as HwpUnit;
+        } else {
+            self.cells[cell_idx].height = (size(&t) + d) as HwpUnit;
+            self.cells[n_idx].height = (size(&n) - d) as HwpUnit;
+        }
+        self.rebuild_grid();
+        self.update_ctrl_dimensions();
+        Ok(())
+    }
+
     pub fn offset_cell_boundary(
         &mut self,
         cell_idx: usize,
@@ -1905,22 +2020,41 @@ impl Table {
             if n.row != t.row || n.row_span != t.row_span {
                 return Err("위아래 높이가 다른 칸과는 경계를 어긋낼 수 없습니다".to_string());
             }
+            // ── [재이동 2026-08-13] 이 경계가 **이미 어긋나 있으면** 격자를 다시 쪼개지
+            // 않는다. 종전엔 매번 split_cell_into 로 새 격자선을 만들어 ① 죽은 선이 쌓이고
+            // (열 폭 미해소 → 1800 기본값 → 표 폭 성장, 신고 ③) ② 반대 방향은 span 가드로
+            // 전면 거부돼 제자리로 못 돌아왔다(신고 ①). 격자는 그대로 두고 **조각 폭만
+            // 이전**하면 열 폭이 span 제약으로 정확히 유도되어 표 폭이 보존되고, 양방향
+            // 재이동이 자유로워진다. 정렬선에 닿으면 restore(치유)로 자동 승격한다.
+            if !self.is_boundary_aligned(&t, boundary, true) {
+                return self.shift_offset_boundary(cell_idx, n_idx, boundary, true, delta);
+            }
             if delta > 0 {
-                // 이웃 왼쪽 조각을 잘라 대상에 흡수
-                if n.col_span != 1 {
-                    return Err(
-                        "이미 어긋난 칸 쪽으로는 더 어긋낼 수 없습니다 — 되돌리려면 ⌘Z".to_string(),
-                    );
-                }
+                // 이웃 왼쪽 조각을 잘라 대상에 흡수.
+                // [신고 ② 2026-08-13] 이웃이 **남의 어긋남**으로 span>1 인 경우(다른 행이
+                // 어긋나며 이 이웃이 여러 격자열을 걸치게 된 상태)도 어긋낼 수 있어야 한다 —
+                // 종전 `n.col_span != 1` 거부는 "한 행을 어긋내면 다른 행의 같은 경계가
+                // 전부 막히는" 과잉 차단이었다. 이웃 span 만큼 조각을 낸 뒤 첫 조각만
+                // 대상이 흡수하고 나머지는 도로 합친다(이웃 겉모습 불변).
                 let d = delta.min(n.width as i32 - MIN_CELL);
                 if d <= 0 {
                     return Err("이웃 칸에 남는 폭이 없습니다".to_string());
                 }
-                self.split_cell_into(n.row, n.col, 1, 2, true, false)?;
+                let n_span = n.col_span;
+                self.split_cell_into(n.row, n.col, 1, n_span + 1, true, false)?;
                 let left = self
                     .cell_index_at(t.row, boundary)
                     .ok_or("분할 조각(좌) 소실")?;
                 self.cells[left].width = d as HwpUnit;
+                if n_span > 1 {
+                    // 나머지 조각을 원래 한 칸으로 복구(겉모습 불변)
+                    self.merge_cells(
+                        t.row,
+                        boundary + 1,
+                        t.row + t.row_span - 1,
+                        boundary + n_span,
+                    )?;
+                }
                 let right = self
                     .cell_index_at(t.row, boundary + 1)
                     .ok_or("분할 조각(우) 소실")?;
@@ -1941,12 +2075,8 @@ impl Table {
                 // merge 는 목격자 없는 열(raw 0)을 합산해 폭을 어림한다 — 정확값으로 못박는다
                 self.cells[merged].width = (t.width as i32 + d) as HwpUnit;
             } else {
-                // 대상 오른쪽 조각을 잘라 이웃에 넘김
-                if t.col_span != 1 {
-                    return Err(
-                        "이미 어긋난 경계를 다시 정렬하는 건 ⌘Z 로 되돌려 주세요".to_string()
-                    );
-                }
+                // 대상 오른쪽 조각을 잘라 이웃에 넘김 (여기는 정렬된 경계 = 신규 어긋내기.
+                // 이미 어긋난 경계의 역방향은 위 재이동 경로가 처리한다)
                 let d = (-delta).min(t.width as i32 - MIN_CELL);
                 if d <= 0 {
                     return Err("대상 칸에 남는 폭이 없습니다".to_string());
@@ -1997,14 +2127,13 @@ impl Table {
             if n.col != t.col || n.col_span != t.col_span {
                 return Err("좌우 폭이 다른 칸과는 경계를 어긋낼 수 없습니다".to_string());
             }
+            // [재이동 2026-08-13] 열과 동일 — 이미 어긋난 경계는 격자 불변·조각 높이 이전
+            if !self.is_boundary_aligned(&t, boundary, false) {
+                return self.shift_offset_boundary(cell_idx, n_idx, boundary, false, delta);
+            }
             let eff_rows = self.effective_row_heights();
             let floors = self.cell_content_floors_hu();
             if delta > 0 {
-                if n.row_span != 1 {
-                    return Err(
-                        "이미 어긋난 칸 쪽으로는 더 어긋낼 수 없습니다 — 되돌리려면 ⌘Z".to_string(),
-                    );
-                }
                 // 내용은 아래 조각(이웃 잔여)에 남는다 — 그 조각이 글줄 바닥 밑으로 못 가게
                 let n_floor = floors.get(n_idx).copied().unwrap_or(0).max(MIN_CELL as u32) as i32;
                 let n_eff = (n.height)
@@ -2017,11 +2146,21 @@ impl Table {
                 self.materialize_rows_effective(t.row as usize, boundary as usize);
                 let t = self.cells[cell_idx].clone();
                 let n = self.cells[n_idx].clone();
-                self.split_cell_into(n.row, n.col, 2, 1, true, false)?;
+                // [신고 ② 2026-08-13] 이웃이 남의 어긋남으로 span>1 이어도 어긋낼 수 있다
+                let n_span = n.row_span;
+                self.split_cell_into(n.row, n.col, n_span + 1, 1, true, false)?;
                 let top = self
                     .cell_index_at(boundary, t.col)
                     .ok_or("분할 조각(상) 소실")?;
                 self.cells[top].height = d as HwpUnit;
+                if n_span > 1 {
+                    self.merge_cells(
+                        boundary + 1,
+                        t.col,
+                        boundary + n_span,
+                        t.col + t.col_span - 1,
+                    )?;
+                }
                 let bot = self
                     .cell_index_at(boundary + 1, t.col)
                     .ok_or("분할 조각(하) 소실")?;
@@ -2041,11 +2180,7 @@ impl Table {
                 let merged = self.cell_index_at(t.row, t.col).ok_or("병합 결과 소실")?;
                 self.cells[merged].height = (t.height as i32 + d) as HwpUnit;
             } else {
-                if t.row_span != 1 {
-                    return Err(
-                        "이미 어긋난 경계를 다시 정렬하는 건 ⌘Z 로 되돌려 주세요".to_string()
-                    );
-                }
+                // 정렬된 경계의 신규 위쪽 어긋내기(이미 어긋난 경계는 재이동 경로가 처리)
                 // 내용은 위 조각(대상 잔여)에 남는다 — 글줄 바닥 한계
                 let t_floor = floors
                     .get(cell_idx)
