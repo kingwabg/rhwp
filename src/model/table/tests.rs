@@ -1194,6 +1194,12 @@ fn test_offset_cell_boundary_bottom_down() {
     set_cell_text(&mut t, 0, 0, "A1");
     set_cell_text(&mut t, 1, 0, "A2");
     set_cell_text(&mut t, 1, 1, "B2");
+    // [2026-08-13 실효 공간] 이웃 행이 글줄 바닥(1000)이면 여유 0 — 여유 부여
+    for c in t.cells.iter_mut() {
+        if c.row == 1 {
+            c.height = 1500;
+        }
+    }
     let a1 = t.cell_index_at(0, 0).unwrap();
     t.offset_cell_boundary(a1, false, 400).unwrap();
 
@@ -1201,15 +1207,15 @@ fn test_offset_cell_boundary_bottom_down() {
     // A1: 줄 0-1 병합, 높이 1000+400
     let a1c = t.cell_at(0, 0).unwrap();
     assert_eq!((a1c.row_span, a1c.height), (2, 1400));
-    // A2: 줄 2, 높이 1000-400
+    // A2: 줄 2, 높이 1500-400
     let a2c = t.cell_at(2, 0).unwrap();
-    assert_eq!((a2c.row, a2c.row_span, a2c.height), (2, 1, 600));
+    assert_eq!((a2c.row, a2c.row_span, a2c.height), (2, 1, 1100));
     assert_eq!(cell_text(&t, 2, 0), "A2", "A2 내용 보존");
-    // B 열: B1 그대로, B2 는 줄 1-2 스팬(겉모습 불변, 높이 1000 유지)
+    // B 열: B1 그대로, B2 는 줄 1-2 스팬(겉모습 불변, 높이 1500 유지)
     let b1 = t.cell_at(0, 1).unwrap();
     assert_eq!((b1.row_span, b1.height), (1, 1000));
     let b2 = t.cell_at(1, 1).unwrap();
-    assert_eq!((b2.row, b2.row_span, b2.height), (1, 2, 1000));
+    assert_eq!((b2.row, b2.row_span, b2.height), (1, 2, 1500));
     assert_eq!(cell_text(&t, 1, 1), "B2");
 }
 
@@ -1219,12 +1225,18 @@ fn test_offset_cell_boundary_bottom_up() {
     let mut t = make_table(2, 2);
     set_cell_text(&mut t, 0, 0, "A1");
     set_cell_text(&mut t, 1, 0, "A2");
+    // [2026-08-13 실효 공간] 위로 어긋내기는 대상 행이 줄어든다 — 글줄 바닥(1000) 여유 부여
+    for c in t.cells.iter_mut() {
+        if c.row == 0 {
+            c.height = 1500;
+        }
+    }
     let a1 = t.cell_index_at(0, 0).unwrap();
     t.offset_cell_boundary(a1, false, -300).unwrap();
 
     assert_eq!(t.row_count, 3);
     let a1c = t.cell_at(0, 0).unwrap();
-    assert_eq!((a1c.row_span, a1c.height), (1, 700));
+    assert_eq!((a1c.row_span, a1c.height), (1, 1200));
     let a2c = t.cell_at(1, 0).unwrap();
     assert_eq!((a2c.row, a2c.row_span, a2c.height), (1, 2, 1300));
     assert_eq!(
@@ -1234,7 +1246,7 @@ fn test_offset_cell_boundary_bottom_up() {
     );
     // B1 은 줄 0-1 스팬으로 겉모습 불변
     let b1 = t.cell_at(0, 1).unwrap();
-    assert_eq!((b1.row_span, b1.height), (2, 1000));
+    assert_eq!((b1.row_span, b1.height), (2, 1500));
 }
 
 /// 오른쪽 경계 어긋내기(+): 열 방향 대칭.
@@ -1283,12 +1295,31 @@ fn test_offset_cell_boundary_span_mismatch_rejected() {
 #[test]
 fn test_offset_cell_boundary_preserves_totals() {
     let mut t = make_table(2, 3);
+    // [2026-08-13 실효 공간] 이웃 행이 글줄 바닥(new_empty lineseg 1000)과 같으면 여유 0 —
+    // 거부가 정본이다. 아랫행에 여유를 만들고 자기-경계 불변식을 확인한다.
+    for c in t.cells.iter_mut() {
+        if c.row == 1 {
+            c.height = 1500;
+        }
+    }
+    t.update_ctrl_dimensions();
     let before_w = t.common.width;
     let before_h = t.common.height;
     let a1 = t.cell_index_at(0, 0).unwrap();
     t.offset_cell_boundary(a1, false, 250).unwrap();
     assert_eq!(t.common.width, before_w, "표 폭 불변");
     assert_eq!(t.common.height, before_h, "표 높이 불변");
+}
+
+/// [2026-08-13] 여유 없는(전 행 = 글줄 바닥) 표의 행 어긋내기는 거부 + 무부작용.
+#[test]
+fn test_offset_cell_boundary_no_slack_rejected() {
+    let mut t = make_table(2, 3);
+    let cells_before: Vec<_> = t.cells.iter().map(|c| c.height).collect();
+    let a1 = t.cell_index_at(0, 0).unwrap();
+    assert!(t.offset_cell_boundary(a1, false, 250).is_err());
+    let cells_after: Vec<_> = t.cells.iter().map(|c| c.height).collect();
+    assert_eq!(cells_before, cells_after, "거부 시 셀 높이 무부작용");
 }
 
 /// 복원(치유): 어긋낸 아래 경계를 restore 하면 원래 2×2 격자로 완전히 돌아온다.
@@ -1298,6 +1329,12 @@ fn test_restore_cell_boundary_bottom() {
     set_cell_text(&mut t, 0, 0, "A1");
     set_cell_text(&mut t, 1, 0, "A2");
     set_cell_text(&mut t, 1, 1, "B2");
+    // [2026-08-13 실효 공간] 이웃 행이 글줄 바닥(1000)이면 여유 0 — 여유 부여
+    for c in t.cells.iter_mut() {
+        if c.row == 1 {
+            c.height = 1500;
+        }
+    }
     let a1 = t.cell_index_at(0, 0).unwrap();
     t.offset_cell_boundary(a1, false, 400).unwrap();
     assert_eq!(t.row_count, 3);
@@ -1313,7 +1350,7 @@ fn test_restore_cell_boundary_bottom() {
         "목격자(B1) 높이로 복원"
     );
     let a2c = t.cell_at(1, 0).unwrap();
-    assert_eq!((a2c.row, a2c.row_span, a2c.height), (1, 1, 1000));
+    assert_eq!((a2c.row, a2c.row_span, a2c.height), (1, 1, 1500));
     assert_eq!(cell_text(&t, 1, 0), "A2", "이웃 내용 보존");
     assert_eq!(cell_text(&t, 1, 1), "B2");
     let b1 = t.cell_at(0, 1).unwrap();
@@ -1354,6 +1391,12 @@ fn test_restore_cell_boundary_not_offset_rejected() {
 fn test_restore_cell_boundary_extend_direction() {
     let mut t = make_table(2, 2);
     set_cell_text(&mut t, 1, 1, "B2");
+    // [2026-08-13 실효 공간] 아랫행이 글줄 바닥(1000)이면 어긋낼 여유가 없다 — 여유 부여
+    for c in t.cells.iter_mut() {
+        if c.row == 1 {
+            c.height = 1500;
+        }
+    }
     let a1 = t.cell_index_at(0, 0).unwrap();
     t.offset_cell_boundary(a1, false, 400).unwrap();
     assert_eq!(t.row_count, 3);
@@ -1376,7 +1419,7 @@ fn test_restore_cell_boundary_extend_direction() {
         "B1 이 어긋난 선까지 확장(목격자 A1)"
     );
     let b2c = t.cell_at(1, 1).unwrap();
-    assert_eq!((b2c.row_span, b2c.height), (1, 600));
+    assert_eq!((b2c.row_span, b2c.height), (1, 1100));
     assert_eq!(cell_text(&t, 1, 1), "B2", "B2 내용 보존");
 }
 
@@ -1397,11 +1440,17 @@ fn test_offset_table_derived_sizes_stable() {
     assert_eq!(t.common.width, w_before, "재계산해도 표 폭 불변");
 
     let mut t2 = make_table(2, 2);
+    // [2026-08-13 실효 공간] 여유 부여 후 어긋내기
+    for c in t2.cells.iter_mut() {
+        if c.row == 1 {
+            c.height = 1500;
+        }
+    }
     let a1b = t2.cell_index_at(0, 0).unwrap();
     t2.offset_cell_boundary(a1b, false, 400).unwrap();
     assert_eq!(
         t2.get_row_heights(),
-        vec![1000, 400, 600],
+        vec![1000, 400, 1100],
         "조각 행 높이가 제약으로 풀린다"
     );
     let h_before = t2.common.height;

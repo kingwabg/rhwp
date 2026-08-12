@@ -2003,7 +2003,15 @@ impl DocumentCore {
         // 남은 진짜 위험은 산술 오버플로뿐이라 아래 루프에서 i64로 계산해 막는다.
         let original_width = table.common.width;
         let original_height = table.common.height;
-        let original_row_height_sum: u32 = table.get_row_heights().iter().sum();
+        // [2026-08-13] 힌트 없는(raw) 높이 델타의 밑절미: **빈 셀 저장 규약 상태(높이 ≤
+        // 자기 패딩)일 때만** 글줄 바닥으로 승격한다. 규약 셀(284) 위에 그대로 더하면
+        // 바닥(1284~) 아래의 보이지 않는 변화가 되고, 종전 '표시 여유 보존' 분기가 그걸
+        // 보정하며 common.height 를 eff 합과 갈라놨다(스테일 +1000 → 렌더 열별 검증 실패
+        // → 균등 폴백). 실높이 셀은 순수 모델 산술 유지 — 파싱 파일의 보상(±d) 조절이
+        // 저장 높이 승격으로 표를 키우면 안 된다(issue_493). UI 경로(renderHeight 절대값
+        // 동반)도 모델 기준 그대로 — desired 정확 일치가 계약이다.
+        let floor_rows_pre = table.row_line_floors_hu();
+        let table_padding = table.padding;
         let mut applied_width_delta: i64 = 0;
         let mut applied_height_delta: i64 = 0;
         let mut width_delta_by_row = std::collections::BTreeMap::<u16, (usize, i64)>::new();
@@ -2027,7 +2035,14 @@ impl DocumentCore {
                 }
                 if upd.height_delta != 0 {
                     let old_h = cell.height;
-                    let new_h = (cell.height as i64 + upd.height_delta as i64)
+                    let pad = cell.effective_padding(&table_padding);
+                    let pad_v = (pad.top.max(0) + pad.bottom.max(0)) as u32;
+                    let base_h = if upd.render_height.is_none() && old_h <= pad_v {
+                        old_h.max(floor_rows_pre.get(cell.row as usize).copied().unwrap_or(0))
+                    } else {
+                        old_h
+                    };
+                    let new_h = (base_h as i64 + upd.height_delta as i64)
                         .clamp(MIN_CELL_SIZE as i64, u32::MAX as i64)
                         as u32;
                     cell.height = new_h;
@@ -2097,27 +2112,12 @@ impl DocumentCore {
             }
         }
         table.update_ctrl_dimensions();
-        if updates.iter().any(|u| u.height_delta != 0)
-            && !force_local_resize
-            && original_height > original_row_height_sum
-            && table.row_count > 1
-        {
-            // 여러 행 표에서 일부 행을 조절할 때만 생성 표의 표시 height 여유분을 보존한다.
-            // 1행 표는 조절한 셀 높이가 곧 표 높이라는 기존 TAC 전환 회귀 규칙을 유지해야 한다.
-            let resized_row_height_sum: u32 = table.get_row_heights().iter().sum();
-            let row_height_delta = resized_row_height_sum as i64 - original_row_height_sum as i64;
-            let adjusted_height = if row_height_delta >= 0 {
-                original_height.saturating_add(row_height_delta.min(u32::MAX as i64) as u32)
-            } else {
-                original_height.saturating_sub((-row_height_delta).min(u32::MAX as i64) as u32)
-            }
-            .max(resized_row_height_sum);
-            table.common.height = adjusted_height;
-            if table.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
-                table.raw_ctrl_data[common_obj_offsets::HEIGHT]
-                    .copy_from_slice(&adjusted_height.to_le_bytes());
-            }
-        }
+        // [2026-08-13] 종전의 "표시 height 여유분 보존" 분기(원래높이+raw 델타)는 제거했다 —
+        // eff 행높이에 글줄 바닥이 없던 시절(2026-08-11 이전) update_ctrl 이 raw 합으로
+        // 납작해지는 것을 보상하던 장치인데, 바닥 도입 후엔 이중 계상이 되어
+        // common.height 가 eff 합보다 크게 남았다(스테일 +1000 실측). 이 스테일은
+        // 렌더 열별 높이 검증(target_total ±0.5px)을 깨 균등 폴백을 유발한다.
+        // 이제 단일 진실: common.height = effective_row_heights 합 (update_ctrl_dimensions).
         if applied_width_delta == 0
             || (force_local_resize && updates.iter().any(|u| u.width_delta != 0))
         {

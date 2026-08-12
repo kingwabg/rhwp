@@ -3266,12 +3266,12 @@ mod issue_1151_v2_tac_toggle_tests {
         // 셀 height 를 한컴 정합 size 와 유사하게 조절.
         // 기준 높이는 **생성 직후 실제 값**에서 읽는다 — 셀 기본 여백(0.5mm 등)이 바뀌면
         // 절대값 핀이 깨지므로 delta 만 검증한다(2026-08-11 여백 142HU 조정에서 실측).
-        let base_height = match &core.document.sections[0].paragraphs[table_para_idx].controls
-            [table_ctrl_idx]
-        {
-            Control::Table(t) => t.cells[0].height,
-            _ => panic!(),
-        };
+        // [2026-08-13] raw heightDelta 의 밑절미 = 글줄 바닥 반영 실효 높이(1481 표시 계약)
+        let base_height =
+            match &core.document.sections[0].paragraphs[table_para_idx].controls[table_ctrl_idx] {
+                Control::Table(t) => t.effective_row_heights()[0],
+                _ => panic!(),
+            };
         core.resize_table_cells_native(
             0,
             table_para_idx,

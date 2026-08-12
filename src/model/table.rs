@@ -868,8 +868,50 @@ impl Table {
     /// TAC 옆 텍스트가 표 상단에 떠 보였다(2026-08-11 신고의 뿌리).
     /// ponytail: 글줄 바닥은 10pt 기준 1000HU 고정 — Table 은 doc_info(폰트)를
     /// 모르며, 큰 글자 셀은 편집 경로가 stored 높이를 이미 키워 max 가 지켜진다.
+    /// 행별 **글줄 바닥**(HU) — max(패딩+10pt 하한, 행 내 셀 콘텐츠 바닥(lineseg 실측)).
+    /// 조각 행(걸침 span 셀이 있는 행)은 0 — 저장 높이가 곧 실효라 바닥이 없다.
+    /// effective_row_heights 와 resize 의 raw 델타 밑절미가 공유하는 단일 근거.
+    /// ⚠ 다른 셀의 **저장** 높이는 포함하지 않는다 — 보상(±d) 조절이 있는 실파일에서
+    /// 저장 높이까지 밑절미로 끌어올리면 행 max 가 커져 표가 자란다(issue_493 실측).
+    pub fn row_line_floors_hu(&self) -> Vec<u32> {
+        const DEFAULT_LINE_HU: u32 = 1000;
+        let floors = self.cell_content_floors_hu();
+        let row_count = self.row_count as usize;
+        let mut out = vec![0u32; row_count];
+        for (row, slot) in out.iter_mut().enumerate() {
+            let spanned_through = self
+                .cells
+                .iter()
+                .any(|c| (c.row as usize) < row && (c.row as usize + c.row_span as usize) > row);
+            if spanned_through {
+                continue;
+            }
+            let pad_vert: u32 = self
+                .cells
+                .iter()
+                .filter(|c| c.row as usize == row && c.row_span <= 1)
+                .map(|c| {
+                    let p = c.effective_padding(&self.padding);
+                    (p.top.max(0) + p.bottom.max(0)) as u32
+                })
+                .max()
+                .unwrap_or((self.padding.top.max(0) + self.padding.bottom.max(0)) as u32);
+            let content_floor: u32 = self
+                .cells
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.row as usize == row && c.row_span <= 1)
+                .map(|(i, _)| floors.get(i).copied().unwrap_or(0))
+                .max()
+                .unwrap_or(0);
+            *slot = (pad_vert + DEFAULT_LINE_HU).max(content_floor);
+        }
+        out
+    }
+
     pub fn effective_row_heights(&self) -> Vec<HwpUnit> {
         const DEFAULT_LINE_HU: u32 = 1000;
+        let floors = self.cell_content_floors_hu();
         let mut heights = self.get_row_heights();
         for (row, h) in heights.iter_mut().enumerate() {
             // [경계선 어긋내기 예외 2026-08-12] **걸침 셀**(위 행에서 시작해 이 행에
@@ -895,9 +937,36 @@ impl Table {
                 })
                 .max()
                 .unwrap_or((self.padding.top.max(0) + self.padding.bottom.max(0)) as u32);
-            *h = (*h).max(pad_vert + DEFAULT_LINE_HU);
+            // [2026-08-13] 바닥 = max(10pt 고정 하한, 행 내 셀 콘텐츠 바닥(lineseg 실측)).
+            // 10pt 고정(pad+1000)만 쓰면 12pt 문서에서 측정기(콘텐츠 바닥 1484)와 200HU
+            // 어긋나 common.height 가 시각 합과 달라졌다(어긋내기 후 균등 폴백의 한 뿌리).
+            let content_floor: u32 = self
+                .cells
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.row as usize == row && c.row_span <= 1)
+                .map(|(i, _)| floors.get(i).copied().unwrap_or(0))
+                .max()
+                .unwrap_or(0);
+            *h = (*h).max((pad_vert + DEFAULT_LINE_HU).max(content_floor));
         }
         heights
+    }
+
+    /// 어긋내기 등 **행 구조 편집 전 물질화** — [from..=to] 행의 span==1 셀 높이를 실효
+    /// 높이(글줄 바닥 반영)로 확정한다. 빈 셀 저장 규약(패딩만 284)의 원시 값으로 행을
+    /// 자르면 화면(바닥 1484)과 다른 세계에서 산술이 돌아 몰래 어긋나거나 다른 행
+    /// 경계까지 밀린다(2026-08-13 신고). 편집에 연루된 행만 명시값으로 굳힌다.
+    pub fn materialize_rows_effective(&mut self, from_row: usize, to_row: usize) {
+        let eff = self.effective_row_heights();
+        for r in from_row..=to_row {
+            let Some(&row_eff) = eff.get(r) else { continue };
+            for c in self.cells.iter_mut() {
+                if c.row as usize == r && c.row_span <= 1 && c.height < row_eff {
+                    c.height = row_eff;
+                }
+            }
+        }
     }
 
     /// 셀별 **행 축소 한계**(HU) = 콘텐츠 글줄 범위(전 문단 lineseg 하단 최대) + 상하 패딩.
@@ -1915,6 +1984,12 @@ impl Table {
             if boundary >= self.row_count {
                 return Err("바깥 테두리는 어긋낼 수 없습니다".to_string());
             }
+            // [실효 공간 2026-08-13] 행은 빈 셀 저장 규약(height=패딩만 284)이라 원시 모델로
+            // 자르면 화면(글줄 바닥 1484)과 다른 세계에서 산술이 돈다 — ① 화면 무동작인데
+            // 모델만 몰래 어긋나고(한계 84) ② 조각·바닥이 얽혀 다른 행 경계까지 밀렸다
+            // (신고 "어긋내기하면 다른 경계선마저 커져"). 한계는 실효값으로 **먼저** 판정해
+            // 실패 시 부작용을 남기지 않고, 통과 시에만 연루 행을 실효 높이로 물질화한 뒤
+            // 갱신값으로 자른다. 조각 한계 = 콘텐츠 글줄 바닥(내용이 남는 조각 기준).
             let n_idx = self
                 .cell_index_at(boundary, t.col)
                 .ok_or_else(|| "아래 이웃 셀을 찾지 못했습니다".to_string())?;
@@ -1922,16 +1997,26 @@ impl Table {
             if n.col != t.col || n.col_span != t.col_span {
                 return Err("좌우 폭이 다른 칸과는 경계를 어긋낼 수 없습니다".to_string());
             }
+            let eff_rows = self.effective_row_heights();
+            let floors = self.cell_content_floors_hu();
             if delta > 0 {
                 if n.row_span != 1 {
                     return Err(
                         "이미 어긋난 칸 쪽으로는 더 어긋낼 수 없습니다 — 되돌리려면 ⌘Z".to_string(),
                     );
                 }
-                let d = delta.min(n.height as i32 - MIN_CELL);
+                // 내용은 아래 조각(이웃 잔여)에 남는다 — 그 조각이 글줄 바닥 밑으로 못 가게
+                let n_floor = floors.get(n_idx).copied().unwrap_or(0).max(MIN_CELL as u32) as i32;
+                let n_eff = (n.height)
+                    .max(eff_rows.get(boundary as usize).copied().unwrap_or(n.height))
+                    as i32;
+                let d = delta.min(n_eff - n_floor);
                 if d <= 0 {
                     return Err("이웃 칸에 남는 높이가 없습니다".to_string());
                 }
+                self.materialize_rows_effective(t.row as usize, boundary as usize);
+                let t = self.cells[cell_idx].clone();
+                let n = self.cells[n_idx].clone();
                 self.split_cell_into(n.row, n.col, 2, 1, true, false)?;
                 let top = self
                     .cell_index_at(boundary, t.col)
@@ -1961,10 +2046,22 @@ impl Table {
                         "이미 어긋난 경계를 다시 정렬하는 건 ⌘Z 로 되돌려 주세요".to_string()
                     );
                 }
-                let d = (-delta).min(t.height as i32 - MIN_CELL);
+                // 내용은 위 조각(대상 잔여)에 남는다 — 글줄 바닥 한계
+                let t_floor = floors
+                    .get(cell_idx)
+                    .copied()
+                    .unwrap_or(0)
+                    .max(MIN_CELL as u32) as i32;
+                let t_eff = (t.height)
+                    .max(eff_rows.get(t.row as usize).copied().unwrap_or(t.height))
+                    as i32;
+                let d = (-delta).min(t_eff - t_floor);
                 if d <= 0 {
                     return Err("대상 칸에 남는 높이가 없습니다".to_string());
                 }
+                self.materialize_rows_effective(t.row as usize, boundary as usize);
+                let t = self.cells[cell_idx].clone();
+                let n = self.cells[n_idx].clone();
                 self.split_cell_into(t.row, t.col, 2, 1, true, false)?;
                 let top = self
                     .cell_index_at(t.row, t.col)

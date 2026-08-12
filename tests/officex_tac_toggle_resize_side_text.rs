@@ -124,11 +124,13 @@ fn tac_host_paragraph_line_spacing_applies_regardless_of_order() {
             }
         };
         if order_toggle_first {
-            doc.set_table_properties(0, pi, ci, r#"{"treatAsChar":true}"#).unwrap();
+            doc.set_table_properties(0, pi, ci, r#"{"treatAsChar":true}"#)
+                .unwrap();
             apply_all(&mut doc);
         } else {
             apply_all(&mut doc);
-            doc.set_table_properties(0, pi, ci, r#"{"treatAsChar":true}"#).unwrap();
+            doc.set_table_properties(0, pi, ci, r#"{"treatAsChar":true}"#)
+                .unwrap();
         }
         let seg_ls = doc.document().sections[0].paragraphs[pi as usize]
             .line_segs
@@ -164,7 +166,10 @@ fn tac_host_paragraph_line_spacing_applies_regardless_of_order() {
     let (ls_a, y_a) = build(true, 300);
     let (ls_b, y_b) = build(false, 300);
     assert!(ls_a > 0, "300% 인데 저장 줄간격이 0 — 줄간격 미반영");
-    assert_eq!(ls_a, ls_b, "적용 순서에 따라 줄간격이 달라짐 ({ls_a} vs {ls_b})");
+    assert_eq!(
+        ls_a, ls_b,
+        "적용 순서에 따라 줄간격이 달라짐 ({ls_a} vs {ls_b})"
+    );
     assert!(
         (y_a - y_b).abs() < 0.5,
         "적용 순서에 따라 조판이 달라짐 (뒷문단 y {y_a} vs {y_b})"

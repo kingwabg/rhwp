@@ -2650,7 +2650,9 @@ impl LayoutEngine {
         // (`composer::line_breaking`)과 같은 단일 소스를 쓴다 — 아래의 글꼴 기반
         // 폴백 분기들이 종전에 0.85 를 하드코딩해 세로정렬=가운데/아래쪽 문단에서
         // 생산과 렌더가 어긋났다.
-        let baseline_ratio = para_style.map(|s| s.line_baseline_ratio).unwrap_or(crate::renderer::style_resolver::FONT_BASELINE_RATIO);
+        let baseline_ratio = para_style
+            .map(|s| s.line_baseline_ratio)
+            .unwrap_or(crate::renderer::style_resolver::FONT_BASELINE_RATIO);
 
         // [Task #547] paragraph margin_left/right 는 텍스트 좌/우 inset 으로 한 번만
         // 적용. Task #544 후 box outline = col_area (margin 미적용) 이므로 박스 안

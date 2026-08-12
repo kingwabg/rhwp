@@ -486,8 +486,8 @@ pub(crate) fn create_border_line_nodes(
         | BorderLineType::ThinThickDouble
         | BorderLineType::ThickThinDouble
         | BorderLineType::ThinThickThinTriple => {
-            let lines = multi_line_geometry(border.line_type, base_width)
-                .expect("겹선 종류는 기하가 있다");
+            let lines =
+                multi_line_geometry(border.line_type, base_width).expect("겹선 종류는 기하가 있다");
             create_parallel_lines(
                 tree,
                 border.color,

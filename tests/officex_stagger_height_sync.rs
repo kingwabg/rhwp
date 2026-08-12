@@ -50,29 +50,35 @@ fn make_staggerable() -> (HwpDocument, u32, u32) {
 
 /// 조각 행(걸침 셀이 있는 행)에는 글줄 바닥을 적용하지 않는다.
 #[test]
-fn stagger_fragment_rows_are_not_inflated()
-{
+fn stagger_fragment_rows_are_not_inflated() {
     let (mut doc, pi, ci) = make_staggerable();
-    doc.offset_cell_boundary(0, pi, ci, 1, "bottom", -800).unwrap();
+    let (h_before, _raw0, _eff0) = table_h(&doc);
+    doc.offset_cell_boundary(0, pi, ci, 1, "bottom", -800)
+        .unwrap();
     let (h, raw, eff) = table_h(&doc);
     // 조각 행 = raw[1](분할 상반 잔여)·raw[2](분할 하반) — eff 가 raw 그대로여야 한다
     assert_eq!(
         eff[1], raw[1],
         "조각 행이 부풀었다: raw={raw:?} eff={eff:?}"
     );
-    assert_eq!(eff[2], raw[2], "조각 행이 부풀었다: raw={raw:?} eff={eff:?}");
+    assert_eq!(
+        eff[2], raw[2],
+        "조각 행이 부풀었다: raw={raw:?} eff={eff:?}"
+    );
     // common.height 는 eff 합과 일치(스테일 금지)
     let sum: u32 = eff.iter().sum();
     assert_eq!(h, sum, "어긋내기 후 common.height({h}) ≠ eff 합({sum})");
-    // 종전 결함 재발 방지: 부풀림(≥5000) 금지
-    assert!(h < 5000, "어긋낸 표 높이가 부풀었다(종전 5136): {h}");
+    // 종전 결함(부풀림 5136) 재발 방지 — 어긋내기는 자기 축만: 표 높이 불변.
+    // (구 `h < 5000` 매직 상수는 raw 델타가 실효 밑절미를 얻은 2026-08-13 수치와 안 맞음)
+    assert_eq!(h, h_before, "어긋내기가 표 높이를 바꿨다: {h_before} → {h}");
 }
 
 /// 어긋내기 → 복원 왕복 후 common.height 가 eff 합으로 갱신된다(스테일 금지).
 #[test]
 fn restore_resyncs_common_height() {
     let (mut doc, pi, ci) = make_staggerable();
-    doc.offset_cell_boundary(0, pi, ci, 1, "bottom", -800).unwrap();
+    doc.offset_cell_boundary(0, pi, ci, 1, "bottom", -800)
+        .unwrap();
     doc.restore_cell_boundary(0, pi, ci, 1, "bottom").unwrap();
     let (h, raw, eff) = table_h(&doc);
     assert_eq!(raw.len(), 3, "복원 후 행 수가 3이 아니다: {raw:?}");

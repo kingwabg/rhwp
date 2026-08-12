@@ -1672,7 +1672,10 @@ pub fn recompose_for_cell_width(
             .tac_controls
             .iter()
             .map(|&(pos, w_hu, _ci)| {
-                (pos, super::hwpunit_to_px(w_hu, crate::renderer::DEFAULT_DPI))
+                (
+                    pos,
+                    super::hwpunit_to_px(w_hu, crate::renderer::DEFAULT_DPI),
+                )
             })
             .collect();
         v.sort_by_key(|&(pos, _)| pos);
@@ -1736,8 +1739,7 @@ pub fn recompose_for_cell_width(
             .filter(|&(pos, _)| pos > g_start && pos <= g_end || (gi == 0 && pos == g_start))
             .collect();
         let group_tac_w: f64 = group_tacs.iter().map(|&(_, w)| w).sum();
-        let total_width =
-            estimate_composed_line_width(&combined_line, styles) + group_tac_w;
+        let total_width = estimate_composed_line_width(&combined_line, styles) + group_tac_w;
         // [#2070] 행미 공백 hanging — 한글은 줄 끝 공백을 폭 판정에서 제외한다.
         // trailing 공백 포함 폭으로 분할하면 공백만의 유령 둘째 줄이 생겨
         // NO_LS 셀 행높이가 배가된다 (시장구조조사 "100.0␣␣" 22→50.4px,
@@ -2073,7 +2075,13 @@ fn split_composed_line_by_width(
                 && (*chars_in_line > 0 || !run_text.is_empty())
             {
                 flush_run(runs, run_text, template);
-                push_line(result, runs, current_char_start, chars_in_line, current_width);
+                push_line(
+                    result,
+                    runs,
+                    current_char_start,
+                    chars_in_line,
+                    current_width,
+                );
                 *space_w = 0.0;
                 *hung = false;
             }

@@ -237,8 +237,8 @@ pub const FONT_BASELINE_RATIO: f64 = 0.85;
 
 pub fn para_vertical_align_baseline_ratio(attr1: u32) -> f64 {
     match (attr1 >> 20) & 0x03 {
-        2 => 0.50, // 가운데
-        3 => 1.00, // 아래쪽
+        2 => 0.50,                // 가운데
+        3 => 1.00,                // 아래쪽
         _ => FONT_BASELINE_RATIO, // 0=글꼴기준(코퍼스 91%), 1=위쪽(미측정 — 기본값 유지)
     }
 }

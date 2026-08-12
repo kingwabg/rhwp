@@ -16,7 +16,10 @@ fn hu_mm(hu: f64) -> f64 {
 
 fn json_num(json: &str, key: &str) -> f64 {
     let pat = format!("\"{}\":", key);
-    let s = json.find(&pat).unwrap_or_else(|| panic!("키 {key} 없음: {json}")) + pat.len();
+    let s = json
+        .find(&pat)
+        .unwrap_or_else(|| panic!("키 {key} 없음: {json}"))
+        + pat.len();
     let rest = &json[s..];
     let e = rest
         .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
@@ -25,8 +28,7 @@ fn json_num(json: &str, key: &str) -> f64 {
 }
 
 fn blank_doc() -> HwpDocument {
-    let path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/officex_blank.hwpx");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/officex_blank.hwpx");
     let bytes = std::fs::read(&path).expect("read blank fixture");
     HwpDocument::from_bytes(&bytes).expect("parse blank fixture")
 }

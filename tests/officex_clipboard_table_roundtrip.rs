@@ -88,11 +88,7 @@ fn clipboard_html_roundtrip_preserves_column_widths() {
     dst.paste_html(0, 0, 0, &html).expect("HTML 수입");
     let (_, widths_after, _) = table_facts(&dst);
 
-    assert_eq!(
-        widths_after.len(),
-        2,
-        "열 수가 달라짐: {widths_after:?}"
-    );
+    assert_eq!(widths_after.len(), 2, "열 수가 달라짐: {widths_after:?}");
     for (b, a) in widths_before.iter().zip(widths_after.iter()) {
         let diff = (*b as i64 - *a as i64).abs();
         assert!(
