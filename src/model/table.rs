@@ -874,6 +874,19 @@ impl Table {
         const DEFAULT_LINE_HU: u32 = 1000;
         let mut heights = self.get_row_heights();
         for (row, h) in heights.iter_mut().enumerate() {
+            // [경계선 어긋내기 예외 2026-08-12] **걸침 셀**(위 행에서 시작해 이 행에
+            // 걸치는 row_span 셀)이 있는 행은 어긋내기(offset_cell_boundary)가 만든
+            // 조각 행이다 — 저장 높이가 곧 실효 높이이므로 글줄 바닥을 적용하지
+            // 않는다. 종전엔 조각 행(예: 800/284HU)까지 1284 로 부풀려 어긋낸 표의
+            // common.height 가 실제(2852)보다 크게(5136) 기록됐다(신고 2026-08-12).
+            // 빈 규약 행(전 셀이 이 행에서 시작)은 종전대로 바닥 적용.
+            let spanned_through = self
+                .cells
+                .iter()
+                .any(|c| (c.row as usize) < row && (c.row as usize + c.row_span as usize) > row);
+            if spanned_through {
+                continue;
+            }
             let pad_vert: u32 = self
                 .cells
                 .iter()
@@ -1959,6 +1972,9 @@ impl Table {
             }
         }
         self.rebuild_grid();
+        // [2026-08-12] 격자 재구성 후 common.width/height 동기화 — 종전엔 어긋내기/복원
+        // 후 스테일이 남아 표 높이가 이전 값(부풀림 포함)에 고정됐다(신고 재현 probe).
+        self.update_ctrl_dimensions();
         Ok(())
     }
 
@@ -2080,6 +2096,7 @@ impl Table {
             self.collapse_unused_lines(false);
         }
         self.rebuild_grid();
+        self.update_ctrl_dimensions();
         Ok(())
     }
 
@@ -2205,6 +2222,7 @@ impl Table {
             self.collapse_unused_lines(false);
         }
         self.rebuild_grid();
+        self.update_ctrl_dimensions();
         Ok(())
     }
 
