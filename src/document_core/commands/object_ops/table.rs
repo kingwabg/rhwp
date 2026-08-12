@@ -471,8 +471,26 @@ impl DocumentCore {
         };
         // 한컴 기본: 셀 높이 = top + bottom padding (빈 셀 최소 높이)
         let cell_height: u32 = (cell_pad.top + cell_pad.bottom) as u32;
-        // 한컴 기본: 행 렌더링 높이 = padding_top + line_height(1000) + padding_bottom
-        let rendered_row_height: u32 = cell_pad.top as u32 + 1000 + cell_pad.bottom as u32;
+        // 커서 위치 문단의 속성을 기본값으로 상속 (한컴 동작 일치).
+        // 혼합 글자모양 문단에서는 첫 엔트리가 아니라 커서 offset 의 글자모양이 기준이다.
+        let current_para = &self.document.sections[section_idx].paragraphs[para_idx];
+        let default_char_shape_id: u32 = current_para.char_shape_id_at(char_offset).unwrap_or(0);
+        let default_para_shape_id: u16 = current_para.para_shape_id;
+        // [경계선 회귀 2026-08-12] 셀 글줄 높이 = 상속 글자 크기×100 (한컴 lineseg 규약:
+        // 10pt→1000, 12pt→1200 — line_breaking::font_size_to_line_height 와 동일 식).
+        // 종전엔 1000(10pt 가정) 하드코딩이라 12pt 상속 셀과 모순 — 열 폭 드래그 등으로
+        // reflow_line_segs 를 타는 순간 1200 으로 재합성되며 행·표가 이유 없이 부풀었다
+        // (2026-08-12 신고 "경계선 이상"). 생성부터 규약값이면 reflow 가 멱등이 된다.
+        let line_hu: i32 = self
+            .styles
+            .char_styles
+            .get(default_char_shape_id as usize)
+            .map(|s| crate::renderer::px_to_hwpunit(s.font_size, self.dpi))
+            .filter(|&h| h > 0)
+            .unwrap_or(1000);
+        // 한컴 기본: 행 렌더링 높이 = padding_top + 글줄 + padding_bottom
+        let rendered_row_height: u32 =
+            cell_pad.top as u32 + line_hu as u32 + cell_pad.bottom as u32;
         let total_width: u32 = col_ws.iter().sum();
         let row_hs: Vec<u32> = row_heights_hu
             .map(|h| {
@@ -486,9 +504,9 @@ impl DocumentCore {
         // BorderFill: 실선 테두리가 있는 기존 항목 재사용, 없으면 새로 생성
         let cell_border_fill_id = {
             let existing = self.document.doc_info.border_fills.iter().position(|bf| {
-                bf.borders
-                    .iter()
-                    .all(|b| b.line_type == BorderLineType::Solid && b.width == DEFAULT_BORDER_WIDTH_IDX)
+                bf.borders.iter().all(|b| {
+                    b.line_type == BorderLineType::Solid && b.width == DEFAULT_BORDER_WIDTH_IDX
+                })
             });
             if let Some(idx) = existing {
                 (idx + 1) as u16 // 1-based
@@ -517,12 +535,6 @@ impl DocumentCore {
             }
         };
 
-        // 커서 위치 문단의 속성을 기본값으로 상속 (한컴 동작 일치).
-        // 혼합 글자모양 문단에서는 첫 엔트리가 아니라 커서 offset 의 글자모양이 기준이다.
-        let current_para = &self.document.sections[section_idx].paragraphs[para_idx];
-        let default_char_shape_id: u32 = current_para.char_shape_id_at(char_offset).unwrap_or(0);
-        let default_para_shape_id: u16 = current_para.para_shape_id;
-
         // 셀 목록 생성
         let mut cells = Vec::with_capacity((row_count as usize) * (col_count as usize));
         for r in 0..row_count {
@@ -549,14 +561,19 @@ impl DocumentCore {
                         rhe[4..6].copy_from_slice(&1u16.to_le_bytes()); // n_line_segs=1
                         cp.raw_header_extra = rhe;
                     }
-                    // line_segs 보정: new_empty()의 기본 LineSeg는 line_height=0이므로 항상 교체
-                    let seg_w = (col_width as i32) - 141 - 141; // 셀 폭 - 좌우 패딩
+                    // line_segs 보정: new_empty()의 기본 LineSeg는 line_height=0이므로 항상 교체.
+                    // 치수는 reflow_line_segs(make_line_seg)와 같은 식이어야 폭 조절 후에도
+                    // 값이 안 변한다(멱등) — 기준선 0.85, 줄간격 160%(=글줄×0.6).
+                    let seg_w =
+                        (col_width as i32) - (cell_pad.left as i32) - (cell_pad.right as i32);
                     cp.line_segs = vec![LineSeg {
                         text_start: 0,
-                        line_height: 1000,
-                        text_height: 1000,
-                        baseline_distance: 850,
-                        line_spacing: 600,
+                        line_height: line_hu,
+                        text_height: line_hu,
+                        baseline_distance: (line_hu as f64
+                            * crate::renderer::style_resolver::FONT_BASELINE_RATIO)
+                            as i32,
+                        line_spacing: (line_hu as f64 * 0.6) as i32,
                         segment_width: seg_w,
                         tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
                         ..Default::default()
@@ -954,9 +971,9 @@ impl DocumentCore {
         // BorderFill
         let cell_border_fill_id = {
             let existing = self.document.doc_info.border_fills.iter().position(|bf| {
-                bf.borders
-                    .iter()
-                    .all(|b| b.line_type == BorderLineType::Solid && b.width == DEFAULT_BORDER_WIDTH_IDX)
+                bf.borders.iter().all(|b| {
+                    b.line_type == BorderLineType::Solid && b.width == DEFAULT_BORDER_WIDTH_IDX
+                })
             });
             if let Some(idx) = existing {
                 (idx + 1) as u16
