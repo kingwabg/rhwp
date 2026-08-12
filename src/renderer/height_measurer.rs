@@ -79,9 +79,7 @@ pub fn is_tac_table_inline_in_para(table: &Table, seg_width: i32, para: &Paragra
         return true;
     }
 
-    let tbl_line_h = table.common.height as i64
-        + table.outer_margin_top as i64
-        + table.outer_margin_bottom as i64;
+    let tbl_line_h = table.tac_line_height_hu();
     let seg_matches_table_line =
         |ls: &crate::model::paragraph::LineSeg| (ls.line_height as i64 - tbl_line_h).abs() <= 75;
     let has_own_line_seg =

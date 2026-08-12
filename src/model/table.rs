@@ -768,6 +768,17 @@ impl Table {
     }
 
     /// 열별 폭을 추출한다 (col_span==1인 셀 기준).
+    /// TAC(글자처럼 취급) 표가 차지하는 **줄 높이**(HWPUNIT) = 표 높이 + 바깥여백 상하.
+    ///
+    /// [구조 정리 2026-08-12] 같은 식이 height_measurer·layout·typeset 4곳에 복제돼
+    /// 있었다. 한 곳만 고치면 "표 줄인가?" 판정이 지점마다 갈린다(TAC 회귀의 단골 원인).
+    /// i64 연산 그대로라 값은 종전과 동일하다.
+    pub fn tac_line_height_hu(&self) -> i64 {
+        self.common.height as i64
+            + self.outer_margin_top as i64
+            + self.outer_margin_bottom as i64
+    }
+
     pub fn get_column_widths(&self) -> Vec<HwpUnit> {
         let mut widths = vec![0u32; self.col_count as usize];
         for cell in &self.cells {

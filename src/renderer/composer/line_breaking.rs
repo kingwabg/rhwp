@@ -1308,7 +1308,7 @@ pub(crate) fn reflow_line_segs_with_bands(
     let ls_value = para_style.map(|s| s.line_spacing).unwrap_or(160.0);
     // 줄 기준선 비율 r = bd/lh — 문단 모양의 세로 정렬에서 온다(글꼴기준 0.85 /
     // 가운데 0.50 / 아래쪽 1.00, oracle-pdf-mining-20260806 §2-A).
-    let baseline_ratio = para_style.map(|s| s.line_baseline_ratio).unwrap_or(0.85);
+    let baseline_ratio = para_style.map(|s| s.line_baseline_ratio).unwrap_or(crate::renderer::style_resolver::FONT_BASELINE_RATIO);
 
     // 줄별 max_font_size에 따라 line_height/text_height/baseline_distance를 계산
     // 한컴은 줄마다 최대 폰트 크기에 맞게 다른 치수를 사용

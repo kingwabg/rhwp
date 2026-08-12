@@ -7410,10 +7410,7 @@ impl LayoutEngine {
                             Some(Control::Table(t))
                                 if t.common.height < 0x8000_0000
                                     && i64::from(seg.line_height)
-                                        >= t.common.height as i64
-                                            + t.outer_margin_top as i64
-                                            + t.outer_margin_bottom as i64
-                                            - 10
+                                        >= t.tac_line_height_hu() - 10
                                     && t.outer_margin_top as i64 + t.outer_margin_bottom as i64 > 0
                         );
                         y_offset = if stored_lh_covers_om {

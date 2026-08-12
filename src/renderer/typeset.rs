@@ -3929,11 +3929,7 @@ impl TypesetEngine {
                                 .controls
                                 .iter()
                                 .filter_map(|c| match c {
-                                    Control::Table(t) => Some(
-                                        t.common.height as i64
-                                            + t.outer_margin_top as i64
-                                            + t.outer_margin_bottom as i64,
-                                    ),
+                                    Control::Table(t) => Some(t.tac_line_height_hu()),
                                     _ => None,
                                 })
                                 .max()
@@ -13472,10 +13468,7 @@ impl TypesetEngine {
             if let Some(s0) = para.line_segs.first() {
                 let stored =
                     s0.tag & crate::model::paragraph::LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0;
-                let covers = s0.line_height as i64
-                    >= table.common.height as i64
-                        + table.outer_margin_top as i64
-                        + table.outer_margin_bottom as i64;
+                let covers = s0.line_height as i64 >= table.tac_line_height_hu();
                 if stored && covers {
                     st.vpos_col_anchor = st.current_height;
                     st.vpos_page_base = Some(s0.vertical_pos);

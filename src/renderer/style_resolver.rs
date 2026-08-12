@@ -228,11 +228,18 @@ pub struct ResolvedParaStyle {
 /// 이 비율 r 은 **줄 상자 분할**(글자 상자를 r:(1−r) 로 가르는 §2-C 모델의 r)이고,
 /// 글리프 기준선은 상자 안 어센트에 놓인다(`bd − r·fs + 0.85·fs`). r = 어센트(0.85)일 때만
 /// 이 식이 bd 로 축퇴해 직독과 일치하고, 가운데(0.50)에서는 직독이 실측과 어긋난다.
+/// 문단 세로정렬 **글꼴기준**의 줄 기준선 비율 — 저장 seg 573,835개 중 91%가 이 값.
+///
+/// ⚠ 오라클로 잠긴 값이다(mydocs oracle-pdf-mining-20260806 §2-A). 실측 근거 없이
+/// 바꾸면 전 문서 조판이 흔들린다. [구조 정리 2026-08-12] 3곳에 흩어져 있던 리터럴을
+/// 여기로 모았다 — 값 변경 아님.
+pub const FONT_BASELINE_RATIO: f64 = 0.85;
+
 pub fn para_vertical_align_baseline_ratio(attr1: u32) -> f64 {
     match (attr1 >> 20) & 0x03 {
         2 => 0.50, // 가운데
         3 => 1.00, // 아래쪽
-        _ => 0.85, // 0=글꼴기준(코퍼스 91%), 1=위쪽(미측정 — 기본값 유지)
+        _ => FONT_BASELINE_RATIO, // 0=글꼴기준(코퍼스 91%), 1=위쪽(미측정 — 기본값 유지)
     }
 }
 
@@ -262,7 +269,7 @@ impl Default for ResolvedParaStyle {
             keep_with_next: false,
             keep_lines: false,
             page_break_before: false,
-            line_baseline_ratio: 0.85,
+            line_baseline_ratio: FONT_BASELINE_RATIO,
         }
     }
 }
