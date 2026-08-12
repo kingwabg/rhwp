@@ -336,11 +336,103 @@ pub fn write_container_close<W: Write>(
 // extent·shape_attr 를 빠뜨렸다. 그 결과 라운드트립에서 OLE 데이터 참조가 소실되어
 // 렌더가 placeholder 로 강등됐다(143E: RawSvg→Placeholder). picture 패턴으로 복원한다.
 // =====================================================================
+/// `<hp:switch>` 로 OOXML 차트 개체를 방출한다 — 한컴 원본과 같은 구조.
+///
+/// case(required-namespace=ooxmlchart) → `<hp:chart chartIDRef="Chart/chart{N}.xml">`,
+/// default → `<hp:ole>`(구형 앱용 대체). 우리 IR 은 차트 쪽만 보관하므로 default 는
+/// 같은 기하 정보를 가진 최소 ole 로 채운다 — 원본의 OLE 바이너리는 BinData 로 그대로
+/// 남아 있고(참조는 잃지만) 차트 파트가 정본이라 한컴이 case 를 택한다.
+fn write_chart_switch<W: Write>(
+    w: &mut Writer<W>,
+    ole: &OleShape,
+    _ctx: &mut SerializeContext,
+) -> Result<(), SerializeError> {
+    let c = &ole.common;
+    let id_str = c.instance_id.to_string();
+    let z_order = c.z_order.to_string();
+    let tw = text_wrap_str(c.text_wrap);
+    let tf = text_flow_str(c.text_flow);
+    let chart_n =
+        (ole.bin_data_id as u16).saturating_sub(crate::model::bin_data::OOXML_CHART_ID_BASE);
+    let chart_ref = format!("Chart/chart{}.xml", chart_n);
+
+    start_tag_attrs(w, "hp:switch", &[])?;
+    start_tag_attrs(
+        w,
+        "hp:case",
+        &[(
+            "hp:required-namespace",
+            "http://www.hancom.co.kr/hwpml/2016/ooxmlchart",
+        )],
+    )?;
+    start_tag_attrs(
+        w,
+        "hp:chart",
+        &[
+            ("id", &id_str),
+            ("zOrder", &z_order),
+            ("numberingType", numbering_type_str(c.numbering_type)),
+            ("textWrap", tw),
+            ("textFlow", tf),
+            ("lock", "0"),
+            ("dropcapstyle", "None"),
+            ("chartIDRef", &chart_ref),
+        ],
+    )?;
+    write_sz(w, c)?;
+    write_pos(w, c)?;
+    write_out_margin(w, c)?;
+    end_tag(w, "hp:chart")?;
+    end_tag(w, "hp:case")?;
+
+    start_tag_attrs(w, "hp:default", &[])?;
+    start_tag_attrs(
+        w,
+        "hp:ole",
+        &[
+            ("id", &id_str),
+            ("zOrder", &z_order),
+            ("numberingType", numbering_type_str(c.numbering_type)),
+            ("textWrap", tw),
+            ("textFlow", tf),
+            ("lock", "0"),
+            ("dropcapstyle", "None"),
+            ("href", ""),
+            ("groupLevel", "0"),
+            ("instid", &id_str),
+            ("objectType", "UNKNOWN"),
+            ("hasMoniker", "0"),
+            ("drawAspect", "CONTENT"),
+            ("eqBaseLine", "0"),
+        ],
+    )?;
+    write_shape_component_block(w, &ole.drawing.shape_attr)?;
+    let ex = ole.extent_x.to_string();
+    let ey = ole.extent_y.to_string();
+    empty_tag(w, "hc:extent", &[("x", &ex), ("y", &ey)])?;
+    write_line_shape(w, &ole.drawing.border_line)?;
+    write_sz(w, c)?;
+    write_pos(w, c)?;
+    write_out_margin(w, c)?;
+    end_tag(w, "hp:ole")?;
+    end_tag(w, "hp:default")?;
+    end_tag(w, "hp:switch")?;
+    Ok(())
+}
+
 pub(crate) fn write_ole<W: Write>(
     w: &mut Writer<W>,
     ole: &OleShape,
     ctx: &mut SerializeContext,
 ) -> Result<(), SerializeError> {
+    // [차트 소멸 수리 2026-08-13] 파서는 `hp:switch`(case=ooxmlchart → hp:chart /
+    // default → hp:ole)를 chart 쪽 OleShape 하나로 접어 온다(bin_data_id =
+    // OOXML_CHART_ID_BASE+N). 그대로 hp:ole 로 내보내면 chartIDRef 가 사라져 한컴이
+    // 차트를 못 찾는다 — 열었다 저장만 해도 차트가 통째로 죽었다(샘플 6/6 실측).
+    // 차트 개체는 원본과 같은 hp:switch 로 되돌린다.
+    if ole.bin_data_id as u16 >= crate::model::bin_data::OOXML_CHART_ID_BASE {
+        return write_chart_switch(w, ole, ctx);
+    }
     let c = &ole.common;
     let id_str = c.instance_id.to_string();
     let z_order = c.z_order.to_string();

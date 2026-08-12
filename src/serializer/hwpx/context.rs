@@ -15,6 +15,7 @@
 
 #![allow(dead_code)]
 
+use crate::model::bin_data::{OOXML_CHART_EXT, OOXML_CHART_ID_BASE};
 use std::collections::{HashMap, HashSet};
 
 use crate::model::control::Control;
@@ -176,7 +177,19 @@ impl SerializeContext {
             // 멀티셋이 `bin` vs `""` 로 어긋나 PKG_FAIL 이 났다. 원본 형태를 보존한다.
             let manifest_id = format!("image{}", bd.id);
             let ext = bd.extension.as_str();
-            let href = format!("BinData/{}.{}", manifest_id, ext);
+            // [차트 소멸 수리 2026-08-13] OOXML 차트는 BinData 가 아니라 **Chart/chart{N}.xml**
+            // 파트로 돌아가야 한다. 종전엔 파서가 60000+N 로 실어 온 생 XML 을 다른 임베드와
+            // 똑같이 `BinData/image60001.ooxml_chart` 로 써서, 열었다 저장하면 한컴이 참조하는
+            // Chart 파트가 통째로 사라졌다(샘플 6/6 소멸 실측). manifest 에도 넣지 않는다 —
+            // 한컴 자체 저장 파일이 Chart 파트를 manifest 에 올리지 않는다.
+            let href = if ext == OOXML_CHART_EXT {
+                format!(
+                    "Chart/chart{}.xml",
+                    bd.id.saturating_sub(OOXML_CHART_ID_BASE)
+                )
+            } else {
+                format!("BinData/{}.{}", manifest_id, ext)
+            };
             let media_type = mime_from_ext(ext);
             ctx.bin_data_map.insert(
                 bd.id,

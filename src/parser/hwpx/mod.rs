@@ -414,17 +414,28 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
 
     // 5-1. Chart/*.xml (OOXML 차트) 로딩 — bin_data_id = 60000+N, extension="ooxml_chart"
     // section 파서에서 <hp:chart chartIDRef="Chart/chartN.xml">를 만나면 동일 ID의 OleShape 생성
-    for n in 1..=64u16 {
-        let path = format!("Chart/chart{}.xml", n);
-        match reader.read_file_bytes(&path) {
-            Ok(data) => {
-                bin_data_content.push(BinDataContent {
-                    id: 60000 + n,
-                    data: data.into(),
-                    extension: "ooxml_chart".to_string(),
-                });
-            }
-            Err(_) => break,
+    // [2026-08-13] 번호가 비연속인 문서(chart1, chart3 …)에서 종전 `1..=64 + break` 는
+    // 첫 구멍에서 멈춰 뒤 차트를 통째로 잃었다. zip 목록에서 실제 존재하는 파트만 읽는다.
+    let mut chart_parts: Vec<(u16, String)> = reader
+        .file_names()
+        .iter()
+        .filter_map(|name: &String| {
+            let n: u16 = name
+                .strip_prefix("Chart/chart")?
+                .strip_suffix(".xml")?
+                .parse()
+                .ok()?;
+            Some((n, name.to_string()))
+        })
+        .collect();
+    chart_parts.sort_unstable();
+    for (n, path) in chart_parts {
+        if let Ok(data) = reader.read_file_bytes(&path) {
+            bin_data_content.push(BinDataContent {
+                id: crate::model::bin_data::OOXML_CHART_ID_BASE + n,
+                data: data.into(),
+                extension: crate::model::bin_data::OOXML_CHART_EXT.to_string(),
+            });
         }
     }
 

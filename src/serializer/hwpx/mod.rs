@@ -139,13 +139,32 @@ pub fn serialize_hwpx(doc: &Document) -> Result<Vec<u8>, SerializeError> {
                     entry.bin_data_id
                 ))
             })?;
-        z.write_deflated(&entry.href, &data.data.load())?;
+        // [OLE size prefix 복원 2026-08-13] HWPX 파서는 내부 OLE 엔트리의 선두 4-byte LE
+        // size prefix 를 벗겨 IR 에 담는다(normalize_ole_bytes). 저장할 때 도로 붙이지
+        // 않으면 원본보다 정확히 4바이트 짧은 파일이 나와 한컴이 OLE 를 못 읽는다
+        // (실측 273,924 → 273,920). HWP5 라이터(cfb_writer.rs)는 이미 복원한다.
+        let bytes = data.data.load();
+        const CFB_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+        let needs_prefix = entry.href.to_ascii_lowercase().ends_with(".ole")
+            && bytes.len() >= 8
+            && bytes[..8] == CFB_MAGIC;
+        if needs_prefix {
+            let mut out = Vec::with_capacity(bytes.len() + 4);
+            out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            out.extend_from_slice(&bytes);
+            z.write_deflated(&entry.href, &out)?;
+        } else {
+            z.write_deflated(&entry.href, &bytes)?;
+        }
         zip_bin_entries.insert(entry.href.clone());
     }
 
     // 9. Contents/content.hpf — 항상 동적 경로 + BinData 매니페스트 엔트리
     let content_bin_entries: Vec<ContentBinDataEntry> = bin_entries
         .iter()
+        // [차트 파트 2026-08-13] Chart/chart{N}.xml 은 manifest 에 올리지 않는다 —
+        // 한컴 자체 저장 파일이 그렇고(샘플 전수), 등록하면 원본과 매니페스트가 갈린다.
+        .filter(|e| !e.href.starts_with("Chart/"))
         .map(|e| ContentBinDataEntry {
             id: e.manifest_id.clone(),
             href: e.href.clone(),
