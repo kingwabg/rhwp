@@ -101,3 +101,34 @@ fn creation_linesegs_match_reflow_exactly() {
         "생성 lineseg 와 reflow lineseg 가 다르다 — 드래그 순간 표가 변하는 뿌리"
     );
 }
+
+/// 셀 콘텐츠 바닥(cell_content_floors_hu) = 글줄 + 상하 패딩 — 행 축소 한계의 단일 근거.
+/// 빈 12pt 셀 = 1200 + 284 = 1484. 스튜디오 리사이즈 클램프(getCellContentFloors)가 이 값을
+/// 최소로 써야 격자(기록)와 표 상자(측정 바닥)가 어긋나는 유령 공간이 안 생긴다.
+#[test]
+fn content_floors_match_line_plus_padding() {
+    let (doc, _pi, _ci) = make_default_table();
+    for para in &doc.document().sections[0].paragraphs {
+        for ctrl in &para.controls {
+            if let rhwp::model::control::Control::Table(t) = ctrl {
+                let floors = t.cell_content_floors_hu();
+                assert_eq!(floors.len(), 9);
+                let seg = t.cells[0].paragraphs[0].line_segs.first().cloned().unwrap();
+                let pad = (t.padding.top + t.padding.bottom) as u32;
+                for f in &floors {
+                    assert_eq!(
+                        *f,
+                        seg.line_height as u32 + pad,
+                        "바닥 = 글줄({}) + 패딩({})",
+                        seg.line_height,
+                        pad
+                    );
+                }
+                // 바닥은 절대 최소(1276)보다 커야 유령 공간 수리가 실효 — 12pt 기준 1484
+                assert!(*floors.iter().max().unwrap() > 1276, "floors={floors:?}");
+                return;
+            }
+        }
+    }
+    panic!("표 없음");
+}

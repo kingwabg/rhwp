@@ -774,9 +774,7 @@ impl Table {
     /// 있었다. 한 곳만 고치면 "표 줄인가?" 판정이 지점마다 갈린다(TAC 회귀의 단골 원인).
     /// i64 연산 그대로라 값은 종전과 동일하다.
     pub fn tac_line_height_hu(&self) -> i64 {
-        self.common.height as i64
-            + self.outer_margin_top as i64
-            + self.outer_margin_bottom as i64
+        self.common.height as i64 + self.outer_margin_top as i64 + self.outer_margin_bottom as i64
     }
 
     pub fn get_column_widths(&self) -> Vec<HwpUnit> {
@@ -900,6 +898,29 @@ impl Table {
             *h = (*h).max(pad_vert + DEFAULT_LINE_HU);
         }
         heights
+    }
+
+    /// 셀별 **행 축소 한계**(HU) = 콘텐츠 글줄 범위(전 문단 lineseg 하단 최대) + 상하 패딩.
+    ///
+    /// 한컴 규약: 행은 글줄 밑으로 줄어들지 않는다. 측정기(height_measurer)가 행높이를
+    /// max(기록, 콘텐츠+패딩)로 바닥 치는 것과 같은 근거 — 축소 클램프가 이 값보다 작게
+    /// 허용하면 셀 격자(기록값)와 표 상자(측정 바닥)가 어긋나는 유령 공간이 생긴다
+    /// (2026-08-12 실측 +2.7px). 인덱스 = cellIdx(= cells 순서).
+    pub fn cell_content_floors_hu(&self) -> Vec<u32> {
+        self.cells
+            .iter()
+            .map(|c| {
+                let content: i32 = c
+                    .paragraphs
+                    .iter()
+                    .flat_map(|p| p.line_segs.iter())
+                    .map(|s| s.vertical_pos.saturating_add(s.line_height))
+                    .max()
+                    .unwrap_or(0);
+                let p = c.effective_padding(&self.padding);
+                (content.max(0) as u32) + (p.top.max(0) + p.bottom.max(0)) as u32
+            })
+            .collect()
     }
 
     /// 행별 높이를 추출한다 (row_span==1인 셀 기준).

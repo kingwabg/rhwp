@@ -202,7 +202,10 @@ impl std::ops::DerefMut for HwpDocument {
 /// 테스트 및 CLI 환경에서 `HwpDocument::from_bytes()` 등을 직접 호출할 수 있도록 한다.
 impl HwpDocument {
     pub fn from_bytes(data: &[u8]) -> Result<HwpDocument, HwpError> {
-        DocumentCore::from_bytes(data).map(|core| HwpDocument { core, display_zoom: std::cell::Cell::new(0.0) })
+        DocumentCore::from_bytes(data).map(|core| HwpDocument {
+            core,
+            display_zoom: std::cell::Cell::new(0.0),
+        })
     }
 
     pub fn find_initial_column_def(paragraphs: &[Paragraph]) -> ColumnDef {
@@ -348,7 +351,10 @@ impl HwpDocument {
     #[wasm_bindgen(constructor)]
     pub fn new(data: &[u8]) -> Result<HwpDocument, JsValue> {
         DocumentCore::from_bytes(data)
-            .map(|core| HwpDocument { core, display_zoom: std::cell::Cell::new(0.0) })
+            .map(|core| HwpDocument {
+                core,
+                display_zoom: std::cell::Cell::new(0.0),
+            })
             .map_err(|e| e.into())
     }
 
@@ -374,7 +380,10 @@ impl HwpDocument {
         let mut document = Document::default();
         document.sections.push(section);
         core.set_document(document);
-        HwpDocument { core, display_zoom: std::cell::Cell::new(0.0) }
+        HwpDocument {
+            core,
+            display_zoom: std::cell::Cell::new(0.0),
+        }
     }
 
     /// 내장 템플릿에서 빈 문서를 생성한다.
@@ -1597,6 +1606,34 @@ impl HwpDocument {
             end_col as u16,
         )
         .map_err(|e| e.into())
+    }
+
+    /// 셀별 행 축소 한계(HU) 배열 — 콘텐츠 글줄 범위 + 상하 패딩. 인덱스 = cellIdx.
+    ///
+    /// 한컴 규약: 행은 글줄 밑으로 줄어들지 않는다. 스튜디오 리사이즈(드래그·키보드)의
+    /// 축소 클램프가 이 값을 최소로 써야 셀 격자와 표 상자(측정 바닥)가 어긋나지 않는다
+    /// (2026-08-12 유령 공간 수리).
+    #[wasm_bindgen(js_name = getCellContentFloors)]
+    pub fn get_cell_content_floors(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+    ) -> Result<String, JsValue> {
+        let para = self
+            .document
+            .sections
+            .get(section_idx as usize)
+            .ok_or_else(|| JsValue::from_str("구역 인덱스 범위 초과"))?
+            .paragraphs
+            .get(parent_para_idx as usize)
+            .ok_or_else(|| JsValue::from_str("문단 인덱스 범위 초과"))?;
+        let table = match para.controls.get(control_idx as usize) {
+            Some(crate::model::control::Control::Table(t)) => t,
+            _ => return Err(JsValue::from_str("지정된 컨트롤이 표가 아닙니다")),
+        };
+        Ok(serde_json::to_string(&table.cell_content_floors_hu())
+            .map_err(|e| JsValue::from_str(&e.to_string()))?)
     }
 
     /// [경계선 재설계 2026-08-04] 한 칸 경계 어긋내기(Shift+드래그) — 격자 재구성 정본.
