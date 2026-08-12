@@ -1,0 +1,411 @@
+//! OOXML 차트 XML **생성기** — 데이터 → `c:chartSpace` XML.
+//!
+//! ## 설계: 백지 생성이 아니라 템플릿 패치
+//!
+//! 한컴이 저장한 실물 차트 XML(`templates/*.xml`)을 그대로 두고 **데이터가 들어가는
+//! 캐시(`c:tx`/`c:cat`/`c:val`)와 제목만 갈아끼운다**. 이유 셋:
+//!
+//! 1. 한컴 고유 확장(`c:extLst` 의 `ho:hncChartStyle`, 함초롬돋움 `c:txPr`, 축·눈금·
+//!    범례 서식)이 자동으로 보존된다 — 백지 생성이면 이것들을 하나씩 재현해야 하고,
+//!    빠뜨리면 한컴에서 밋밋하거나 깨져 보인다.
+//! 2. **생성과 편집이 같은 함수**가 된다. 새 차트는 우리 템플릿을 패치하고, 기존 차트
+//!    편집은 그 문서의 XML 을 패치한다 — 편집이 사용자 서식을 지우지 않는다.
+//! 3. 계열별 부속 요소(막대의 `c:invertIfNegative`, 원형의 `c:explosion`, 꺾은선의
+//!    `c:marker`·`c:smooth`)가 종류마다 다른데, 템플릿의 계열 블록을 **복제**하면
+//!    종류별 분기 없이 맞는다.
+//!
+//! 파서(`super::parser`)와 짝이며, `parse(patch(xml, spec)) == spec` 왕복이 계약이다.
+
+use super::OoxmlChartType;
+
+/// 차트 한 계열 — 이름과 값.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChartSeriesSpec {
+    pub name: String,
+    pub values: Vec<f64>,
+}
+
+/// 차트 생성·편집 입력 — 스튜디오 대화상자가 채우는 값 그대로.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChartSpec {
+    pub chart_type: OoxmlChartType,
+    pub title: Option<String>,
+    /// 항목(가로축) 라벨
+    pub categories: Vec<String>,
+    pub series: Vec<ChartSeriesSpec>,
+}
+
+const TPL_COLUMN: &str = include_str!("templates/column.xml");
+const TPL_BAR: &str = include_str!("templates/bar.xml");
+const TPL_LINE: &str = include_str!("templates/line.xml");
+const TPL_PIE: &str = include_str!("templates/pie.xml");
+
+/// 종류별 기본 템플릿(한컴 실물). 미지원 종류는 세로 막대로 대체한다.
+pub fn template_for(kind: OoxmlChartType) -> &'static str {
+    match kind {
+        OoxmlChartType::Bar => TPL_BAR,
+        OoxmlChartType::Line => TPL_LINE,
+        OoxmlChartType::Pie => TPL_PIE,
+        _ => TPL_COLUMN,
+    }
+}
+
+/// 새 차트 XML 을 만든다 — 종류에 맞는 한컴 템플릿을 spec 으로 패치.
+pub fn build_chart_xml(spec: &ChartSpec) -> String {
+    patch_chart_xml(template_for(spec.chart_type), spec)
+}
+
+/// 기존(또는 템플릿) 차트 XML 의 **데이터와 제목만** 교체한다. 나머지 서식은 보존.
+pub fn patch_chart_xml(xml: &str, spec: &ChartSpec) -> String {
+    let out = patch_series(xml, spec);
+    patch_title(&out, spec.title.as_deref())
+}
+
+// ── XML 조각 도구 ───────────────────────────────────────────────────
+
+fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// 열 번호(0-based) → 엑셀 열 문자(A, B, … Z, AA…). 계열 참조 `Sheet1!$B$1` 용.
+fn col_letter(mut n: usize) -> String {
+    let mut s = String::new();
+    loop {
+        s.insert(0, (b'A' + (n % 26) as u8) as char);
+        if n < 26 {
+            break;
+        }
+        n = n / 26 - 1;
+    }
+    s
+}
+
+/// `<tag>`…`</tag>` 중 **첫 블록**의 시작·끝 바이트 범위(태그 포함).
+fn block_range(xml: &str, tag: &str) -> Option<(usize, usize)> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let s = xml.find(&open)?;
+    let e = xml[s..].find(&close)? + s + close.len();
+    Some((s, e))
+}
+
+/// 블록의 **내용만** 교체(태그는 유지).
+fn replace_block_inner(xml: &str, tag: &str, new_inner: &str) -> String {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    match block_range(xml, tag) {
+        Some((s, e)) => {
+            let mut out = String::with_capacity(xml.len() + new_inner.len());
+            out.push_str(&xml[..s]);
+            out.push_str(&open);
+            out.push_str(new_inner);
+            out.push_str(&close);
+            out.push_str(&xml[e..]);
+            out
+        }
+        None => xml.to_string(),
+    }
+}
+
+/// `<tag val="…"/>` 의 값을 바꾼다(첫 등장).
+fn set_val_attr(xml: &str, tag: &str, val: &str) -> String {
+    let pat = format!("<{tag} val=\"");
+    match xml.find(&pat) {
+        Some(s) => {
+            let vs = s + pat.len();
+            match xml[vs..].find('"') {
+                Some(rel) => format!("{}{}{}", &xml[..vs], val, &xml[vs + rel..]),
+                None => xml.to_string(),
+            }
+        }
+        None => xml.to_string(),
+    }
+}
+
+fn str_cache(items: &[String]) -> String {
+    let mut s = format!("<c:ptCount val=\"{}\"/>", items.len());
+    for (i, v) in items.iter().enumerate() {
+        s.push_str(&format!(
+            "<c:pt idx=\"{}\"><c:v>{}</c:v></c:pt>",
+            i,
+            xml_escape(v)
+        ));
+    }
+    s
+}
+
+fn num_cache(values: &[f64]) -> String {
+    let mut s = String::from("<c:formatCode>General</c:formatCode>");
+    s.push_str(&format!("<c:ptCount val=\"{}\"/>", values.len()));
+    for (i, v) in values.iter().enumerate() {
+        // 정수는 정수로(한컴 실물이 그렇다), 소수는 불필요한 0 없이
+        let text = if v.fract() == 0.0 && v.abs() < 1e15 {
+            format!("{}", *v as i64)
+        } else {
+            let t = format!("{v}");
+            t
+        };
+        s.push_str(&format!("<c:pt idx=\"{i}\"><c:v>{text}</c:v></c:pt>"));
+    }
+    s
+}
+
+// ── 계열 패치 ───────────────────────────────────────────────────────
+
+/// 템플릿의 계열 블록을 복제해 spec 의 계열 수만큼 만든다.
+/// 종류별 부속 요소(invertIfNegative/explosion/marker…)가 자동으로 따라온다.
+fn patch_series(xml: &str, spec: &ChartSpec) -> String {
+    // 계열 블록 전체 범위(첫 <c:ser> ~ 마지막 </c:ser>)
+    let Some(first) = xml.find("<c:ser>") else {
+        return xml.to_string();
+    };
+    let Some(last_rel) = xml.rfind("</c:ser>") else {
+        return xml.to_string();
+    };
+    let last = last_rel + "</c:ser>".len();
+
+    // 템플릿 계열들을 모아 둔다 — i 번째가 없으면 마지막 것을 재사용(색 순환은 한컴이 처리)
+    let mut templates: Vec<&str> = Vec::new();
+    let mut cur = first;
+    while let Some(rel) = xml[cur..last].find("<c:ser>") {
+        let s = cur + rel;
+        let Some(erel) = xml[s..last].find("</c:ser>") else {
+            break;
+        };
+        let e = s + erel + "</c:ser>".len();
+        templates.push(&xml[s..e]);
+        cur = e;
+    }
+    if templates.is_empty() {
+        return xml.to_string();
+    }
+
+    // 원형 차트는 계열이 하나뿐이다(한컴·엑셀 공통) — 첫 계열만 쓴다.
+    let is_pie = matches!(spec.chart_type, OoxmlChartType::Pie);
+    let use_series: Vec<&ChartSeriesSpec> = if is_pie {
+        spec.series.iter().take(1).collect()
+    } else {
+        spec.series.iter().collect()
+    };
+    if use_series.is_empty() {
+        return xml.to_string();
+    }
+
+    let cat_ref = format!("Sheet1!$A$2:$A${}", spec.categories.len() + 1);
+    let cats = str_cache(&spec.categories);
+
+    let mut built = String::new();
+    for (i, ser) in use_series.iter().enumerate() {
+        let tpl = templates
+            .get(i)
+            .copied()
+            .unwrap_or_else(|| templates[templates.len() - 1]);
+        let mut s = tpl.to_string();
+        s = set_val_attr(&s, "c:idx", &i.to_string());
+        s = set_val_attr(&s, "c:order", &i.to_string());
+
+        let letter = col_letter(i + 1); // A=항목, B부터 계열
+                                        // 계열 이름
+        let tx_inner = format!(
+            "<c:strRef><c:f>Sheet1!${letter}$1</c:f><c:strCache>{}</c:strCache></c:strRef>",
+            str_cache(&[ser.name.clone()])
+        );
+        s = replace_block_inner(&s, "c:tx", &tx_inner);
+        // 항목
+        let cat_inner =
+            format!("<c:strRef><c:f>{cat_ref}</c:f><c:strCache>{cats}</c:strCache></c:strRef>");
+        s = replace_block_inner(&s, "c:cat", &cat_inner);
+        // 값
+        let val_inner = format!(
+            "<c:numRef><c:f>Sheet1!${letter}$2:${letter}${}</c:f><c:numCache>{}</c:numCache></c:numRef>",
+            ser.values.len() + 1,
+            num_cache(&ser.values)
+        );
+        s = replace_block_inner(&s, "c:val", &val_inner);
+        built.push_str(&s);
+    }
+
+    let mut out = String::with_capacity(xml.len() + built.len());
+    out.push_str(&xml[..first]);
+    out.push_str(&built);
+    out.push_str(&xml[last..]);
+    out
+}
+
+// ── 제목 패치 ───────────────────────────────────────────────────────
+
+/// 제목 텍스트를 넣거나(Some) 지운다(None). 한컴 템플릿의 `c:title` 은 서식만 있고
+/// 글자가 없으므로, 글자를 넣을 때 `c:tx/c:rich` 를 만들어 붙인다.
+fn patch_title(xml: &str, title: Option<&str>) -> String {
+    let Some((s, e)) = block_range(xml, "c:title") else {
+        return xml.to_string();
+    };
+    let inner = &xml[s + "<c:title>".len()..e - "</c:title>".len()];
+
+    let new_inner = match title {
+        Some(t) if !t.is_empty() => {
+            // 기존 c:tx 가 있으면 통째 교체, 없으면 맨 앞에 삽입(스키마 순서: tx → layout → overlay)
+            let rich = format!(
+                "<c:tx><c:rich><a:bodyPr/><a:p><a:pPr><a:defRPr/></a:pPr><a:r><a:t>{}</a:t></a:r></a:p></c:rich></c:tx>",
+                xml_escape(t)
+            );
+            match block_range(inner, "c:tx") {
+                Some((ts, te)) => format!("{}{}{}", &inner[..ts], rich, &inner[te..]),
+                None => format!("{rich}{inner}"),
+            }
+        }
+        _ => match block_range(inner, "c:tx") {
+            Some((ts, te)) => format!("{}{}", &inner[..ts], &inner[te..]),
+            None => inner.to_string(),
+        },
+    };
+
+    let mut out = String::with_capacity(xml.len() + new_inner.len());
+    out.push_str(&xml[..s]);
+    out.push_str("<c:title>");
+    out.push_str(&new_inner);
+    out.push_str("</c:title>");
+    out.push_str(&xml[e..]);
+    // 제목을 넣으면 autoTitleDeleted 는 0 이어야 표시된다
+    if title.is_some_and(|t| !t.is_empty()) {
+        out = set_val_attr(&out, "c:autoTitleDeleted", "0");
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec() -> ChartSpec {
+        ChartSpec {
+            chart_type: OoxmlChartType::Bar,
+            title: Some("분기 실적".to_string()),
+            categories: vec!["1분기".into(), "2분기".into(), "3분기".into()],
+            series: vec![
+                ChartSeriesSpec {
+                    name: "서울".into(),
+                    values: vec![10.0, 20.0, 30.0],
+                },
+                ChartSeriesSpec {
+                    name: "부산".into(),
+                    values: vec![5.5, 7.0, 9.25],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn col_letters_are_excel_style() {
+        assert_eq!(col_letter(0), "A");
+        assert_eq!(col_letter(1), "B");
+        assert_eq!(col_letter(25), "Z");
+        assert_eq!(col_letter(26), "AA");
+    }
+
+    #[test]
+    fn build_puts_data_and_title_in() {
+        let xml = build_chart_xml(&spec());
+        assert!(xml.contains("<a:t>분기 실적</a:t>"), "제목 누락");
+        assert!(xml.contains("<c:v>서울</c:v>"));
+        assert!(xml.contains("<c:v>부산</c:v>"));
+        assert!(xml.contains("<c:v>2분기</c:v>"));
+        assert!(xml.contains("<c:v>9.25</c:v>"), "소수 값 누락: {xml}");
+        assert!(xml.contains("<c:v>10</c:v>"), "정수는 정수 표기");
+        assert_eq!(xml.matches("<c:ser>").count(), 2, "계열 수 불일치");
+        // 템플릿 원본 데이터가 남으면 안 된다
+        assert!(!xml.contains("계열 1"), "템플릿 잔재: {xml}");
+        assert!(!xml.contains("항목 1"), "템플릿 잔재");
+    }
+
+    #[test]
+    fn series_count_follows_spec() {
+        let mut s = spec();
+        s.series.push(ChartSeriesSpec {
+            name: "대구".into(),
+            values: vec![1.0, 2.0, 3.0],
+        });
+        s.series.push(ChartSeriesSpec {
+            name: "광주".into(),
+            values: vec![4.0, 5.0, 6.0],
+        });
+        let xml = build_chart_xml(&s);
+        assert_eq!(xml.matches("<c:ser>").count(), 4);
+        assert!(xml.contains("Sheet1!$E$2:$E$4"), "5번째 열 참조: {xml}");
+    }
+
+    #[test]
+    fn pie_uses_single_series() {
+        let mut s = spec();
+        s.chart_type = OoxmlChartType::Pie;
+        let xml = build_chart_xml(&s);
+        assert_eq!(xml.matches("<c:ser>").count(), 1, "원형은 계열 1개");
+        assert!(xml.contains("<c:pieChart>"), "원형 템플릿이 아니다");
+    }
+
+    #[test]
+    fn empty_title_removes_text() {
+        let mut s = spec();
+        s.title = None;
+        let xml = build_chart_xml(&s);
+        assert!(!xml.contains("<a:t>"), "제목이 남았다");
+    }
+
+    #[test]
+    fn xml_special_chars_are_escaped() {
+        let mut s = spec();
+        s.title = Some("A & B <test>".into());
+        s.series[0].name = "\"인용\"".into();
+        let xml = build_chart_xml(&s);
+        assert!(xml.contains("A &amp; B &lt;test&gt;"));
+        assert!(xml.contains("&quot;인용&quot;"));
+        assert!(!xml.contains("<test>"));
+    }
+
+    #[test]
+    fn patch_preserves_hancom_extras() {
+        let tpl = template_for(OoxmlChartType::Bar);
+        let xml = patch_chart_xml(tpl, &spec());
+        // 한컴 확장/서식 블록이 살아 있어야 한다
+        for marker in ["c:chartSpace", "c:catAx", "c:valAx", "c:plotArea"] {
+            assert!(xml.contains(marker), "{marker} 소실");
+        }
+        assert_eq!(
+            tpl.matches("c:extLst").count(),
+            xml.matches("c:extLst").count(),
+            "확장 블록 수가 변했다"
+        );
+    }
+
+    #[test]
+    fn all_templates_are_wellformed_and_patchable() {
+        for kind in [
+            OoxmlChartType::Bar,
+            OoxmlChartType::Column,
+            OoxmlChartType::Line,
+            OoxmlChartType::Pie,
+        ] {
+            let mut s = spec();
+            s.chart_type = kind;
+            let xml = build_chart_xml(&s);
+            assert!(xml.starts_with("<?xml"), "{kind:?}: XML 선언 누락");
+            assert!(xml.contains("</c:chartSpace>"), "{kind:?}: 루트 미종료");
+            assert_eq!(
+                xml.matches("<c:ser>").count(),
+                xml.matches("</c:ser>").count(),
+                "{kind:?}: ser 태그 짝 불일치"
+            );
+        }
+    }
+}
