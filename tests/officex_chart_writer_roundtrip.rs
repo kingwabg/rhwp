@@ -173,3 +173,54 @@ fn edge_inputs_do_not_panic() {
     let parsed = OoxmlChart::parse(xml.as_bytes()).expect("음수 파싱");
     assert_eq!(parsed.series[0].values, vec![-1234.5, 9_999_999.0]);
 }
+
+/// [삽입 → 저장 → 재파싱] 삽입한 차트가 HWPX 파일로 나가고 다시 읽힌다 — 끝단 계약.
+#[test]
+fn inserted_chart_survives_save_and_reload() {
+    use rhwp::wasm_api::HwpDocument;
+
+    let mut doc = HwpDocument::create_empty();
+    doc.create_blank_document().unwrap();
+    let spec = r#"{"type":"column","title":"연간 실적",
+        "categories":["1월","2월","3월"],
+        "series":[{"name":"매출","values":[100,150,130]}]}"#;
+    let out = doc.insert_chart(0, 0, spec, 0, 0, false).expect("삽입");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let ci = v["controlIdx"].as_u64().unwrap() as u32;
+
+    // 저장
+    let bytes = rhwp::serializer::hwpx::serialize_hwpx(doc.document()).expect("HWPX 저장");
+
+    // 저장된 파일에 차트 파트와 참조가 있어야 한다
+    {
+        use std::io::Read;
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).expect("zip");
+        let mut chart_xml = String::new();
+        zip.by_name("Chart/chart1.xml")
+            .expect("저장본에 Chart/chart1.xml 이 없다")
+            .read_to_string(&mut chart_xml)
+            .expect("차트 파트 읽기");
+        assert!(chart_xml.contains("<c:v>매출</c:v>"), "계열 이름 누락");
+        assert!(chart_xml.contains("<a:t>연간 실적</a:t>"), "제목 누락");
+
+        let mut section = String::new();
+        zip.by_name("Contents/section0.xml")
+            .expect("section0")
+            .read_to_string(&mut section)
+            .expect("읽기");
+        assert!(
+            section.contains("chartIDRef=\"Chart/chart1.xml\""),
+            "본문 차트 참조 누락"
+        );
+    }
+
+    // 다시 열어 데이터가 같은지
+    let reopened = HwpDocument::from_bytes(&bytes).expect("재파싱");
+    let spec_json = reopened
+        .get_chart_spec_native(0, 0, ci as usize)
+        .expect("재파싱 문서에서 차트 조회");
+    let v2: serde_json::Value = serde_json::from_str(&spec_json).unwrap();
+    assert_eq!(v2["title"], "연간 실적");
+    assert_eq!(v2["categories"][2], "3월");
+    assert_eq!(v2["series"][0]["values"][1], 150.0);
+}

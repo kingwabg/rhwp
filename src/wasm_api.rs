@@ -3204,6 +3204,64 @@ impl HwpDocument {
     /// 클릭/드래그한 위치 (paper-relative HU). studio 의 finishImagePlacement 가 drag 좌표를
     /// 변환하여 전달. JS 측에서 `undefined` 전달 시 (또는 음수) wasm 이 셀 좌상단을 default 사용
     /// — 기존 동작 호환.
+    /// 차트를 삽입한다. spec 은 JSON:
+    /// `{"type":"column|bar|line|pie","title":"…","categories":[…],"series":[{"name":"…","values":[…]}]}`
+    /// width/height 는 HWPUNIT(0 이면 기본 크기).
+    #[wasm_bindgen(js_name = insertChart)]
+    pub fn insert_chart(
+        &mut self,
+        section_idx: u32,
+        para_idx: u32,
+        spec_json: &str,
+        width: u32,
+        height: u32,
+        treat_as_char: bool,
+    ) -> Result<String, JsValue> {
+        self.insert_chart_native(
+            section_idx as usize,
+            para_idx as usize,
+            spec_json,
+            width,
+            height,
+            treat_as_char,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 차트 개체의 데이터를 JSON 으로 읽는다(편집 대화상자 채우기).
+    #[wasm_bindgen(js_name = getChartSpec)]
+    pub fn get_chart_spec(
+        &self,
+        section_idx: u32,
+        para_idx: u32,
+        control_idx: u32,
+    ) -> Result<String, JsValue> {
+        self.get_chart_spec_native(
+            section_idx as usize,
+            para_idx as usize,
+            control_idx as usize,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 차트 개체의 데이터를 교체한다 — 기존 XML 을 패치하므로 서식이 보존된다.
+    #[wasm_bindgen(js_name = setChartSpec)]
+    pub fn set_chart_spec(
+        &mut self,
+        section_idx: u32,
+        para_idx: u32,
+        control_idx: u32,
+        spec_json: &str,
+    ) -> Result<String, JsValue> {
+        self.set_chart_spec_native(
+            section_idx as usize,
+            para_idx as usize,
+            control_idx as usize,
+            spec_json,
+        )
+        .map_err(|e| e.into())
+    }
+
     #[wasm_bindgen(js_name = insertPicture)]
     #[allow(clippy::too_many_arguments)]
     pub fn insert_picture(
