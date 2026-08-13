@@ -9,6 +9,7 @@ use rhwp::ooxml_chart::{OoxmlChart, OoxmlChartType};
 
 fn spec(kind: OoxmlChartType) -> ChartSpec {
     ChartSpec {
+        style: String::new(),
         chart_type: kind,
         title: Some("분기 실적".to_string()),
         categories: vec![
@@ -146,6 +147,7 @@ fn generated_chart_renders_nonempty_svg() {
 #[test]
 fn edge_inputs_do_not_panic() {
     let single = ChartSpec {
+        style: String::new(),
         chart_type: OoxmlChartType::Column,
         title: None,
         categories: vec!["항목".into()],
@@ -161,6 +163,7 @@ fn edge_inputs_do_not_panic() {
 
     // 음수·큰 수
     let wide = ChartSpec {
+        style: String::new(),
         chart_type: OoxmlChartType::Line,
         title: Some(String::new()),
         categories: vec!["a".into(), "b".into()],
@@ -223,4 +226,54 @@ fn inserted_chart_survives_save_and_reload() {
     assert_eq!(v2["title"], "연간 실적");
     assert_eq!(v2["categories"][2], "3월");
     assert_eq!(v2["series"][0]["values"][1], 150.0);
+}
+
+/// 갤러리에 올리는 **모든 스타일**이 생성 → 파싱 → 렌더까지 통과해야 한다.
+/// 통과 못 하는 스타일은 갤러리에서 빼야 한다(사용자가 고르면 빈 차트가 나온다).
+#[test]
+fn every_gallery_style_builds_parses_renders() {
+    use rhwp::ooxml_chart::writer::CHART_STYLES;
+    let mut broken: Vec<String> = Vec::new();
+    for (id, label) in CHART_STYLES {
+        let s = ChartSpec {
+            style: (*id).to_string(),
+            chart_type: OoxmlChartType::Column,
+            title: Some("제목".into()),
+            categories: vec!["가".into(), "나".into(), "다".into()],
+            series: vec![
+                ChartSeriesSpec {
+                    name: "A".into(),
+                    values: vec![3.0, 5.0, 4.0],
+                },
+                ChartSeriesSpec {
+                    name: "B".into(),
+                    values: vec![2.0, 1.0, 6.0],
+                },
+            ],
+        };
+        let xml = build_chart_xml(&s);
+        let Some(chart) = OoxmlChart::parse(xml.as_bytes()) else {
+            broken.push(format!("{id}({label}): 파싱 실패"));
+            continue;
+        };
+        if chart.series.is_empty() {
+            broken.push(format!("{id}({label}): 계열 0"));
+            continue;
+        }
+        // 값이 실제로 반영됐는지(템플릿 원본 값이 남으면 데이터 교체 실패)
+        let first = &chart.series[0].values;
+        if first.is_empty() || (first[0] - 3.0).abs() > 0.001 {
+            broken.push(format!("{id}({label}): 값 미반영 {first:?}"));
+            continue;
+        }
+        let svg = chart.render_svg(0.0, 0.0, 400.0, 300.0);
+        if svg.len() < 200 {
+            broken.push(format!("{id}({label}): SVG {}B", svg.len()));
+        }
+    }
+    assert!(
+        broken.is_empty(),
+        "갤러리 스타일 결함:\n  {}",
+        broken.join("\n  ")
+    );
 }

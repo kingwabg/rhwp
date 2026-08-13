@@ -28,6 +28,8 @@ pub struct ChartSeriesSpec {
 /// 차트 생성·편집 입력 — 스튜디오 대화상자가 채우는 값 그대로.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ChartSpec {
+    /// 갤러리에서 고른 스타일 id(예: "column-stacked"). 비면 chart_type 에서 유도.
+    pub style: String,
     pub chart_type: OoxmlChartType,
     pub title: Option<String>,
     /// 항목(가로축) 라벨
@@ -36,23 +38,142 @@ pub struct ChartSpec {
 }
 
 const TPL_COLUMN: &str = include_str!("templates/column.xml");
+const TPL_COLUMN_STACKED: &str = include_str!("templates/column-stacked.xml");
+const TPL_COLUMN_100: &str = include_str!("templates/column-100.xml");
+const TPL_COLUMN_3D: &str = include_str!("templates/column-3d.xml");
+const TPL_COLUMN_3D_STACKED: &str = include_str!("templates/column-3d-stacked.xml");
 const TPL_BAR: &str = include_str!("templates/bar.xml");
+const TPL_BAR_STACKED: &str = include_str!("templates/bar-stacked.xml");
+const TPL_BAR_100: &str = include_str!("templates/bar-100.xml");
+const TPL_BAR_3D: &str = include_str!("templates/bar-3d.xml");
+const TPL_BAR_3D_STACKED: &str = include_str!("templates/bar-3d-stacked.xml");
 const TPL_LINE: &str = include_str!("templates/line.xml");
+const TPL_LINE_MARKER: &str = include_str!("templates/line-marker.xml");
+const TPL_LINE_STACKED: &str = include_str!("templates/line-stacked.xml");
+const TPL_LINE_100: &str = include_str!("templates/line-100.xml");
+const TPL_LINE_MARKER_STACKED: &str = include_str!("templates/line-marker-stacked.xml");
 const TPL_PIE: &str = include_str!("templates/pie.xml");
+const TPL_PIE_3D: &str = include_str!("templates/pie-3d.xml");
+const TPL_PIE_EXPLODED: &str = include_str!("templates/pie-exploded.xml");
+const TPL_PIE_OF_PIE: &str = include_str!("templates/pie-of-pie.xml");
+const TPL_PIE_OF_BAR: &str = include_str!("templates/pie-of-bar.xml");
+const TPL_SCATTER: &str = include_str!("templates/scatter.xml");
+const TPL_SCATTER_LINE: &str = include_str!("templates/scatter-line.xml");
+const TPL_SCATTER_SMOOTH: &str = include_str!("templates/scatter-smooth.xml");
 
-/// 종류별 기본 템플릿(한컴 실물). 미지원 종류는 세로 막대로 대체한다.
-pub fn template_for(kind: OoxmlChartType) -> &'static str {
-    match kind {
-        OoxmlChartType::Bar => TPL_BAR,
-        OoxmlChartType::Line => TPL_LINE,
-        OoxmlChartType::Pie => TPL_PIE,
+/// 스타일 id → 한컴 실물 템플릿. 알 수 없는 id 는 묶은 세로 막대형.
+pub fn template_for_style(style: &str) -> &'static str {
+    match style {
+        "column" => TPL_COLUMN,
+        "column-stacked" => TPL_COLUMN_STACKED,
+        "column-100" => TPL_COLUMN_100,
+        "column-3d" => TPL_COLUMN_3D,
+        "column-3d-stacked" => TPL_COLUMN_3D_STACKED,
+        "bar" => TPL_BAR,
+        "bar-stacked" => TPL_BAR_STACKED,
+        "bar-100" => TPL_BAR_100,
+        "bar-3d" => TPL_BAR_3D,
+        "bar-3d-stacked" => TPL_BAR_3D_STACKED,
+        "line" => TPL_LINE,
+        "line-marker" => TPL_LINE_MARKER,
+        "line-stacked" => TPL_LINE_STACKED,
+        "line-100" => TPL_LINE_100,
+        "line-marker-stacked" => TPL_LINE_MARKER_STACKED,
+        "pie" => TPL_PIE,
+        "pie-3d" => TPL_PIE_3D,
+        "pie-exploded" => TPL_PIE_EXPLODED,
+        "pie-of-pie" => TPL_PIE_OF_PIE,
+        "pie-of-bar" => TPL_PIE_OF_BAR,
+        "scatter" => TPL_SCATTER,
+        "scatter-line" => TPL_SCATTER_LINE,
+        "scatter-smooth" => TPL_SCATTER_SMOOTH,
         _ => TPL_COLUMN,
     }
 }
 
+/// 갤러리에 보여줄 (스타일 id, 한글 이름) 목록 — 스튜디오가 이걸로 팔레트를 만든다.
+pub const CHART_STYLES: &[(&str, &str)] = &[
+    ("column", "묶은 세로 막대형"),
+    ("column-stacked", "누적 세로 막대형"),
+    ("column-100", "100% 기준 누적 세로 막대형"),
+    ("column-3d", "3차원 묶은 세로 막대형"),
+    ("column-3d-stacked", "3차원 누적 세로 막대형"),
+    ("bar", "묶은 가로 막대형"),
+    ("bar-stacked", "누적 가로 막대형"),
+    ("bar-100", "100% 기준 누적 가로 막대형"),
+    ("bar-3d", "3차원 묶은 가로 막대형"),
+    ("bar-3d-stacked", "3차원 누적 가로 막대형"),
+    ("line", "꺾은선형"),
+    ("line-marker", "표식이 있는 꺾은선형"),
+    ("line-stacked", "누적 꺾은선형"),
+    ("line-100", "100% 기준 누적 꺾은선형"),
+    ("line-marker-stacked", "표식이 있는 누적 꺾은선형"),
+    ("pie", "원형"),
+    ("pie-3d", "3차원 원형"),
+    ("pie-exploded", "쪼개진 원형"),
+    ("pie-of-pie", "원형 대 원형"),
+    ("pie-of-bar", "원형 대 가로 막대형"),
+    ("scatter", "표식만 있는 분산형"),
+    ("scatter-line", "직선이 있는 분산형"),
+    ("scatter-smooth", "곡선이 있는 분산형"),
+];
+
 /// 새 차트 XML 을 만든다 — 종류에 맞는 한컴 템플릿을 spec 으로 패치.
 pub fn build_chart_xml(spec: &ChartSpec) -> String {
-    patch_chart_xml(template_for(spec.chart_type), spec)
+    let tpl = if spec.style.is_empty() {
+        template_for_style(default_style_of(spec.chart_type))
+    } else {
+        template_for_style(&spec.style)
+    };
+    patch_chart_xml(tpl, spec)
+}
+
+/// 종류만 주어졌을 때의 기본 스타일 id(구 API 호환).
+pub fn default_style_of(kind: OoxmlChartType) -> &'static str {
+    match kind {
+        OoxmlChartType::Bar => "bar",
+        OoxmlChartType::Line => "line",
+        OoxmlChartType::Pie => "pie",
+        OoxmlChartType::Scatter => "scatter",
+        _ => "column",
+    }
+}
+
+/// 템플릿(또는 기존 차트)의 **플롯 서명** — 플롯 요소 + 막대 방향 + 그룹핑.
+/// 스타일이 바뀌었는지(패치로 될지, 새로 만들어야 할지) 가르는 단일 판정.
+pub fn plot_signature(xml: &str) -> String {
+    let plot = [
+        "bar3DChart",
+        "barChart",
+        "line3DChart",
+        "lineChart",
+        "pie3DChart",
+        "ofPieChart",
+        "doughnutChart",
+        "pieChart",
+        "areaChart",
+        "scatterChart",
+        "stockChart",
+        "radarChart",
+    ]
+    .iter()
+    .find(|t| xml.contains(&format!("<c:{t}>")))
+    .copied()
+    .unwrap_or("unknown");
+    let attr = |tag: &str| -> String {
+        let pat = format!("<c:{tag} val=\"");
+        match xml.find(&pat) {
+            Some(i) => {
+                let vs = i + pat.len();
+                xml[vs..]
+                    .find('"')
+                    .map(|r| xml[vs..vs + r].to_string())
+                    .unwrap_or_default()
+            }
+            None => String::new(),
+        }
+    };
+    format!("{plot}/{}/{}", attr("barDir"), attr("grouping"))
 }
 
 /// 기존(또는 템플릿) 차트 XML 의 **데이터와 제목만** 교체한다. 나머지 서식은 보존.
@@ -192,7 +313,12 @@ fn patch_series(xml: &str, spec: &ChartSpec) -> String {
     }
 
     // 원형 차트는 계열이 하나뿐이다(한컴·엑셀 공통) — 첫 계열만 쓴다.
-    let is_pie = matches!(spec.chart_type, OoxmlChartType::Pie);
+    // 원형 계열(pie/도넛)은 계열이 하나뿐이다 — 스타일 id 우선, 없으면 종류로.
+    let is_pie = if spec.style.is_empty() {
+        matches!(spec.chart_type, OoxmlChartType::Pie)
+    } else {
+        spec.style.starts_with("pie") || spec.style.starts_with("doughnut")
+    };
     let use_series: Vec<&ChartSeriesSpec> = if is_pie {
         spec.series.iter().take(1).collect()
     } else {
@@ -222,17 +348,40 @@ fn patch_series(xml: &str, spec: &ChartSpec) -> String {
             str_cache(&[ser.name.clone()])
         );
         s = replace_block_inner(&s, "c:tx", &tx_inner);
-        // 항목
-        let cat_inner =
-            format!("<c:strRef><c:f>{cat_ref}</c:f><c:strCache>{cats}</c:strCache></c:strRef>");
-        s = replace_block_inner(&s, "c:cat", &cat_inner);
-        // 값
-        let val_inner = format!(
-            "<c:numRef><c:f>Sheet1!${letter}$2:${letter}${}</c:f><c:numCache>{}</c:numCache></c:numRef>",
-            ser.values.len() + 1,
-            num_cache(&ser.values)
-        );
-        s = replace_block_inner(&s, "c:val", &val_inner);
+        if s.contains("<c:xVal>") {
+            // ── 분산형(x,y 산점도) ── 항목/값이 아니라 **숫자쌍**이다. 항목 라벨이 숫자면
+            // 그대로 X 로 쓰고(예: "0.7"), 아니면 1,2,3… 을 X 로 둔다.
+            let xs: Vec<f64> = spec
+                .categories
+                .iter()
+                .enumerate()
+                .map(|(k, c)| c.trim().parse::<f64>().unwrap_or((k + 1) as f64))
+                .collect();
+            let x_inner = format!(
+                "<c:numRef><c:f>Sheet1!$A$2:$A${}</c:f><c:numCache>{}</c:numCache></c:numRef>",
+                xs.len() + 1,
+                num_cache(&xs)
+            );
+            s = replace_block_inner(&s, "c:xVal", &x_inner);
+            let y_inner = format!(
+                "<c:numRef><c:f>Sheet1!${letter}$2:${letter}${}</c:f><c:numCache>{}</c:numCache></c:numRef>",
+                ser.values.len() + 1,
+                num_cache(&ser.values)
+            );
+            s = replace_block_inner(&s, "c:yVal", &y_inner);
+        } else {
+            // 항목
+            let cat_inner =
+                format!("<c:strRef><c:f>{cat_ref}</c:f><c:strCache>{cats}</c:strCache></c:strRef>");
+            s = replace_block_inner(&s, "c:cat", &cat_inner);
+            // 값
+            let val_inner = format!(
+                "<c:numRef><c:f>Sheet1!${letter}$2:${letter}${}</c:f><c:numCache>{}</c:numCache></c:numRef>",
+                ser.values.len() + 1,
+                num_cache(&ser.values)
+            );
+            s = replace_block_inner(&s, "c:val", &val_inner);
+        }
         built.push_str(&s);
     }
 
@@ -290,6 +439,7 @@ mod tests {
 
     fn spec() -> ChartSpec {
         ChartSpec {
+            style: String::new(),
             chart_type: OoxmlChartType::Bar,
             title: Some("분기 실적".to_string()),
             categories: vec!["1분기".into(), "2분기".into(), "3분기".into()],
@@ -375,7 +525,7 @@ mod tests {
 
     #[test]
     fn patch_preserves_hancom_extras() {
-        let tpl = template_for(OoxmlChartType::Bar);
+        let tpl = template_for_style("bar");
         let xml = patch_chart_xml(tpl, &spec());
         // 한컴 확장/서식 블록이 살아 있어야 한다
         for marker in ["c:chartSpace", "c:catAx", "c:valAx", "c:plotArea"] {

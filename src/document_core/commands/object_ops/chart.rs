@@ -46,6 +46,8 @@ fn kind_to_str(k: OoxmlChartType) -> &'static str {
 fn spec_from_json(json: &str) -> Result<ChartSpec, HwpError> {
     let v: serde_json::Value = serde_json::from_str(json)
         .map_err(|e| HwpError::InvalidField(format!("차트 JSON 파싱 실패: {e}")))?;
+    // style 은 갤러리에서 고른 세부 종류(예: "column-stacked"). 없으면 type 에서 유도.
+    let style = v["style"].as_str().unwrap_or_default().to_string();
     let chart_type = kind_from_str(v["type"].as_str().unwrap_or("column"));
     let title = v["title"]
         .as_str()
@@ -81,6 +83,7 @@ fn spec_from_json(json: &str) -> Result<ChartSpec, HwpError> {
         return Err(HwpError::InvalidField("항목이 비어 있습니다".into()));
     }
     Ok(ChartSpec {
+        style,
         chart_type,
         title,
         categories,
@@ -88,7 +91,7 @@ fn spec_from_json(json: &str) -> Result<ChartSpec, HwpError> {
     })
 }
 
-fn spec_to_json(chart: &OoxmlChart) -> String {
+fn spec_to_json(chart: &OoxmlChart, style: &str) -> String {
     let series: Vec<serde_json::Value> = chart
         .series
         .iter()
@@ -102,6 +105,7 @@ fn spec_to_json(chart: &OoxmlChart) -> String {
     serde_json::json!({
         "ok": true,
         "type": kind_to_str(chart.chart_type),
+        "style": style,
         "title": chart.title.clone().unwrap_or_default(),
         "categories": chart.categories,
         "series": series,
@@ -219,7 +223,18 @@ impl DocumentCore {
         let xml = self.chart_xml_of(section_idx, para_idx, control_idx)?;
         let chart = OoxmlChart::parse(&xml)
             .ok_or_else(|| HwpError::RenderError("차트 XML 을 해석하지 못했습니다".into()))?;
-        Ok(spec_to_json(&chart))
+        // 저장된 XML 의 플롯 서명으로 갤러리 스타일을 되짚는다(편집 시 종류 유지)
+        let sig = crate::ooxml_chart::writer::plot_signature(&String::from_utf8_lossy(&xml));
+        let style = crate::ooxml_chart::writer::CHART_STYLES
+            .iter()
+            .find(|(id, _)| {
+                crate::ooxml_chart::writer::plot_signature(
+                    crate::ooxml_chart::writer::template_for_style(id),
+                ) == sig
+            })
+            .map(|(id, _)| *id)
+            .unwrap_or("");
+        Ok(spec_to_json(&chart, style))
     }
 
     /// 차트 개체의 데이터를 교체한다 — **기존 XML 을 패치**하므로 서식이 보존된다.
@@ -235,10 +250,17 @@ impl DocumentCore {
         let old = self.chart_xml_of(section_idx, para_idx, control_idx)?;
         let old_str = String::from_utf8_lossy(&old).to_string();
 
-        // 종류가 바뀌면 그 종류의 템플릿에서 새로 만든다(막대 XML 에 원형 데이터는 못 넣는다).
-        let same_kind = OoxmlChart::parse(&old)
-            .map(|c| c.chart_type == spec.chart_type)
-            .unwrap_or(false);
+        // 스타일(플롯 서명)이 바뀌면 그 템플릿에서 새로 만든다 — 막대 XML 에 원형 데이터는
+        // 못 넣는다. 같으면 패치해 사용자 서식을 보존한다.
+        let want_style = if spec.style.is_empty() {
+            crate::ooxml_chart::writer::default_style_of(spec.chart_type)
+        } else {
+            spec.style.as_str()
+        };
+        let same_kind = crate::ooxml_chart::writer::plot_signature(&old_str)
+            == crate::ooxml_chart::writer::plot_signature(
+                crate::ooxml_chart::writer::template_for_style(want_style),
+            );
         let new_xml = if same_kind {
             patch_chart_xml(&old_str, &spec)
         } else {
