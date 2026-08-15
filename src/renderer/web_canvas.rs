@@ -84,6 +84,47 @@ thread_local! {
     > = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
+// [2026-08-15 신고 "크기 조절일 때에도 깜빡"] RawSvg 조각의 마지막 성공 이미지 — 개체별.
+//
+// 이동 깜빡임은 조각을 원점 기준으로 만들어 바이트를 위치와 무관하게 해 없앴지만
+// (RawSvgNode::origin_relative), **크기 조절은 조각 내용 자체가 달라진다**(축 눈금·
+// 막대 폭 재계산). 그래서 캐시가 원리적으로 못 맞고, SVG 는 image 크레이트가 못 읽어
+// 항상 비동기 HtmlImageElement 경로 — 디코드 전 프레임은 그릴 게 없어 공백이 됐다.
+//
+// 직전 성공 이미지를 개체별로 붙들어 두고, 새 이미지가 준비될 때까지 새 bbox 로 늘려
+// 그린다(한 프레임 흐릿할 뿐 공백 없음 — 편집기 관례). IMAGE_CACHE 는 200개에서
+// 통째로 비워지므로 여기 강한 참조로 따로 들고 있어야 크기 드래그 중에도 살아남는다.
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static LAST_RAW_SVG_IMAGE: std::cell::RefCell<
+        std::collections::HashMap<(usize, usize, usize), HtmlImageElement>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// data 바이트에 대응하는 HtmlImageElement 를 캐시에서 얻거나 새로 만든다.
+/// (draw_image 의 요소 경로와 같은 규약 — 로드 전에도 캐시에 넣어 다음 프레임에 재사용)
+#[cfg(target_arch = "wasm32")]
+fn image_element_for(data: &[u8]) -> Option<HtmlImageElement> {
+    use base64::Engine;
+    let key = hash_bytes(data);
+    if let Some(img) = IMAGE_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return Some(img);
+    }
+    let mime_type = detect_image_mime_type(data);
+    let base64_data = base64::engine::general_purpose::STANDARD.encode(data);
+    let data_url = format!("data:{};base64,{}", mime_type, base64_data);
+    let img = HtmlImageElement::new().ok()?;
+    img.set_src(&data_url);
+    IMAGE_CACHE.with(|cache| {
+        let mut c = cache.borrow_mut();
+        if c.len() > 200 {
+            c.clear();
+        }
+        c.insert(key, img.clone());
+    });
+    Some(img)
+}
+
 #[cfg(target_arch = "wasm32")]
 fn decode_image_to_canvas(data: &[u8]) -> Option<HtmlCanvasElement> {
     let dynimg = image::load_from_memory(data).ok()?;
@@ -1093,16 +1134,64 @@ impl WebCanvasRenderer {
             }
         } else {
             // 원점 기준 조각(차트)은 viewBox (0,0) 로 감싼다 — 감싼 바이트가 위치와
-            // 무관해져 드래그 중에도 디코드 캐시가 유지된다(깜빡임 방지).
+            // 무관해져 이동 드래그 중 디코드 캐시가 유지된다(깜빡임 방지).
             let (vx, vy) = if raw.origin_relative {
                 (0.0, 0.0)
             } else {
                 (bbox.x, bbox.y)
             };
             let svg_doc = wrap_svg_fragment(&raw.svg, vx, vy, bbox.width, bbox.height);
-            self.draw_image(svg_doc.as_bytes(), bbox.x, bbox.y, bbox.width, bbox.height);
+            // 크기 조절은 조각 내용 자체가 바뀌어 캐시가 못 맞는다 — 개체별 직전
+            // 이미지 폴백으로 로드 대기 공백을 메운다(LAST_RAW_SVG_IMAGE 참조).
+            let fallback_key = raw
+                .control_ref
+                .as_ref()
+                .map(|r| (r.section_index, r.para_index, r.control_index));
+            self.draw_svg_doc_with_last_good(svg_doc.as_bytes(), bbox, fallback_key);
         }
         self.close_shape_transform_if_needed(&raw.transform);
+    }
+
+    /// SVG 문서를 그리되, 아직 디코드 전이면 이 개체의 **직전 성공 이미지**를 새 bbox 로
+    /// 늘려 그린다 — 크기 조절 중 공백(깜빡임) 방지. key 가 없으면 폴백 없이 종전대로.
+    fn draw_svg_doc_with_last_good(
+        &mut self,
+        data: &[u8],
+        bbox: &BoundingBox,
+        key: Option<(usize, usize, usize)>,
+    ) {
+        let Some(img) = image_element_for(data) else {
+            self.draw_image(data, bbox.x, bbox.y, bbox.width, bbox.height);
+            return;
+        };
+        if img.complete() && img.natural_width() > 0 {
+            let _ = self.ctx.draw_image_with_html_image_element_and_dw_and_dh(
+                &img,
+                bbox.x,
+                bbox.y,
+                bbox.width,
+                bbox.height,
+            );
+            if let Some(k) = key {
+                LAST_RAW_SVG_IMAGE.with(|c| c.borrow_mut().insert(k, img));
+            }
+            return;
+        }
+        // 아직 로딩 중 — 직전 이미지를 새 크기로 늘려 그린다(한 프레임 흐릿할 뿐 공백 없음)
+        if let Some(k) = key {
+            let prev = LAST_RAW_SVG_IMAGE.with(|c| c.borrow().get(&k).cloned());
+            if let Some(prev) = prev {
+                if prev.complete() && prev.natural_width() > 0 {
+                    let _ = self.ctx.draw_image_with_html_image_element_and_dw_and_dh(
+                        &prev,
+                        bbox.x,
+                        bbox.y,
+                        bbox.width,
+                        bbox.height,
+                    );
+                }
+            }
+        }
     }
 
     fn render_placeholder(&mut self, bbox: &BoundingBox, ph: &PlaceholderNode) {
