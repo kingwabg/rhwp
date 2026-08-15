@@ -198,6 +198,8 @@ fn push_ole_raw_svg_render_node(
         control_index,
     );
     raw.transform = transform;
+    // 차트 조각은 원점 기준으로 방출된다(드래그 중 디코드 캐시 안정 — RawSvgNode 참조)
+    raw.origin_relative = true;
     let node = RenderNode::new(node_id, RenderNodeType::RawSvg(raw), bbox);
     parent.children.push(node);
 }
@@ -1931,8 +1933,7 @@ impl LayoutEngine {
                         if let Some(chart) =
                             crate::ooxml_chart::OoxmlChart::parse(&content.data.load())
                         {
-                            let svg_fragment =
-                                chart.render_svg(render_x, render_y, render_w, render_h);
+                            let svg_fragment = chart.render_svg(0.0, 0.0, render_w, render_h);
                             push_ole_raw_svg_render_node(
                                 tree,
                                 parent,
@@ -1955,7 +1956,7 @@ impl LayoutEngine {
                                     crate::ooxml_chart::OoxmlChart::parse(ooxml_bytes)
                                 {
                                     let svg_fragment =
-                                        chart.render_svg(render_x, render_y, render_w, render_h);
+                                        chart.render_svg(0.0, 0.0, render_w, render_h);
                                     push_ole_raw_svg_render_node(
                                         tree,
                                         parent,
@@ -1978,8 +1979,8 @@ impl LayoutEngine {
                                             let svg_fragment =
                                                 crate::ole_chart::render_ole_chart_svg_fragment(
                                                     &ole_chart,
-                                                    render_x,
-                                                    render_y,
+                                                    0.0,
+                                                    0.0,
                                                     render_w,
                                                     render_h,
                                                     ole.bin_data_id,
@@ -2024,12 +2025,9 @@ impl LayoutEngine {
                             // Task #195 단계 14: OOXML 차트 부재 시 EMF 네이티브 SVG 폴백
                             if !rendered {
                                 if let Some(emf_bytes) = container.preview_emf.as_ref() {
-                                    let render_rect = (
-                                        render_x as f32,
-                                        render_y as f32,
-                                        render_w as f32,
-                                        render_h as f32,
-                                    );
+                                    // 원점 기준 방출 — push_ole_raw_svg_render_node 규약
+                                    let render_rect =
+                                        (0.0f32, 0.0f32, render_w as f32, render_h as f32);
                                     if let Ok(svg_fragment) =
                                         crate::emf::convert_to_svg(emf_bytes, render_rect)
                                     {
@@ -2075,8 +2073,8 @@ impl LayoutEngine {
                                         .encode(&*render_bytes);
                                     let href = format!("data:{};base64,{}", render_mime, b64);
                                     let svg_fragment = format!(
-                                    "<image x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\" preserveAspectRatio=\"xMidYMid meet\" xlink:href=\"{}\" href=\"{}\"/>",
-                                    render_x, render_y, render_w, render_h, href, href
+                                    "<image x=\"0\" y=\"0\" width=\"{:.2}\" height=\"{:.2}\" preserveAspectRatio=\"xMidYMid meet\" xlink:href=\"{}\" href=\"{}\"/>",
+                                    render_w, render_h, href, href
                                 );
                                     push_ole_raw_svg_render_node(
                                         tree,

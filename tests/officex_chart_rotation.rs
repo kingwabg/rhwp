@@ -38,6 +38,19 @@ fn rotated_chart_still_renders() {
     );
 }
 
+/// [2026-08-15 신고 "이동하면 계속 깜빡"] 차트 조각은 원점 기준 + translate 배치 계약.
+/// 절대 좌표 방출로 돌아가면 드래그(매 프레임 재조판)마다 조각 바이트가 바뀌어
+/// web_canvas 디코드 캐시가 항상 빗나가고 이동 중 차트가 깜빡인다.
+#[test]
+fn chart_fragment_is_origin_relative_with_translate() {
+    let (doc, _ci) = chart_doc();
+    let svg = doc.render_page_svg_native(0).expect("렌더");
+    assert!(
+        svg.contains("<g transform=\"translate("),
+        "차트 원점 조각의 translate 래퍼가 없다 — 절대 좌표 회귀(드래그 깜빡임)"
+    );
+}
+
 /// 회전 0 복귀 시 transform 래퍼가 남지 않아야 한다(이중 래핑/잔존 방지).
 #[test]
 fn zero_rotation_leaves_no_wrapper() {

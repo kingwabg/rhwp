@@ -353,9 +353,15 @@ pub struct RawSvgNode {
     pub svg: String,
     /// 원본 개체 참조. OLE RawSvg 선택/속성 진입에 사용한다.
     pub control_ref: Option<ObjectControlRef>,
-    /// 개체 회전/대칭 — 조각은 페이지 절대 좌표로 방출되므로 백엔드가 bbox 중심
-    /// 기준으로 적용한다(Image/Rect 와 동일 규약).
+    /// 개체 회전/대칭 — 백엔드가 bbox 중심 기준으로 적용한다(Image/Rect 와 동일 규약).
     pub transform: ShapeTransform,
+    /// true 면 조각이 (0,0) 원점 기준 — 백엔드가 bbox 로 이동시킨다.
+    ///
+    /// [2026-08-15 신고 "이동하면 계속 깜빡"] 절대 좌표 방출은 드래그(매 프레임
+    /// 라이브 재조판)마다 조각 바이트가 달라져 web_canvas 의 디코드 캐시가 항상
+    /// 빗나가고, 비동기 디코드 전 프레임은 그리기를 건너뛰어 개체가 깜빡였다.
+    /// 원점 기준이면 바이트가 위치와 무관해 캐시가 안정된다. 차트가 이 모드를 쓴다.
+    pub origin_relative: bool,
 }
 
 impl RawSvgNode {
@@ -364,6 +370,7 @@ impl RawSvgNode {
             svg,
             control_ref: None,
             transform: ShapeTransform::default(),
+            origin_relative: false,
         }
     }
 
@@ -376,6 +383,7 @@ impl RawSvgNode {
                 control_index,
             )),
             transform: ShapeTransform::default(),
+            origin_relative: false,
         }
     }
 

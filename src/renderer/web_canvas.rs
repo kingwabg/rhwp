@@ -1092,7 +1092,14 @@ impl WebCanvasRenderer {
                 self.draw_image(&bytes, bbox.x, bbox.y, bbox.width, bbox.height);
             }
         } else {
-            let svg_doc = wrap_svg_fragment(&raw.svg, bbox.x, bbox.y, bbox.width, bbox.height);
+            // 원점 기준 조각(차트)은 viewBox (0,0) 로 감싼다 — 감싼 바이트가 위치와
+            // 무관해져 드래그 중에도 디코드 캐시가 유지된다(깜빡임 방지).
+            let (vx, vy) = if raw.origin_relative {
+                (0.0, 0.0)
+            } else {
+                (bbox.x, bbox.y)
+            };
+            let svg_doc = wrap_svg_fragment(&raw.svg, vx, vy, bbox.width, bbox.height);
             self.draw_image(svg_doc.as_bytes(), bbox.x, bbox.y, bbox.width, bbox.height);
         }
         self.close_shape_transform_if_needed(&raw.transform);

@@ -1126,6 +1126,7 @@ impl SkiaLayerRenderer {
                                 bbox.y as f32,
                                 bbox.width as f32,
                                 bbox.height as f32,
+                                raw.origin_relative,
                                 ImageSampling::linear(),
                             ) {
                                 draw_placeholder(*bbox, "svg");
