@@ -1947,12 +1947,32 @@ impl Table {
             let cur_off = size(&t) - aw;
             let next_off = new_t - aw;
             if cur_off != 0 && (next_off == 0 || cur_off.signum() != next_off.signum()) {
-                return self.restore_cell_boundary(cell_idx, edge_right);
+                // [2026-08-15] 승격은 **실제로 복원 가능할 때만**. 이웃이 세로 병합인 표는
+                // 격자상 어긋남과 구분되지 않아 여기까지 오는데(둘 다 "그 줄엔 선이 없다"),
+                // 복원은 조각 되접기라 병합에는 적용될 수 없어 즉시 Err 로 끝났다 — 드래그가
+                // 통째로 거부됐다("조금 끌면 되고 많이 끌면 실패"). 클론에 시험해 보고
+                // 되면 채택, 안 되면 일반 재이동으로 계속한다(표는 작아 클론이 싸다).
+                let mut probe = self.clone();
+                if probe.restore_cell_boundary(cell_idx, edge_right).is_ok() {
+                    *self = probe;
+                    return Ok(());
+                }
             }
         }
 
-        // 최소 크기 클램프(행은 글줄 바닥) — 남는 쪽이 규약 밑으로 못 간다
+        // 최소 크기 클램프(행은 글줄 바닥) — 남는 쪽이 규약 밑으로 못 간다.
+        //
+        // [실효 공간 2026-08-15] 여유분은 **실효 높이**로 잰다. 원시 stored 로 재면
+        // 한컴 저장 규약(빈 셀 height=패딩만 284)에서 floor(1284)가 더 커서 여유가
+        // 음수가 되고, delta<0 분기의 부호 반전이 그 음수를 양수 d 로 뒤집어 —
+        // 드래그가 **반대 방향**으로 가고 상대 셀 높이가 u32 언더플로(4.29e9)했다.
+        // 형제 경로(정렬 경계 = 신규 어긋내기)는 이미 eff_rows 를 쓴다. 같은 잣대로 통일한다.
         let floors = self.cell_content_floors_hu();
+        let eff_rows = if edge_right {
+            Vec::new()
+        } else {
+            self.effective_row_heights()
+        };
         let floor_of = |idx: usize| -> i32 {
             if edge_right {
                 MIN_CELL
@@ -1960,11 +1980,24 @@ impl Table {
                 floors.get(idx).copied().unwrap_or(0).max(MIN_CELL as u32) as i32
             }
         };
-        let d = if delta > 0 {
-            delta.min(size(&n) - floor_of(n_idx))
-        } else {
-            -((-delta).min(size(&t) - floor_of(cell_idx)))
+        // 해당 셀이 실제로 차지하는 공간(행은 실효 높이로 승격)
+        let space_of = |c: &Cell| -> i32 {
+            if edge_right {
+                c.width as i32
+            } else {
+                let eff = eff_rows.get(c.row as usize).copied().unwrap_or(c.height);
+                c.height.max(eff) as i32
+            }
         };
+        let d = if delta > 0 {
+            delta.min((space_of(&n) - floor_of(n_idx)).max(0))
+        } else {
+            -((-delta).min((space_of(&t) - floor_of(cell_idx)).max(0)))
+        };
+        // 부호가 요청과 다르면(클램프가 뒤집혔다면) 움직이지 않는다 — 반대 방향 이동 금지
+        if d != 0 && d.signum() != delta.signum() {
+            return Err("이 방향으로는 더 옮길 수 없습니다".to_string());
+        }
         if d == 0 {
             return Err(if delta > 0 {
                 if edge_right {
@@ -1983,8 +2016,16 @@ impl Table {
             self.cells[cell_idx].width = (size(&t) + d) as HwpUnit;
             self.cells[n_idx].width = (size(&n) - d) as HwpUnit;
         } else {
-            self.cells[cell_idx].height = (size(&t) + d) as HwpUnit;
-            self.cells[n_idx].height = (size(&n) - d) as HwpUnit;
+            // 판정은 위에서 실효 공간으로 끝냈다(무부작용). 통과했으니 이제 연루 행을
+            // 실효 높이로 물질화하고 **같은 공간의 값**으로 주고받는다 — 안 그러면
+            // 판정은 실효(1284), 쓰기는 원시(284)라 두 장부가 갈린다.
+            let lo = (t.row as usize).min(n.row as usize);
+            let hi = ((t.row + t.row_span) as usize).max((n.row + n.row_span) as usize);
+            self.materialize_rows_effective(lo, hi.saturating_sub(1));
+            let t_now = self.cells[cell_idx].height as i32;
+            let n_now = self.cells[n_idx].height as i32;
+            self.cells[cell_idx].height = (t_now + d).max(MIN_CELL) as HwpUnit;
+            self.cells[n_idx].height = (n_now - d).max(MIN_CELL) as HwpUnit;
         }
         self.rebuild_grid();
         self.update_ctrl_dimensions();

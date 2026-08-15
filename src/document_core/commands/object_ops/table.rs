@@ -956,7 +956,20 @@ impl DocumentCore {
             top: 142,
             bottom: 142,
         };
-        let min_row_height: u32 = cell_pad.top as u32 + 1000 + cell_pad.bottom as u32;
+        // [2026-08-15] 형제 경로(create_table_native_sized)와 같은 lineseg 규약 —
+        // 글줄 = 상속 글자 크기×100. 1000(10pt) 하드코딩이면 12pt 자리에 만든 표가
+        // 열 폭 드래그(reflow) 한 번에 세로로 부풀었다. 생성 == reflow 여야 멱등이다.
+        let ex_line_hu: i32 = {
+            let cur = &self.document.sections[section_idx].paragraphs[para_idx];
+            let csid = cur.char_shape_id_at(char_offset).unwrap_or(0);
+            self.styles
+                .char_styles
+                .get(csid as usize)
+                .map(|s| crate::renderer::px_to_hwpunit(s.font_size, self.dpi))
+                .filter(|&h| h > 0)
+                .unwrap_or(1000)
+        };
+        let min_row_height: u32 = cell_pad.top as u32 + ex_line_hu as u32 + cell_pad.bottom as u32;
         let row_heights: Vec<u32> = if let Some(heights) = row_heights_hu {
             if heights.len() == row_count as usize {
                 heights.iter().map(|h| (*h).max(min_row_height)).collect()
@@ -1030,15 +1043,18 @@ impl DocumentCore {
                         rhe[4..6].copy_from_slice(&1u16.to_le_bytes());
                         cp.raw_header_extra = rhe;
                     }
-                    let seg_w = (col_w as i32) - 141 - 141;
-                    let text_height =
-                        row_height.saturating_sub((cell_pad.top + cell_pad.bottom) as u32);
+                    // 형제 경로와 같은 식(reflow_line_segs == 생성) — 폭 조절 후에도
+                    // 값이 안 변해야 한다. 패딩은 실제 cell_pad 를, 글줄은 상속 크기를 쓴다.
+                    let seg_w = (col_w as i32) - (cell_pad.left as i32) - (cell_pad.right as i32);
+                    let _ = row_height;
                     cp.line_segs = vec![LineSeg {
                         text_start: 0,
-                        line_height: text_height as i32,
-                        text_height: text_height as i32,
-                        baseline_distance: (text_height as f64 * 0.85) as i32,
-                        line_spacing: 600,
+                        line_height: ex_line_hu,
+                        text_height: ex_line_hu,
+                        baseline_distance: (ex_line_hu as f64
+                            * crate::renderer::style_resolver::FONT_BASELINE_RATIO)
+                            as i32,
+                        line_spacing: (ex_line_hu as f64 * 0.6) as i32,
                         segment_width: seg_w,
                         tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
                         ..Default::default()

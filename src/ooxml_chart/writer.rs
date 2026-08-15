@@ -345,7 +345,7 @@ fn patch_series(xml: &str, spec: &ChartSpec) -> String {
                                         // 계열 이름
         let tx_inner = format!(
             "<c:strRef><c:f>Sheet1!${letter}$1</c:f><c:strCache>{}</c:strCache></c:strRef>",
-            str_cache(&[ser.name.clone()])
+            str_cache(std::slice::from_ref(&ser.name))
         );
         s = replace_block_inner(&s, "c:tx", &tx_inner);
         if s.contains("<c:xVal>") {
