@@ -60,6 +60,23 @@ pub(crate) fn ensure_min_baseline(raw_baseline: f64, max_font_size: f64) -> f64 
     raw_baseline.max(min_baseline)
 }
 
+/// [2026-08-15 신고 "양식 개체 자유 이동"] 양식의 **시각 오프셋**(앵커 기준 델타, px).
+///
+/// 앵커는 글자 사이(인라인)에 그대로 있고, 보이는 위치만 이 델타만큼 옮긴다. 폭 예약
+/// (`x += tac_w`)에는 절대 먹이지 않는다 — 먹이면 형제 개체 배치와 줄 폭이 어긋난다.
+/// 저장소는 HWPX 정본 키(`PosHorzOffset`/`PosVertOffset`, HWPUNIT 문자열)를 그대로 쓴다.
+/// 키가 없거나 0이면 (0.0, 0.0) — 기존 문서는 산술이 `+0.0` 이라 비트 동일하다.
+fn form_visual_delta_px(form: &crate::model::control::FormObject, dpi: f64) -> (f64, f64) {
+    let read = |key: &str| -> f64 {
+        form.properties
+            .get(key)
+            .and_then(|v| v.trim().parse::<i32>().ok())
+            .map(|hu| hwpunit_to_px(hu, dpi))
+            .unwrap_or(0.0)
+    };
+    (read("PosHorzOffset"), read("PosVertOffset"))
+}
+
 /// [oracle-pdf-mining-20260806 §2-C] 인라인 글자취급 개체의 **잉크 상단 y**.
 ///
 /// 글리프 상자(잉크 + 바깥여백 상하, `composer::tac_box_hwp` 단일 소스)가 기준선을
@@ -2290,6 +2307,7 @@ impl LayoutEngine {
                     }
                     if let Some(Control::Form(f)) = p.controls.get(tac_ci) {
                         let form_h = hwpunit_to_px(f.height as i32, self.dpi);
+                        let (form_dx, form_dy) = form_visual_delta_px(f, self.dpi);
                         let form_y = tac_ink_top(
                             y,
                             baseline,
@@ -2323,9 +2341,10 @@ impl LayoutEngine {
                                 name: f.name.clone(),
                                 cell_location,
                             }),
-                            BoundingBox::new(x, form_y, tac_w, form_h),
+                            BoundingBox::new(x + form_dx, form_y + form_dy, tac_w, form_h),
                         );
                         line_node.children.push(form_node);
+                        // 폭 전진에는 델타를 먹이지 않는다(앵커는 제자리)
                         x += tac_w;
                     }
                 }
@@ -5398,6 +5417,7 @@ impl LayoutEngine {
                     if let Some(p) = para {
                         if let Some(Control::Form(f)) = p.controls.get(tac_ci) {
                             let form_h = hwpunit_to_px(f.height as i32, self.dpi);
+                            let (form_dx, form_dy) = form_visual_delta_px(f, self.dpi);
                             let form_y = tac_ink_top(
                                 y,
                                 baseline,
@@ -5432,7 +5452,7 @@ impl LayoutEngine {
                                     name: f.name.clone(),
                                     cell_location,
                                 }),
-                                BoundingBox::new(x, form_y, tac_w, form_h),
+                                BoundingBox::new(x + form_dx, form_y + form_dy, tac_w, form_h),
                             );
                             line_node.children.push(form_node);
                         }
