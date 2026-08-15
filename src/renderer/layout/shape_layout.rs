@@ -188,18 +188,17 @@ fn push_ole_raw_svg_render_node(
     section_index: usize,
     para_index: usize,
     control_index: usize,
+    transform: ShapeTransform,
 ) {
     let node_id = tree.next_id();
-    let node = RenderNode::new(
-        node_id,
-        RenderNodeType::RawSvg(crate::renderer::render_tree::RawSvgNode::ole(
-            svg,
-            section_index,
-            para_index,
-            control_index,
-        )),
-        bbox,
+    let mut raw = crate::renderer::render_tree::RawSvgNode::ole(
+        svg,
+        section_index,
+        para_index,
+        control_index,
     );
+    raw.transform = transform;
+    let node = RenderNode::new(node_id, RenderNodeType::RawSvg(raw), bbox);
     parent.children.push(node);
 }
 
@@ -1942,6 +1941,7 @@ impl LayoutEngine {
                                 section_index,
                                 para_index,
                                 control_index,
+                                transform,
                             );
                             rendered = true;
                         }
@@ -1964,6 +1964,7 @@ impl LayoutEngine {
                                         section_index,
                                         para_index,
                                         control_index,
+                                        transform,
                                     );
                                     rendered = true;
                                 }
@@ -1993,6 +1994,7 @@ impl LayoutEngine {
                                                 section_index,
                                                 para_index,
                                                 control_index,
+                                                transform,
                                             );
                                             rendered = true;
                                         }
@@ -2041,6 +2043,7 @@ impl LayoutEngine {
                                             section_index,
                                             para_index,
                                             control_index,
+                                            transform,
                                         );
                                         rendered = true;
                                     }
@@ -2083,6 +2086,7 @@ impl LayoutEngine {
                                         section_index,
                                         para_index,
                                         control_index,
+                                        transform,
                                     );
                                     rendered = true;
                                 }

@@ -1085,6 +1085,8 @@ impl WebCanvasRenderer {
         use super::svg_fragment::{
             decode_base64_data_url, try_parse_single_image_data_url, wrap_svg_fragment,
         };
+        // RawSvg 는 자식이 없으므로 회전/대칭을 여기서 열고 닫는다.
+        self.open_shape_transform(&raw.transform, bbox);
         if let Some(data_url) = try_parse_single_image_data_url(&raw.svg) {
             if let Some((_mime, bytes)) = decode_base64_data_url(data_url) {
                 self.draw_image(&bytes, bbox.x, bbox.y, bbox.width, bbox.height);
@@ -1093,6 +1095,7 @@ impl WebCanvasRenderer {
             let svg_doc = wrap_svg_fragment(&raw.svg, bbox.x, bbox.y, bbox.width, bbox.height);
             self.draw_image(svg_doc.as_bytes(), bbox.x, bbox.y, bbox.width, bbox.height);
         }
+        self.close_shape_transform_if_needed(&raw.transform);
     }
 
     fn render_placeholder(&mut self, bbox: &BoundingBox, ph: &PlaceholderNode) {

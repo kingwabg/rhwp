@@ -518,7 +518,8 @@ impl SvgRenderer {
                 self.render_form_object(form, &node.bbox);
             }
             RenderNodeType::RawSvg(r) => {
-                // Task #195 단계 8: OOXML 차트 SVG 조각 그대로 삽입
+                // Task #195 단계 8: OOXML 차트 SVG 조각 그대로 삽입 (회전/대칭 래핑)
+                self.open_shape_transform(&r.transform, &node.bbox);
                 self.output.push_str(&r.svg);
             }
             RenderNodeType::Placeholder(ph) => {
@@ -847,6 +848,7 @@ impl SvgRenderer {
             RenderNodeType::Ellipse(e) => &e.transform,
             RenderNodeType::Image(i) => &i.transform,
             RenderNodeType::Path(p) => &p.transform,
+            RenderNodeType::RawSvg(r) => &r.transform,
             _ => return,
         };
         if transform.has_transform() {

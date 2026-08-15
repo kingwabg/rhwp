@@ -1116,6 +1116,9 @@ impl SkiaLayerRenderer {
                             }
                         }
                         PaintOp::RawSvg { bbox, raw } => {
+                            if raw.transform.has_transform() {
+                                open_shape_transform(raw.transform, bbox);
+                            }
                             if !draw_svg_fragment(
                                 canvas,
                                 raw.svg.as_str(),
@@ -1126,6 +1129,9 @@ impl SkiaLayerRenderer {
                                 ImageSampling::linear(),
                             ) {
                                 draw_placeholder(*bbox, "svg");
+                            }
+                            if raw.transform.has_transform() {
+                                canvas.restore();
                             }
                         }
                         PaintOp::CharOverlap { .. }

@@ -353,6 +353,9 @@ pub struct RawSvgNode {
     pub svg: String,
     /// 원본 개체 참조. OLE RawSvg 선택/속성 진입에 사용한다.
     pub control_ref: Option<ObjectControlRef>,
+    /// 개체 회전/대칭 — 조각은 페이지 절대 좌표로 방출되므로 백엔드가 bbox 중심
+    /// 기준으로 적용한다(Image/Rect 와 동일 규약).
+    pub transform: ShapeTransform,
 }
 
 impl RawSvgNode {
@@ -360,6 +363,7 @@ impl RawSvgNode {
         Self {
             svg,
             control_ref: None,
+            transform: ShapeTransform::default(),
         }
     }
 
@@ -371,6 +375,7 @@ impl RawSvgNode {
                 para_index,
                 control_index,
             )),
+            transform: ShapeTransform::default(),
         }
     }
 
