@@ -180,8 +180,12 @@ impl DocumentCore {
             vert_align,
             horz_rel,
             horz_align,
-            c.vertical_offset,
-            c.horizontal_offset,
+            // [2026-08-15 신고 "자유이동 되지 않고"] 오프셋은 u32 비트캐스트로 저장된
+            // 부호 있는 값이다. unsigned 로 내보내면 앵커 위/왼쪽(음수) 드래그 한 번에
+            // 4294967295 가 되고, 스튜디오의 다음 드래그 산술(기존값+델타)이 i32 를
+            // 벗어나 setter 가 거부 — 이후 개체 이동이 영구히 죽는다.
+            c.vertical_offset as i32,
+            c.horizontal_offset as i32,
             text_wrap,
             c.flow_with_text,
             c.allow_overlap,

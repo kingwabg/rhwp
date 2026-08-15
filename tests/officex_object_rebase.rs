@@ -117,11 +117,14 @@ fn pin_negative_offset_via_common_setter() {
         .unwrap();
     let p: serde_json::Value =
         serde_json::from_str(&doc.get_shape_properties(0, pi, ci).unwrap()).unwrap();
-    // common_obj_attr_to_json 은 u32 로 출력 — 음수는 비트캐스트로 왕복한다.
+    // [2026-08-15] 핀의 의도는 "음수 오프셋이 소실되지 않는다"이다. 종전에는 u32
+    // 비트캐스트 출력(4294966096)을 그 증거로 삼았지만, unsigned 유출 자체가 스튜디오
+    // 드래그 산술을 죽이는 결함이었다(officex_object_negative_offset 참조). 이제 getter
+    // 는 부호 있는 값을 내보낸다 — 같은 의도, 올바른 인코딩.
     assert_eq!(
-        p["horzOffset"].as_u64().unwrap(),
-        (-1200i32 as u32) as u64,
-        "음수 오프셋이 소실됨 (json_u32 회귀)"
+        p["horzOffset"].as_i64().unwrap(),
+        -1200,
+        "음수 오프셋이 소실됨"
     );
 }
 
