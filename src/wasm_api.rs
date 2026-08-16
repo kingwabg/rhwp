@@ -97,12 +97,27 @@ fn normalize_canvas_scale(
 }
 
 #[cfg(target_arch = "wasm32")]
-fn scaled_canvas_extent(page_extent: f64, scale: f64) -> u32 {
-    // 짝수 스냅 — 홀수 백킹(예: A4×2=1587)은 CSS 크기가 793.5px(소수)가 되어
-    // 중앙정렬과 결합해 캔버스가 픽셀 격자에서 어긋난다(전면 서브픽셀 블러,
-    // canvaskit 경로의 2026-07-27 스냅과 동일 근거 — canvas2d 경로에 누락돼 있었다).
+fn scaled_canvas_extent(page_extent: f64, scale: f64, display_zoom: f64) -> u32 {
+    // 짝수 스냅의 목적은 "CSS 표시 크기(백킹/dpr)가 정수"다(홀수 백킹 1587 →
+    // CSS 793.5px 소수 → 중앙정렬과 결합해 전면 서브픽셀 블러). dpr≈1이면
+    // 백킹==CSS 라 정수 절단으로 충분한데, 무조건 짝수 스냅이 1px 를 더 깎아
+    // canvaskit 경로(CSS 우선 스냅과 등가)와 페이지 폭이 1px 갈렸고, 레디니스
+    // 게이트가 크기 불일치(792 vs 793)로 전멸했다(2026-08-15부터 CI Render Diff
+    // 적색). dpr≥1.5(레티나)에서만 짝수 스냅한다. 표시 줌 미설정(0)이면 종전
+    // 동작(항상 짝수) 유지.
     let e = (page_extent * scale).max(2.0).min(MAX_CANVAS_DIMENSION) as u32;
-    e & !1
+    // 표시 줌 미설정(0) = 초기 렌더·비스튜디오 호출 — scale 자체를 dpr 로 간주한다
+    // (줌≈1 가정: headless 초기 scale=1 → 스냅 불필요, 레티나 scale=2 → 스냅 유지).
+    let dpr = if display_zoom > 0.0 {
+        scale / display_zoom
+    } else {
+        scale
+    };
+    if dpr >= 1.5 {
+        e & !1
+    } else {
+        e
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -513,8 +528,16 @@ impl HwpDocument {
             .map_err(JsValue::from_str)?;
 
         // 캔버스 크기 = 페이지 크기 × scale
-        canvas.set_width(scaled_canvas_extent(tree.page_width, scale));
-        canvas.set_height(scaled_canvas_extent(tree.page_height, scale));
+        canvas.set_width(scaled_canvas_extent(
+            tree.page_width,
+            scale,
+            self.display_zoom.get(),
+        ));
+        canvas.set_height(scaled_canvas_extent(
+            tree.page_height,
+            scale,
+            self.display_zoom.get(),
+        ));
 
         let mut renderer = WebCanvasRenderer::new(canvas)?;
         renderer.show_paragraph_marks = self.show_paragraph_marks;
@@ -590,8 +613,16 @@ impl HwpDocument {
         let scale = normalize_canvas_scale(tree.page_width, tree.page_height, scale)
             .map_err(JsValue::from_str)?;
 
-        canvas.set_width(scaled_canvas_extent(tree.page_width, scale));
-        canvas.set_height(scaled_canvas_extent(tree.page_height, scale));
+        canvas.set_width(scaled_canvas_extent(
+            tree.page_width,
+            scale,
+            self.display_zoom.get(),
+        ));
+        canvas.set_height(scaled_canvas_extent(
+            tree.page_height,
+            scale,
+            self.display_zoom.get(),
+        ));
 
         let mut renderer = WebCanvasRenderer::new(canvas)?;
         renderer.show_paragraph_marks = self.show_paragraph_marks;
@@ -622,8 +653,16 @@ impl HwpDocument {
             .map_err(JsValue::from_str)?;
 
         // 캔버스 크기 = 페이지 크기 × scale
-        canvas.set_width(scaled_canvas_extent(tree.root.bbox.width, scale));
-        canvas.set_height(scaled_canvas_extent(tree.root.bbox.height, scale));
+        canvas.set_width(scaled_canvas_extent(
+            tree.root.bbox.width,
+            scale,
+            self.display_zoom.get(),
+        ));
+        canvas.set_height(scaled_canvas_extent(
+            tree.root.bbox.height,
+            scale,
+            self.display_zoom.get(),
+        ));
 
         let mut renderer = WebCanvasRenderer::new(canvas)?;
         renderer.show_paragraph_marks = self.show_paragraph_marks;
