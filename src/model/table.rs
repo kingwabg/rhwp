@@ -903,6 +903,35 @@ impl Table {
         self.is_misaligned_line(row as u16) || self.is_misaligned_line(row as u16 + 1)
     }
 
+    /// [2026-08-16 합류] 이 격자선이 **부분 공유선**인가 — 내부 선을 일부 열은
+    /// 경계로 쓰고 일부 열은 스팬으로 관통한다. 두 열이 같은 낙하점에 합류하면
+    /// 어긋선이 공유선이 되어 is_misaligned_line 에서 빠지는데, 그 행 역시
+    /// 어긋내기 산물이라 빈 셀 글줄 바닥을 강제하면 표가 자란다(합류 실측 +7.6px).
+    fn is_partially_shared_line(&self, line: u16) -> bool {
+        if line == 0 || line >= self.row_count {
+            return false;
+        }
+        let bordered = self
+            .cells
+            .iter()
+            .any(|c| c.row == line || c.row + c.row_span == line);
+        let spanned = self
+            .cells
+            .iter()
+            .any(|c| c.row < line && c.row + c.row_span > line);
+        bordered && spanned
+    }
+
+    /// [2026-08-16 합류] 어긋내기 **합류 산물 행**인가 — 인접 선이 부분 공유선.
+    /// 사용자 세로 병합 곁 행도 잡히므로, 호출부는 저장 높이가 명시(> 패딩 규약)인
+    /// 빈 셀에만 이 판정으로 글줄 바닥을 면제한다(빈 셀 규약 284 는 종전대로 성장).
+    pub(crate) fn is_stagger_joined_row(&self, row: usize) -> bool {
+        if self.col_count < 2 {
+            return false;
+        }
+        self.is_partially_shared_line(row as u16) || self.is_partially_shared_line(row as u16 + 1)
+    }
+
     pub fn row_line_floors_hu(&self) -> Vec<u32> {
         const DEFAULT_LINE_HU: u32 = 1000;
         let floors = self.cell_content_floors_hu();
@@ -987,6 +1016,57 @@ impl Table {
             *h = (*h).max((pad_vert + DEFAULT_LINE_HU).max(content_floor));
         }
         heights
+    }
+
+    /// [2026-08-16] 행 `r` 를 위에서 `off`(HU) 지점에서 **이분할**해 새 격자선을 만든다.
+    ///
+    /// 신규 어긋내기의 낙하점이 스팬 이웃의 내부 행에 떨어질 때 쓴다 — 종전
+    /// split_cell_into(균등 분할)로는 낙하점 위치의 선을 만들 수 없어, 이웃이 다른
+    /// 열의 어긋 조각에 걸친 스팬이면 격자가 모순돼 트랜잭션이 거부했다(신고
+    /// "오른쪽 어긋내기가 기준(첫 어긋선)을 못 넘어간다").
+    ///
+    /// 규약: **col 밴드**의 r 시작 span1 셀만 (off, h−off) 두 조각(내용은 **아래**
+    /// 조각 — "내용은 잔여에" 규약)으로 실제 분할하고, 나머지 셀은 전부 span+1 로
+    /// 관통시킨다 — 어긋선(한 열만 쓰는 내부 선) 모델 유지. 전 열을 쪼개면 빈 조각
+    /// 행에 글줄 바닥이 되살아나 실효 높이가 커진다. 호출 전 연루 행을 물질화할
+    /// 것(원시 284 규약 상태로 나누면 장부가 갈린다).
+    fn insert_row_line(&mut self, r: u16, off: i32, col: u16, col_span: u16) -> Result<(), String> {
+        if off <= 0 {
+            return Err("분할 오프셋이 0 이하".to_string());
+        }
+        let band = col..col + col_span;
+        let mut new_cells: Vec<Cell> = Vec::with_capacity(self.cells.len() + 1);
+        for c in &self.cells {
+            if c.row > r {
+                let mut c2 = c.clone();
+                c2.row += 1;
+                new_cells.push(c2);
+            } else if c.row == r && c.row_span == 1 && band.contains(&c.col) {
+                if (c.height as i32) <= off {
+                    return Err("행 분할 오프셋이 행 높이 이상".to_string());
+                }
+                // 위 조각(빈) + 아래 조각(내용 유지)
+                let mut top = c.clone();
+                top.height = off as HwpUnit;
+                top.paragraphs = vec![crate::model::paragraph::Paragraph::default()];
+                let mut bot = c.clone();
+                bot.row = r + 1;
+                bot.height = (c.height as i32 - off) as HwpUnit;
+                new_cells.push(top);
+                new_cells.push(bot);
+            } else if c.row + c.row_span > r {
+                // r 을 덮는 나머지 셀(다른 열/스팬) — 관통 스팬으로
+                let mut c2 = c.clone();
+                c2.row_span += 1;
+                new_cells.push(c2);
+            } else {
+                new_cells.push(c.clone());
+            }
+        }
+        self.cells = new_cells;
+        self.row_count += 1;
+        self.rebuild_grid();
+        Ok(())
     }
 
     /// 어긋내기 등 **행 구조 편집 전 물질화** — [from..=to] 행의 span==1 셀 높이를 실효
@@ -2268,54 +2348,106 @@ impl Table {
             }
             // [재이동 2026-08-13] 열과 동일 — 이미 어긋난 경계는 격자 불변·조각 높이 이전
             if !self.is_boundary_aligned(&t, boundary, false) {
-                return self.shift_offset_boundary(cell_idx, n_idx, boundary, false, delta);
+                // [2026-08-16 신고 "기준선을 못 넘어감"] 재이동이 다른 열의 선을 **통과**
+                // 해야 하면(두 선 사이 행이 0 이하로 붕괴) 조각 이전으로는 표현 불가 —
+                // 클론 프로브로 선판정하고(슬리버 행 신설도 불합격), 실패 시 복원 후
+                // 낙하점 재어긋내기로 폴백해 통과를 지원한다.
+                let w0: u64 = self.get_column_widths().iter().map(|&w| w as u64).sum();
+                let h0: u64 = self.effective_row_heights().iter().map(|&h| h as u64).sum();
+                let thin = |tb: &Table| {
+                    tb.effective_row_heights()
+                        .iter()
+                        .filter(|&&h| (h as i32) < MIN_CELL)
+                        .count()
+                };
+                let thin0 = thin(self);
+                let mut probe = self.clone();
+                let r = probe.shift_offset_boundary(cell_idx, n_idx, boundary, false, delta);
+                if r.is_ok() && probe.stagger_invariants_hold(w0, h0) && thin(&probe) <= thin0 {
+                    *self = probe;
+                    return Ok(());
+                }
+                let h_before = self.cells[cell_idx].height as i32;
+                self.restore_cell_boundary_core(cell_idx, false)?;
+                let t_idx = self
+                    .cell_index_at(t.row, t.col)
+                    .ok_or("복원 후 대상 소실")?;
+                let cum = h_before - self.cells[t_idx].height as i32;
+                if (cum + delta).abs() <= MIN_CELL {
+                    return Ok(()); // 정렬선 ±MIN_CELL 이내 복귀 = 치유(스냅)
+                }
+                return self.offset_cell_boundary_core(t_idx, false, cum + delta);
             }
             let eff_rows = self.effective_row_heights();
             let floors = self.cell_content_floors_hu();
             if delta > 0 {
-                // 내용은 아래 조각(이웃 잔여)에 남는다 — 내용 있으면 글줄 바닥, 빈 조각은 MIN_CELL
+                // [2026-08-16 재작성] **낙하점 기반** — 이웃이 다른 열의 어긋 조각에 걸친
+                // 스팬이어도, 낙하점이 그 스팬의 몇 번째 행이든 정확히 그 자리에 선을
+                // 만든다(기존 내부 선과 일치하면 재사용 = 합류). 종전 split_cell_into
+                // (균등 분할)는 낙하점 위치를 표현 못 해 격자가 모순 → 트랜잭션 거부 →
+                // "오른쪽 어긋내기가 기준을 못 넘어감"(신고).
+                //
+                // 내용 규약: 대상이 흡수하는 구간(그 열의 L..새 선)의 내용은 **아래
+                // 잔여 조각**으로 옮긴다 — "내용은 잔여에 남는다".
                 let n_floor = self.stagger_piece_floor_hu(n_idx, &floors, MIN_CELL);
-                let n_eff = (n.height)
-                    .max(eff_rows.get(boundary as usize).copied().unwrap_or(n.height))
-                    as i32;
-                let d = delta.min(n_eff - n_floor);
+                // 이 열이 다음으로 만나는 자기 경계(스팬 끝) — 이동 한계의 기준
+                let span_end = n.row + n.row_span; // exclusive line
+                let region: i32 = (boundary..span_end)
+                    .map(|r| eff_rows.get(r as usize).copied().unwrap_or(0) as i32)
+                    .sum();
+                let d = delta.min(region - n_floor);
                 if d <= 0 {
                     return Err("이웃 칸에 남는 높이가 없습니다".to_string());
                 }
-                self.materialize_rows_effective(t.row as usize, boundary as usize);
+                self.materialize_rows_effective(t.row as usize, (span_end - 1) as usize);
+                // 낙하점이 속한 행 r*(행 내 오프셋 off) — 기존 선 ±MIN_CELL 이내면
+                // 그 선에 **합류**(스냅: 슬리버 조각 방지), 아니면 r* 를 분할해 새 선.
+                let rows_now = self.get_row_heights();
+                let mut acc = 0i32;
+                let mut r_star = boundary;
+                let mut off = d;
+                let mut row_h = 0i32;
+                for r in boundary..span_end {
+                    let h = rows_now.get(r as usize).copied().unwrap_or(0) as i32;
+                    if acc + h >= d {
+                        r_star = r;
+                        off = d - acc;
+                        row_h = h;
+                        break;
+                    }
+                    acc += h;
+                }
                 let t = self.cells[cell_idx].clone();
-                let n = self.cells[n_idx].clone();
-                // [신고 ② 2026-08-13] 이웃이 남의 어긋남으로 span>1 이어도 어긋낼 수 있다
-                let n_span = n.row_span;
-                self.split_cell_into(n.row, n.col, n_span + 1, 1, true, false)?;
-                let top = self
-                    .cell_index_at(boundary, t.col)
-                    .ok_or("분할 조각(상) 소실")?;
-                self.cells[top].height = d as HwpUnit;
-                if n_span > 1 {
-                    self.merge_cells(
-                        boundary + 1,
-                        t.col,
-                        boundary + n_span,
-                        t.col + t.col_span - 1,
-                    )?;
+                let (join_line, d) = if off <= MIN_CELL && acc > 0 {
+                    (r_star, acc) // 윗선 합류
+                } else if row_h - off <= MIN_CELL && acc + row_h <= region - n_floor {
+                    (r_star + 1, acc + row_h) // 아랫선 합류
+                } else {
+                    if row_h < MIN_CELL * 2 {
+                        return Err("낙하점 주변에 분할 여유가 없습니다".to_string());
+                    }
+                    let off = off.clamp(MIN_CELL, row_h - MIN_CELL);
+                    self.insert_row_line(r_star, off, t.col, t.col_span)?;
+                    (r_star + 1, acc + off)
+                };
+                // 이웃이 join_line 을 가로지르면(스팬) 그 자리에서 이분할 —
+                // 위 조각 = 흡수분 d(빈 내용), 아래 = 잔여(내용 유지)
+                let n_idx2 = self.cell_index_at(boundary, t.col).ok_or("이웃 소실")?;
+                let n2 = self.cells[n_idx2].clone();
+                if n2.row + n2.row_span > join_line {
+                    let mut top = n2.clone();
+                    top.row_span = join_line - n2.row;
+                    top.height = d as HwpUnit;
+                    top.paragraphs = vec![crate::model::paragraph::Paragraph::default()];
+                    let mut bot = n2.clone();
+                    bot.row = join_line;
+                    bot.row_span = n2.row + n2.row_span - join_line;
+                    bot.height = (n2.height as i32 - d) as HwpUnit;
+                    self.cells[n_idx2] = top;
+                    self.cells.insert(n_idx2 + 1, bot);
+                    self.rebuild_grid();
                 }
-                let bot = self
-                    .cell_index_at(boundary + 1, t.col)
-                    .ok_or("분할 조각(하) 소실")?;
-                self.cells[bot].height = (n.height as i32 - d) as HwpUnit;
-                // split 은 내용을 첫 조각에 남긴다 — 흡수될 조각은 비우고 이웃 조각에 내용을 되돌린다
-                if top != bot {
-                    let (a, b) = if top < bot {
-                        let (x, y) = self.cells.split_at_mut(bot);
-                        (&mut x[top].paragraphs, &mut y[0].paragraphs)
-                    } else {
-                        let (x, y) = self.cells.split_at_mut(top);
-                        (&mut y[0].paragraphs, &mut x[bot].paragraphs)
-                    };
-                    std::mem::swap(a, b);
-                }
-                self.merge_cells(t.row, t.col, boundary, t.col + t.col_span - 1)?;
+                self.merge_cells(t.row, t.col, join_line - 1, t.col + t.col_span - 1)?;
                 let merged = self.cell_index_at(t.row, t.col).ok_or("병합 결과 소실")?;
                 self.cells[merged].height = (t.height as i32 + d) as HwpUnit;
             } else {

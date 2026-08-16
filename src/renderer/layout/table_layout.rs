@@ -1700,7 +1700,16 @@ impl LayoutEngine {
                     .paragraphs
                     .iter()
                     .all(|p| p.text.chars().all(|ch| ch.is_whitespace()));
-                if cell_is_empty && table.is_stagger_piece_row(r) {
+                // [2026-08-16 합류] 명시 저장 높이의 빈 셀 × 합류 산물 행 — 성장 제외
+                // (height_measurer 2단계 동일 예외와 한 몸).
+                let stored_explicit = cell.height < 0x8000_0000 && {
+                    let p = cell.effective_padding(&table.padding);
+                    (cell.height as i32) > p.top.max(0) as i32 + p.bottom.max(0) as i32 + 100
+                };
+                if cell_is_empty
+                    && (table.is_stagger_piece_row(r)
+                        || (stored_explicit && table.is_stagger_joined_row(r)))
+                {
                     continue;
                 }
                 let (pad_left, pad_right, pad_top, pad_bottom) =

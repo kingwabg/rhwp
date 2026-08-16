@@ -1132,7 +1132,17 @@ impl HeightMeasurer {
                     .paragraphs
                     .iter()
                     .all(|p| p.text.chars().all(|ch| ch.is_whitespace()));
-                if cell_is_empty && table.is_stagger_piece_row(r) {
+                // [2026-08-16 합류] 명시 저장 높이(> 패딩 규약)의 빈 셀이 합류 산물
+                // 행에 있으면 성장 제외 — 합류로 어긋선이 공유선이 되면 조각 행
+                // 판정에서 빠지는데, 물질화된 918 등은 사용자 실측 높이다.
+                let stored_explicit = cell.height < 0x8000_0000 && {
+                    let p = cell.effective_padding(&table.padding);
+                    (cell.height as i32) > p.top.max(0) as i32 + p.bottom.max(0) as i32 + 100
+                };
+                if cell_is_empty
+                    && (table.is_stagger_piece_row(r)
+                        || (stored_explicit && table.is_stagger_joined_row(r)))
+                {
                     continue;
                 }
                 // [Task #1785] 셀 패딩 — aim=false 는 layout 의 레거시 보존값 규칙
@@ -1714,7 +1724,14 @@ impl HeightMeasurer {
                     .paragraphs
                     .iter()
                     .all(|p| p.text.chars().all(|ch| ch.is_whitespace()));
-                let spans_piece_row = (r..r + span).any(|row| table.is_stagger_piece_row(row));
+                let stored_explicit = cell.height < 0x8000_0000 && {
+                    let p = cell.effective_padding(&table.padding);
+                    (cell.height as i32) > p.top.max(0) as i32 + p.bottom.max(0) as i32 + 100
+                };
+                let spans_piece_row = (r..r + span).any(|row| {
+                    table.is_stagger_piece_row(row)
+                        || (stored_explicit && table.is_stagger_joined_row(row))
+                });
                 if cell_is_empty && spans_piece_row {
                     continue;
                 }
