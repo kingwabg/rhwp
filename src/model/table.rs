@@ -2361,18 +2361,49 @@ impl Table {
                         .count()
                 };
                 let thin0 = thin(self);
+                let eff_span = |tb: &Table, row: u16, span: u16| -> i32 {
+                    let e = tb.effective_row_heights();
+                    (row..row + span)
+                        .map(|r| e.get(r as usize).copied().unwrap_or(0) as i32)
+                        .sum()
+                };
+                let span0 = eff_span(self, t.row, t.row_span);
                 let mut probe = self.clone();
                 let r = probe.shift_offset_boundary(cell_idx, n_idx, boundary, false, delta);
-                if r.is_ok() && probe.stagger_invariants_hold(w0, h0) && thin(&probe) <= thin0 {
+                // 프로브 합격 조건에 **전달 거리**도 본다 — shift 는 인접 행 창으로
+                // 델타를 클램프하므로, 큰 드래그가 다음 선에서 "정상 커밋"으로 잘리면
+                // 통과 이동이 조용히 증발한다(col2 실측 2250→566). 못 채우면 폴백.
+                let delivered = eff_span(&probe, t.row, t.row_span) - span0;
+                if r.is_ok()
+                    && probe.stagger_invariants_hold(w0, h0)
+                    && thin(&probe) <= thin0
+                    && (delivered - delta).abs() <= MIN_CELL
+                {
                     *self = probe;
                     return Ok(());
                 }
-                let h_before = self.cells[cell_idx].height as i32;
+                // cum(현재 어긋 오프셋)은 **실효 공간**으로 잰다 — 빈 셀 저장 규약
+                // (height=패딩만 284) 상태의 열은 원시 저장으로 재면 값이 갈려,
+                // "정렬 복귀"로 오판해 복원만 커밋되고 나머지 이동이 증발했다
+                // (col2 실측: +30px 드래그가 +7px 합류에서 정지).
+                let h_before = span0;
                 self.restore_cell_boundary_core(cell_idx, false)?;
                 let t_idx = self
                     .cell_index_at(t.row, t.col)
                     .ok_or("복원 후 대상 소실")?;
-                let cum = h_before - self.cells[t_idx].height as i32;
+                let t2 = self.cells[t_idx].clone();
+                let cum = h_before - eff_span(self, t2.row, t2.row_span);
+                #[cfg(not(target_arch = "wasm32"))]
+                eprintln!(
+                    "[fallback] cell=({},{}) span{} boundary={} delta={} cum={} shift_err={:?}",
+                    t.row,
+                    t.col,
+                    t.row_span,
+                    boundary,
+                    delta,
+                    cum,
+                    r.err()
+                );
                 if (cum + delta).abs() <= MIN_CELL {
                     return Ok(()); // 정렬선 ±MIN_CELL 이내 복귀 = 치유(스냅)
                 }

@@ -1704,7 +1704,8 @@ impl LayoutEngine {
                 // (height_measurer 2단계 동일 예외와 한 몸).
                 let stored_explicit = cell.height < 0x8000_0000 && {
                     let p = cell.effective_padding(&table.padding);
-                    (cell.height as i32) > p.top.max(0) as i32 + p.bottom.max(0) as i32 + 100
+                    ((cell.height as i32) - (p.top.max(0) as i32 + p.bottom.max(0) as i32)).abs()
+                        > 8
                 };
                 if cell_is_empty
                     && (table.is_stagger_piece_row(r)

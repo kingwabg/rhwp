@@ -1137,7 +1137,8 @@ impl HeightMeasurer {
                 // 판정에서 빠지는데, 물질화된 918 등은 사용자 실측 높이다.
                 let stored_explicit = cell.height < 0x8000_0000 && {
                     let p = cell.effective_padding(&table.padding);
-                    (cell.height as i32) > p.top.max(0) as i32 + p.bottom.max(0) as i32 + 100
+                    ((cell.height as i32) - (p.top.max(0) as i32 + p.bottom.max(0) as i32)).abs()
+                        > 8
                 };
                 if cell_is_empty
                     && (table.is_stagger_piece_row(r)
@@ -1726,7 +1727,8 @@ impl HeightMeasurer {
                     .all(|p| p.text.chars().all(|ch| ch.is_whitespace()));
                 let stored_explicit = cell.height < 0x8000_0000 && {
                     let p = cell.effective_padding(&table.padding);
-                    (cell.height as i32) > p.top.max(0) as i32 + p.bottom.max(0) as i32 + 100
+                    ((cell.height as i32) - (p.top.max(0) as i32 + p.bottom.max(0) as i32)).abs()
+                        > 8
                 };
                 let spans_piece_row = (r..r + span).any(|row| {
                     table.is_stagger_piece_row(row)
