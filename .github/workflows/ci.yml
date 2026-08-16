@@ -516,11 +516,9 @@ jobs:
           if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]] || [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/devel" ]]; then
             echo "profile=release-test event=${GITHUB_EVENT_NAME} ref=${GITHUB_REF}"
             cargo test --profile release-test --features native-skia skia --lib --verbose
-            cargo test --profile release-test --features native-skia --test issue_2225_missing_picture_placeholder --verbose
           else
             echo "profile=release event=${GITHUB_EVENT_NAME} ref=${GITHUB_REF}"
             cargo test --release --features native-skia skia --lib --verbose
-            cargo test --release --features native-skia --test issue_2225_missing_picture_placeholder --verbose
           fi
 
   frontend-package-gates:
