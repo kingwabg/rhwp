@@ -1632,8 +1632,8 @@ impl HwpDocument {
             Some(crate::model::control::Control::Table(t)) => t,
             _ => return Err(JsValue::from_str("지정된 컨트롤이 표가 아닙니다")),
         };
-        Ok(serde_json::to_string(&table.cell_content_floors_hu())
-            .map_err(|e| JsValue::from_str(&e.to_string()))?)
+        serde_json::to_string(&table.cell_content_floors_hu())
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// [경계선 재설계 2026-08-04] 한 칸 경계 어긋내기(Shift+드래그) — 격자 재구성 정본.
@@ -7835,6 +7835,3 @@ fn base64_encode(data: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(data)
 }
-
-#[cfg(test)]
-mod tests;

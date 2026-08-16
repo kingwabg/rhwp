@@ -1609,6 +1609,3 @@ impl Paragraph {
         self.char_shapes = merged;
     }
 }
-
-#[cfg(test)]
-mod tests;

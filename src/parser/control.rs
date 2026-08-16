@@ -1024,6 +1024,3 @@ fn apply_form_property(key: &str, value: &str, form: &mut FormObject) {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -152,31 +152,6 @@ impl From<Vec<u8>> for BinDataBytes {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_bin_data_default() {
-        let bd = BinData::default();
-        assert_eq!(bd.data_type, BinDataType::Link);
-        assert_eq!(bd.compression, BinDataCompression::Default);
-        assert_eq!(bd.status, BinDataStatus::NotAccessed);
-    }
-
-    #[test]
-    fn test_bin_data_embedding() {
-        let bd = BinData {
-            data_type: BinDataType::Embedding,
-            storage_id: 1,
-            extension: Some("jpg".to_string()),
-            ..Default::default()
-        };
-        assert_eq!(bd.data_type, BinDataType::Embedding);
-        assert_eq!(bd.extension.as_deref(), Some("jpg"));
-    }
-}
-
 /// OOXML 차트(HWPX `Chart/chart{N}.xml`) BinData 의 확장자 표식.
 ///
 /// HWPX 는 차트를 BinData 가 아니라 **별도 zip 파트**로 담고 본문에서

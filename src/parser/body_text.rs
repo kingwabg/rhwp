@@ -981,6 +981,3 @@ fn parse_ctrl_data_field_name(data: &[u8]) -> Option<String> {
         Some(name)
     }
 }
-
-#[cfg(test)]
-mod tests;

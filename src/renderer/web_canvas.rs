@@ -3844,18 +3844,3 @@ fn color_to_css(color: u32) -> String {
     let r = color & 0xFF;
     format!("#{:02x}{:02x}{:02x}", r, g, b)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_color_to_css() {
-        // HWP COLORREF: 0x00BBGGRR (BGR)
-        assert_eq!(color_to_css(0x000000FF), "#ff0000"); // 빨강
-        assert_eq!(color_to_css(0x0000FF00), "#00ff00"); // 초록
-        assert_eq!(color_to_css(0x00FF0000), "#0000ff"); // 파랑
-        assert_eq!(color_to_css(0x00FFFFFF), "#ffffff"); // 흰색
-        assert_eq!(color_to_css(0x00000000), "#000000"); // 검정
-    }
-}

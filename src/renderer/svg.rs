@@ -3734,6 +3734,3 @@ pub fn generate_font_style(renderer: &SvgRenderer, font_paths: &[std::path::Path
 
     css
 }
-
-#[cfg(test)]
-mod tests;

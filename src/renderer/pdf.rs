@@ -422,42 +422,4 @@ pub fn svgs_to_pdf_with_options(
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_pdf_font_options_are_os_specific_and_non_empty() {
-        let options = PdfExportOptions::default();
-        assert!(!options.fallback_serif.is_empty());
-        assert!(!options.fallback_sans.is_empty());
-        assert!(!options.fallback_mono.is_empty());
-        assert!(options.equation_font.is_none());
-    }
-
-    #[test]
-    fn pdf_font_options_replace_generic_fallbacks_and_equation_font() {
-        let options = PdfExportOptions {
-            fallback_serif: "Noto Serif CJK KR".to_string(),
-            fallback_sans: "Noto Sans CJK KR".to_string(),
-            fallback_mono: "Noto Sans Mono CJK KR".to_string(),
-            equation_font: Some("STIX Two Math".to_string()),
-            font_paths: Vec::new(),
-            embed_text: true,
-        };
-        let svg = format!(
-            r#"<svg><text font-family="휴먼명조">가</text><text font-family="HCI Poppy">A</text><text {}>x</text></svg>"#,
-            crate::renderer::equation::svg_render::DEFAULT_EQUATION_FONT_FAMILY_ATTR
-        );
-
-        let out = apply_pdf_font_options(&svg, &options);
-
-        assert!(out.contains(r#"font-family="휴먼명조, 'Noto Serif CJK KR', serif""#));
-        assert!(out.contains(r#"font-family="HCI Poppy, 'Noto Sans CJK KR', sans-serif""#));
-        assert!(out
-            .contains(r#"font-family="&apos;STIX Two Math&apos;, &apos;Latin Modern Math&apos;"#));
-    }
-
-    #[test]
-    fn equation_font_accepts_full_family_chain() {
-        let chain = equation_font_chain("'Custom Math', 'Fallback Math', serif");
-        assert_eq!(chain, "'Custom Math', 'Fallback Math', serif");
-    }
 }

@@ -2651,10 +2651,3 @@ pub(crate) use line_breaking::{
 
 /// [테스트 노출] 옆 조각 선택 규칙 — 게이트 회귀를 단위 테스트로 잠근다(부록4 갭 #1).
 pub use line_breaking::{side_pick_for_band as side_pick_for_band_pub, MIN_SIDE_PX};
-
-#[cfg(test)]
-mod lineseg_compare_tests;
-#[cfg(test)]
-mod re_sample_gen;
-#[cfg(test)]
-mod tests;

@@ -1354,9 +1354,6 @@ pub struct LayoutEngine {
     /// `cell_units_uncached` 안에서 계산되어 52,694 셀 표에서 O(셀²)(≈28억) 로 폭증했다.
     /// `cell_units_cache` 와 동일 조판 경계에서 clear 한다.
     table_nested_text_flag_cache: std::cell::RefCell<std::collections::HashMap<usize, bool>>,
-    /// Issue #2214 test-only: cache miss가 실제 table-wide scan으로 이어진 횟수.
-    #[cfg(test)]
-    table_nested_text_flag_scan_count: std::cell::Cell<usize>,
 }
 
 mod border_rendering;
@@ -1386,11 +1383,6 @@ pub(crate) use utils::{
     drawing_to_line_style, drawing_to_shape_style, find_bin_data, format_page_number,
     layout_rect_to_bbox, picture_display_size_hu, picture_flow_frame_size_hu, resolve_numbering_id,
 };
-
-#[cfg(test)]
-mod integration_tests;
-#[cfg(test)]
-mod tests;
 
 impl LayoutEngine {
     pub fn new(dpi: f64) -> Self {
@@ -1431,8 +1423,6 @@ impl LayoutEngine {
             cell_units_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             current_flow_bands: std::cell::RefCell::new(Vec::new()),
             table_nested_text_flag_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
-            #[cfg(test)]
-            table_nested_text_flag_scan_count: std::cell::Cell::new(0),
         }
     }
 

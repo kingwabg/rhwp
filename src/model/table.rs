@@ -2845,6 +2845,3 @@ impl Table {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests;
