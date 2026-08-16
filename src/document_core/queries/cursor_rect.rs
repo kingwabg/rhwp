@@ -2315,8 +2315,29 @@ impl DocumentCore {
         let mut hit_body: Option<(usize, usize)> = None; // (run_idx, char_offset)
         let mut hit_cell: Option<(usize, usize)> = None;
         let mut hit_cell_area: Option<i64> = None;
+        // [2026-08-17] 셀 런은 **자기 셀 bbox 안**에서만 히트 — 얇은 조각 셀(어긋내기)의
+        // 빈 문단 lineseg 가 글줄 높이로 셀 밖(아래 행)까지 뻗어, 마지막 행 클릭이 위
+        // 조각 셀로 오판됐다(3열 어긋 실측: 전체 드래그에서 마지막 행 누락). 글상자
+        // 게이트(text_run_hit_allowed_by_textbox_bbox)와 같은 원리 — 셀 clip 렌더와 정합.
+        let run_cell_bbox_ok = |run: &RunInfo| -> bool {
+            let Some(ctx) = run.cell_context.as_ref() else {
+                return true;
+            };
+            let ci = ctx.innermost().cell_index;
+            let Some(cb) = cell_bboxes
+                .iter()
+                .find(|cb| cb.table_id == run.table_id && cb.cell_index == ci)
+            else {
+                return true;
+            };
+            let eps = 0.5;
+            x >= cb.x - eps && x <= cb.x + cb.w + eps && y >= cb.y - eps && y <= cb.y + cb.h + eps
+        };
         for (i, run) in runs.iter().enumerate() {
             if !text_run_hit_allowed_by_textbox_bbox(run, &textbox_bboxes, x, y) {
+                continue;
+            }
+            if !run_cell_bbox_ok(run) {
                 continue;
             }
             if x >= run.bbox_x
