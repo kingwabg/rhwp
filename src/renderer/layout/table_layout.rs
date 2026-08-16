@@ -1665,6 +1665,22 @@ impl LayoutEngine {
                 }
             }
         }
+        // [2026-08-16 어긋내기] span 전용 행(조각 행)은 span-1 셀이 없어 0 으로 남는다 —
+        // 모델의 get_row_heights(solve_span_gaps 포함)로 채운다. 안 채우면 fit_common 이
+        // 부족분을 전 행에 배분해 어긋낸 표가 미세 성장한다(3×3 연쇄 실측 +0.7px).
+        // 정상 표는 모든 행에 span-1 셀이 있어 이 경로가 발동하지 않는다.
+        if row_heights.iter().any(|&h| h <= 0.0) {
+            let solved = table.get_row_heights();
+            for (r, slot) in row_heights.iter_mut().enumerate() {
+                if *slot <= 0.0 {
+                    if let Some(&hu) = solved.get(r) {
+                        if hu < 0x8000_0000 {
+                            *slot = hwpunit_to_px(hu as i32, self.dpi);
+                        }
+                    }
+                }
+            }
+        }
 
         // 1-b단계: 셀 내 실제 컨텐츠 높이 계산
         for cell in &table.cells {

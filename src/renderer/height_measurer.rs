@@ -1105,6 +1105,20 @@ impl HeightMeasurer {
                 }
             }
         }
+        // [2026-08-16 어긋내기] span 전용 행은 모델 solve_span_gaps 로 채운다 —
+        // table_layout::resolve_row_heights 의 동일 예외와 한 몸(미세 성장 방지).
+        if row_heights.iter().any(|&h| h <= 0.0) {
+            let solved = table.get_row_heights();
+            for (r, slot) in row_heights.iter_mut().enumerate() {
+                if *slot <= 0.0 {
+                    if let Some(&hu) = solved.get(r) {
+                        if hu < 0x8000_0000 {
+                            *slot = hwpunit_to_px(hu as i32, self.dpi);
+                        }
+                    }
+                }
+            }
+        }
 
         // 2단계: 셀 내 실제 컨텐츠 높이 계산 (layout_table과 동일)
         for cell in &table.cells {
@@ -1692,6 +1706,18 @@ impl HeightMeasurer {
             let r = cell.row as usize;
             let span = cell.row_span as usize;
             if span > 1 && r + span <= row_count {
+                // [2026-08-16 어긋내기] 조각 행에 걸친 **빈** 병합 셀은 확장하지 않는다.
+                // 빈 문단 lineseg(1000HU)는 캐럿 줄이지 콘텐츠가 아닌데, 이걸 근거로
+                // 마지막 행을 늘리면 두 어긋남의 크기가 다를 때 그 차이만큼 표가 자랐다
+                // (3×3 연쇄 실측: 첫 743·둘째 686 → +57HU, 렌더만 성장·모델 합 보존).
+                let cell_is_empty = cell
+                    .paragraphs
+                    .iter()
+                    .all(|p| p.text.chars().all(|ch| ch.is_whitespace()));
+                let spans_piece_row = (r..r + span).any(|row| table.is_stagger_piece_row(row));
+                if cell_is_empty && spans_piece_row {
+                    continue;
+                }
                 // [#1809] aim 직접 분기 → 단일 출처(Cell::effective_padding) 통일.
                 // aim=true 인데 cell padding 이 0 인 셀은 표 기본으로 폴백해야
                 // 레이아웃(resolve_cell_padding)과 정합한다. 직접 분기가 남으면
