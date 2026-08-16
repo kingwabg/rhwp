@@ -1673,6 +1673,20 @@ impl LayoutEngine {
             }
             if cell.row_span == 1 && (cell.row as usize) < row_count {
                 let r = cell.row as usize;
+                // [2026-08-16 어긋내기] **조각 행의 빈 셀**은 콘텐츠 성장에서 제외한다.
+                // 빈 문단의 lineseg(1000HU)는 캐럿 줄이지 콘텐츠가 아닌데, 이걸 성장
+                // 근거로 삼으면 글줄보다 얇게 어긋낸 조각이 렌더에서 도로 부풀어
+                // 모델(실효 합 보존)과 렌더(표 성장)가 갈랐다(3×3 키보드 실측 +3.7px).
+                // 조각 행 판정 = 행의 아래 격자선을 한 열만 쓰는 행 — 정상 병합 표는
+                // 아래 선이 정렬(여러 열)이라 여기 안 걸리고, 신선 표 바닥(1284)도
+                // 종전대로 이 성장 경로가 지킨다.
+                let cell_is_empty = cell
+                    .paragraphs
+                    .iter()
+                    .all(|p| p.text.chars().all(|ch| ch.is_whitespace()));
+                if cell_is_empty && table.is_stagger_piece_row(r) {
+                    continue;
+                }
                 let (pad_left, pad_right, pad_top, pad_bottom) =
                     self.resolve_cell_padding(cell, table);
 

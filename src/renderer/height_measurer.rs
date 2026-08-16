@@ -1110,6 +1110,17 @@ impl HeightMeasurer {
         for cell in &table.cells {
             if cell.row_span == 1 && (cell.row as usize) < row_count {
                 let r = cell.row as usize;
+                // [2026-08-16 어긋내기] 조각 행의 빈 셀은 콘텐츠 성장 제외 —
+                // table_layout::resolve_row_heights 의 동일 예외와 한 몸이다. 빈 문단
+                // lineseg(1000HU)를 성장 근거로 삼으면 글줄보다 얇게 어긋낸 조각이
+                // 측정에서 도로 부풀어 모델(실효 합 보존)과 렌더(표 성장)가 갈린다.
+                let cell_is_empty = cell
+                    .paragraphs
+                    .iter()
+                    .all(|p| p.text.chars().all(|ch| ch.is_whitespace()));
+                if cell_is_empty && table.is_stagger_piece_row(r) {
+                    continue;
+                }
                 // [Task #1785] 셀 패딩 — aim=false 는 layout 의 레거시 보존값 규칙
                 // (Cell::effective_padding)과 통일: 단순 table.padding 폴백은 cell > table
                 // 보존값 케이스에서 layout 렌더와 어긋나 표 높이가 틀어진다 (36381023

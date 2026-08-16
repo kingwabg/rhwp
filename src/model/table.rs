@@ -873,6 +873,36 @@ impl Table {
     /// effective_row_heights 와 resize 의 raw 델타 밑절미가 공유하는 단일 근거.
     /// ⚠ 다른 셀의 **저장** 높이는 포함하지 않는다 — 보상(±d) 조절이 있는 실파일에서
     /// 저장 높이까지 밑절미로 끌어올리면 행 max 가 커져 표가 자란다(issue_493 실측).
+    /// [2026-08-16] 이 격자선이 **어긋난 선**인가 — 내부 선인데 한 열만 경계로 쓴다.
+    fn is_misaligned_line(&self, line: u16) -> bool {
+        if line == 0 || line >= self.row_count {
+            return false; // 바깥 테두리
+        }
+        let mut first_col: Option<u16> = None;
+        for c in &self.cells {
+            if c.row == line || c.row + c.row_span == line {
+                match first_col {
+                    None => first_col = Some(c.col),
+                    Some(fc) if fc != c.col => return false,
+                    _ => {}
+                }
+            }
+        }
+        first_col.is_some()
+    }
+
+    /// [2026-08-16] 이 행이 **어긋내기 조각 행**인가 — 위 또는 아래 격자선이 어긋난
+    /// 선(한 열 전용)이면 조각이다. 조각 행은 저장 높이가 곧 실효 높이라 글줄 바닥·
+    /// 빈 lineseg 성장(1000HU)을 적용하면 줄인 조각이 도로 부풀어 표가 자란다
+    /// (3×3 전수 실측: 모델 합은 보존인데 렌더만 +2.7px). 정상 병합 행은 인접 선을
+    /// 여러 열이 쓰므로 종전대로 바닥·성장이 적용된다. 1열 표는 제외.
+    pub(crate) fn is_stagger_piece_row(&self, row: usize) -> bool {
+        if self.col_count < 2 {
+            return false;
+        }
+        self.is_misaligned_line(row as u16) || self.is_misaligned_line(row as u16 + 1)
+    }
+
     pub fn row_line_floors_hu(&self) -> Vec<u32> {
         const DEFAULT_LINE_HU: u32 = 1000;
         let floors = self.cell_content_floors_hu();
@@ -884,6 +914,9 @@ impl Table {
                 .iter()
                 .any(|c| (c.row as usize) < row && (c.row as usize + c.row_span as usize) > row);
             if spanned_through {
+                continue;
+            }
+            if self.is_stagger_piece_row(row) {
                 continue;
             }
             let pad_vert: u32 = self
@@ -925,6 +958,9 @@ impl Table {
                 .iter()
                 .any(|c| (c.row as usize) < row && (c.row as usize + c.row_span as usize) > row);
             if spanned_through {
+                continue;
+            }
+            if self.is_stagger_piece_row(row) {
                 continue;
             }
             let pad_vert: u32 = self
@@ -990,6 +1026,30 @@ impl Table {
                 (content.max(0) as u32) + (p.top.max(0) + p.bottom.max(0)) as u32
             })
             .collect()
+    }
+
+    /// [2026-08-16 신고 "3x3 전 경계 어긋내기 개판"] 어긋내기 **조각의 최소 크기**.
+    ///
+    /// 내용이 있는 조각은 글줄 바닥(내용이 잘리면 안 됨), **빈 조각은 MIN_CELL(200)** —
+    /// 열 어긋내기와 대칭이다. 종전엔 빈 조각에도 글줄 바닥(1284)을 요구해, 모든 행이
+    /// 바닥값인 신선한 표에서는 행 어긋내기가 어느 방향으로도 수학적으로 불가능했다
+    /// (마우스·키보드 전 조합 무동작 실측). 빈 조각이 글줄보다 얇아지면 렌더는 셀
+    /// 클립으로 처리한다(조각 행은 effective_row_heights 의 걸침 예외라 재부풀지 않는다).
+    fn stagger_piece_floor_hu(&self, idx: usize, floors: &[u32], min_cell: i32) -> i32 {
+        let has_text = self
+            .cells
+            .get(idx)
+            .map(|c| {
+                c.paragraphs
+                    .iter()
+                    .any(|p| p.text.chars().any(|ch| !ch.is_whitespace()))
+            })
+            .unwrap_or(false);
+        if has_text {
+            floors.get(idx).copied().unwrap_or(0).max(min_cell as u32) as i32
+        } else {
+            min_cell
+        }
     }
 
     /// 행별 높이를 추출한다 (row_span==1인 셀 기준).
@@ -1947,24 +2007,55 @@ impl Table {
             let cur_off = size(&t) - aw;
             let next_off = new_t - aw;
             if cur_off != 0 && (next_off == 0 || cur_off.signum() != next_off.signum()) {
-                return self.restore_cell_boundary(cell_idx, edge_right);
+                // [2026-08-16] 승격은 **실제로 복원 가능할 때만**. 병합이 섞인 표는 격자상
+                // 어긋남과 구분되지 않아 여기 오는데, 복원(조각 되접기)이 불가능하면 즉시
+                // Err 로 드래그가 통째로 거부됐다. 클론에 시험해 되면 채택, 안 되면 일반
+                // 재이동으로 계속한다(표는 작아 클론이 싸다).
+                let mut probe = self.clone();
+                if probe.restore_cell_boundary(cell_idx, edge_right).is_ok() {
+                    *self = probe;
+                    return Ok(());
+                }
             }
         }
 
-        // 최소 크기 클램프(행은 글줄 바닥) — 남는 쪽이 규약 밑으로 못 간다
+        // 최소 크기 클램프 — 남는 쪽이 규약 밑으로 못 간다.
+        //
+        // [실효 공간 2026-08-16] 여유는 **실효 높이**로 잰다. 원시 stored 로 재면 한컴
+        // 저장 규약(빈 셀=패딩만 284)에서 바닥이 더 커서 여유가 음수가 되고, delta<0
+        // 분기의 부호 반전이 그 음수를 양수 d 로 뒤집어 — 드래그가 반대 방향으로 가고
+        // 상대 셀 높이가 u32 언더플로(4.29e9)했다(3×3 재드래그 실측). 조각 최소는
+        // 신규 어긋내기와 같은 내용 인지 기준(stagger_piece_floor_hu).
         let floors = self.cell_content_floors_hu();
+        let eff_rows = if edge_right {
+            Vec::new()
+        } else {
+            self.effective_row_heights()
+        };
         let floor_of = |idx: usize| -> i32 {
             if edge_right {
                 MIN_CELL
             } else {
-                floors.get(idx).copied().unwrap_or(0).max(MIN_CELL as u32) as i32
+                self.stagger_piece_floor_hu(idx, &floors, MIN_CELL)
+            }
+        };
+        let space_of = |c: &Cell| -> i32 {
+            if edge_right {
+                c.width as i32
+            } else {
+                let eff = eff_rows.get(c.row as usize).copied().unwrap_or(c.height);
+                c.height.max(eff) as i32
             }
         };
         let d = if delta > 0 {
-            delta.min(size(&n) - floor_of(n_idx))
+            delta.min((space_of(&n) - floor_of(n_idx)).max(0))
         } else {
-            -((-delta).min(size(&t) - floor_of(cell_idx)))
+            -((-delta).min((space_of(&t) - floor_of(cell_idx)).max(0)))
         };
+        // 클램프가 부호를 뒤집었으면(여유 음수) 움직이지 않는다 — 반대 방향 이동 금지
+        if d != 0 && d.signum() != delta.signum() {
+            return Err("이 방향으로는 더 옮길 수 없습니다".to_string());
+        }
         if d == 0 {
             return Err(if delta > 0 {
                 if edge_right {
@@ -1983,15 +2074,63 @@ impl Table {
             self.cells[cell_idx].width = (size(&t) + d) as HwpUnit;
             self.cells[n_idx].width = (size(&n) - d) as HwpUnit;
         } else {
-            self.cells[cell_idx].height = (size(&t) + d) as HwpUnit;
-            self.cells[n_idx].height = (size(&n) - d) as HwpUnit;
+            // 판정은 실효 공간에서 끝냈다(무부작용). 통과했으니 연루 행을 물질화하고
+            // **같은 공간의 값**으로 주고받는다 — 안 그러면 판정은 실효, 쓰기는 원시라
+            // 두 장부가 갈린다.
+            let lo = (t.row as usize).min(n.row as usize);
+            let hi = ((t.row + t.row_span) as usize).max((n.row + n.row_span) as usize);
+            self.materialize_rows_effective(lo, hi.saturating_sub(1));
+            let t_now = self.cells[cell_idx].height as i32;
+            let n_now = self.cells[n_idx].height as i32;
+            self.cells[cell_idx].height = (t_now + d).max(MIN_CELL) as HwpUnit;
+            self.cells[n_idx].height = (n_now - d).max(MIN_CELL) as HwpUnit;
         }
         self.rebuild_grid();
         self.update_ctrl_dimensions();
         Ok(())
     }
 
+    /// [2026-08-16 신고 "절대 표 깨지지 않게"] 어긋내기 **트랜잭션 안전망**.
+    ///
+    /// 어긋낸 격자는 span 연립이 미결정이 되는 상태(겹치는 선 재분할, 다른 열이 핀 잡은
+    /// 스팬 이웃 재이동 등)가 존재하고, 그때 솔버가 임의 해를 고르면 표가 자라거나
+    /// 찢어진다(3×3 전수 프로브 실측: 연속 어긋내기에서 3852→5052). 사례를 전부
+    /// 열거하는 대신 **결과를 검증**한다 — 실행 전 상태를 통째로 붙들고, 실행 후
+    /// 불변식(실효 높이 합·폭 합·격자 건전성)이 깨져 있으면 롤백하고 거부한다.
+    /// 표를 깨뜨리는 조작은 어떤 경로로도 커밋되지 않는다.
     pub fn offset_cell_boundary(
+        &mut self,
+        cell_idx: usize,
+        edge_right: bool,
+        delta: i32,
+    ) -> Result<(), String> {
+        let saved = self.clone();
+        let w0: u64 = self.get_column_widths().iter().map(|&w| w as u64).sum();
+        let h0: u64 = self.effective_row_heights().iter().map(|&h| h as u64).sum();
+        let r = self.offset_cell_boundary_core(cell_idx, edge_right, delta);
+        if r.is_ok() && !self.stagger_invariants_hold(w0, h0) {
+            *self = saved;
+            return Err("이 조작은 표 격자를 깨뜨려 취소했습니다".to_string());
+        }
+        if r.is_err() {
+            *self = saved; // 부작용 없는 실패 보장
+        }
+        r
+    }
+
+    /// 어긋내기 후 표가 온전한가 — 폭 합·실효 높이 합 보존(±4HU), 셀 크기 건전.
+    fn stagger_invariants_hold(&self, w0: u64, h0: u64) -> bool {
+        let w1: u64 = self.get_column_widths().iter().map(|&w| w as u64).sum();
+        let h1: u64 = self.effective_row_heights().iter().map(|&h| h as u64).sum();
+        if w1.abs_diff(w0) > 4 || h1.abs_diff(h0) > 4 {
+            return false;
+        }
+        self.cells
+            .iter()
+            .all(|c| c.width < 1_000_000 && c.height < 1_000_000)
+    }
+
+    fn offset_cell_boundary_core(
         &mut self,
         cell_idx: usize,
         edge_right: bool,
@@ -2134,8 +2273,8 @@ impl Table {
             let eff_rows = self.effective_row_heights();
             let floors = self.cell_content_floors_hu();
             if delta > 0 {
-                // 내용은 아래 조각(이웃 잔여)에 남는다 — 그 조각이 글줄 바닥 밑으로 못 가게
-                let n_floor = floors.get(n_idx).copied().unwrap_or(0).max(MIN_CELL as u32) as i32;
+                // 내용은 아래 조각(이웃 잔여)에 남는다 — 내용 있으면 글줄 바닥, 빈 조각은 MIN_CELL
+                let n_floor = self.stagger_piece_floor_hu(n_idx, &floors, MIN_CELL);
                 let n_eff = (n.height)
                     .max(eff_rows.get(boundary as usize).copied().unwrap_or(n.height))
                     as i32;
@@ -2181,12 +2320,8 @@ impl Table {
                 self.cells[merged].height = (t.height as i32 + d) as HwpUnit;
             } else {
                 // 정렬된 경계의 신규 위쪽 어긋내기(이미 어긋난 경계는 재이동 경로가 처리)
-                // 내용은 위 조각(대상 잔여)에 남는다 — 글줄 바닥 한계
-                let t_floor = floors
-                    .get(cell_idx)
-                    .copied()
-                    .unwrap_or(0)
-                    .max(MIN_CELL as u32) as i32;
+                // 내용은 위 조각(대상 잔여)에 남는다 — 내용 있으면 글줄 바닥, 빈 조각은 MIN_CELL
+                let t_floor = self.stagger_piece_floor_hu(cell_idx, &floors, MIN_CELL);
                 let t_eff = (t.height)
                     .max(eff_rows.get(t.row as usize).copied().unwrap_or(t.height))
                     as i32;

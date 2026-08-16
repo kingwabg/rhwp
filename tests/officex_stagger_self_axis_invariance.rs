@@ -43,17 +43,22 @@ fn make_table() -> (HwpDocument, u32, u32) {
 /// 신선한 표(전 행 = 글줄 바닥): 어긋낼 여유가 없으니 **에러 + 무부작용** — 종전엔
 /// 화면 무동작인데 모델만 몰래 84HU 어긋났다(368/200 실측).
 #[test]
-fn fresh_table_stagger_is_rejected_without_side_effects() {
+fn fresh_table_stagger_works_and_preserves_height() {
+    // [2026-08-16 계약 변경] 종전엔 "여유 없는 신선 표는 거부"였다 — 빈 조각에도 글줄
+    // 바닥(1284)을 요구해 새 3×3에서 행 어긋내기가 어느 방향으로도 불가능했고, 사용자
+    // 실측 "경계선 하나하나 전부 어긋내기"가 전멸했다. 이제 빈 조각 최소는 열과 같은
+    // MIN_CELL(200) — 신선 표에서도 어긋내기가 **동작**하되, 표 실효 높이는 불변이어야
+    // 한다(트랜잭션 안전망이 위반을 롤백한다).
     let (mut doc, pi, ci) = make_table();
-    let (h0, eff0, cells0) = table_state(&doc);
+    let (_h0, eff0, _cells0) = table_state(&doc);
+    let sum0: u32 = eff0.iter().sum();
     let r = doc.offset_cell_boundary_native(0, pi as usize, ci as usize, 0, false, 283);
-    assert!(r.is_err(), "여유 없는 신선 표 어긋내기는 거부돼야 한다");
-    let (h1, eff1, cells1) = table_state(&doc);
-    assert_eq!(h0, h1, "거부됐는데 표 높이가 변했다");
-    assert_eq!(eff0, eff1, "거부됐는데 실효 행높이가 변했다");
-    assert_eq!(
-        cells0, cells1,
-        "거부됐는데 셀 모델 높이가 변했다(몰래 어긋남 재발)"
+    assert!(r.is_ok(), "신선 표 어긋내기가 거부됐다(구계약 회귀): {r:?}");
+    let (_h1, eff1, _cells1) = table_state(&doc);
+    let sum1: u32 = eff1.iter().sum();
+    assert!(
+        sum1.abs_diff(sum0) <= 4,
+        "어긋내기가 표 실효 높이를 바꿨다 {sum0} → {sum1}"
     );
 }
 

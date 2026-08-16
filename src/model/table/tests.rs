@@ -1311,15 +1311,22 @@ fn test_offset_cell_boundary_preserves_totals() {
     assert_eq!(t.common.height, before_h, "표 높이 불변");
 }
 
-/// [2026-08-13] 여유 없는(전 행 = 글줄 바닥) 표의 행 어긋내기는 거부 + 무부작용.
+/// [2026-08-16 계약 변경] 여유 없는(전 행 = 글줄 바닥) 표의 행 어긋내기도 **동작**한다.
+/// 빈 조각 최소가 MIN_CELL(열과 대칭)로 바뀌어 신선 표에서도 어긋내기가 가능하다 —
+/// 종전 "거부" 계약은 사용자 실측(3×3 전 경계 무동작 "개판")으로 폐기됐다.
+/// 대신 실효 높이 합은 불변이어야 한다(트랜잭션 안전망).
 #[test]
-fn test_offset_cell_boundary_no_slack_rejected() {
+fn test_offset_cell_boundary_no_slack_now_works() {
     let mut t = make_table(2, 3);
-    let cells_before: Vec<_> = t.cells.iter().map(|c| c.height).collect();
+    let sum_before: u32 = t.effective_row_heights().iter().sum();
     let a1 = t.cell_index_at(0, 0).unwrap();
-    assert!(t.offset_cell_boundary(a1, false, 250).is_err());
-    let cells_after: Vec<_> = t.cells.iter().map(|c| c.height).collect();
-    assert_eq!(cells_before, cells_after, "거부 시 셀 높이 무부작용");
+    t.offset_cell_boundary(a1, false, 250)
+        .expect("여유 없는 표도 빈 조각 최소(MIN_CELL)까지 어긋낼 수 있어야 한다");
+    let sum_after: u32 = t.effective_row_heights().iter().sum();
+    assert!(
+        sum_after.abs_diff(sum_before) <= 4,
+        "어긋내기가 표 실효 높이를 바꿨다 {sum_before} → {sum_after}"
+    );
 }
 
 /// 복원(치유): 어긋낸 아래 경계를 restore 하면 원래 2×2 격자로 완전히 돌아온다.
