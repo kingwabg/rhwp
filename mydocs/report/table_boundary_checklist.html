@@ -1,5 +1,5 @@
 <!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
-<title>표 경계선 체크리스트 — 2026-08-16 11:10</title>
+<title>표 경계선 체크리스트 — 2026-08-16 12:24</title>
 <style>
 body{font-family:'Apple SD Gothic Neo',system-ui,sans-serif;margin:24px auto;max-width:980px;color:#1a1a1a;background:#fafafa}
 h1{font-size:22px} h2{font-size:17px;margin:28px 0 8px;border-bottom:2px solid #ddd;padding-bottom:4px}
@@ -14,126 +14,139 @@ select.s-완성{background:#e6f6ea} select.s-안됨{background:#fdecec} select.s
 button{padding:4px 12px;margin-right:6px;border:1px solid #bbb;border-radius:6px;background:#fff;cursor:pointer}
 button:hover{background:#f0f0f0}
 .toolbar{margin:10px 0}
+.cathead{background:#f2f6fc;font-size:13px}
+.shotcell img{max-height:56px;border:1px solid #ddd;border-radius:3px;display:block}
+.legend{display:flex;gap:14px;flex-wrap:wrap}
+.legend figure{margin:0;width:300px}
+.legend img{width:100%;border:1px solid #ddd;border-radius:4px}
+.legend figcaption{font-size:12.5px;color:#444;margin-top:4px}
 </style></head><body>
 <h1>표 경계선 전 조작 체크리스트 <span class="badge">자동 110/110</span></h1>
-<div class="meta">생성: 2026-08-16 11:10 · 도구: tools/table-boundary-checklist.mjs (재생성: node tools/table-boundary-checklist.mjs --html-only) · 3×3 표, 항목마다 새 문서 · 표 크기 ±0.4px 불변 동시 검사</div>
+<div class="meta">생성: 2026-08-16 12:24 · 도구: tools/table-boundary-checklist.mjs (재생성: node tools/table-boundary-checklist.mjs --html-only) · 3×3 표, 항목마다 새 문서 · 표 크기 ±0.4px 불변 동시 검사 · 이미지 클릭 = 원본</div>
+
+<h2>용어 그림</h2>
+<div class="legend">
+  <figure><img src="checklist-shots/legend-base.png" alt="기준"><figcaption><b>기준</b> — 새 3×3 표. 모든 검사의 출발점.</figcaption></figure>
+  <figure><img src="checklist-shots/legend-stagger.png" alt="어긋내기"><figcaption><b>어긋내기</b> — (0,0) 하변을 Shift+드래그 +12px. 그 칸의 경계만 내려가고 표 크기는 그대로.</figcaption></figure>
+  <figure><img src="checklist-shots/legend-heal.png" alt="치유"><figcaption><b>치유(왕복)</b> — 반대로 12px 끌면 원래 표로 복귀.</figcaption></figure>
+</div>
 
 <h2>마우스 <span class="badge">68/68</span></h2>
-<table><tr><th></th><th>항목</th><th>상세</th></tr>
-<tr class="ok"><td>✓</td><td>[일반이동] 가로 내부선1 ↓ [신선=무동작]</td><td>세그 이동 0.0/0.0/0.0 (기대 0) 표 559.4x59.4→559.4x59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[일반이동] 가로 내부선1 ↑ [신선=무동작]</td><td>세그 이동 0.0/0.0/0.0 (기대 0) 표 559.4x59.4→559.4x59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[일반이동] 가로 내부선2 ↓ [신선=무동작]</td><td>세그 이동 0.0/0.0/0.0 (기대 0) 표 559.4x59.4→559.4x59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[일반이동] 가로 내부선2 ↑ [신선=무동작]</td><td>세그 이동 0.0/0.0/0.0 (기대 0) 표 559.4x59.4→559.4x59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[일반이동] 세로 내부선1 →</td><td>세그 이동 8.8/8.8/8.8 (기대 8) 표 559.4x59.4→559.4x59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[일반이동] 세로 내부선1 ←</td><td>세그 이동 -7.2/-7.2/-7.2 (기대 -8) 표 559.4x59.4→559.4x59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[일반이동] 세로 내부선2 →</td><td>세그 이동 8.4/8.4/8.4 (기대 8) 표 559.4x59.4→559.4x59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[일반이동] 세로 내부선2 ←</td><td>세그 이동 -7.6/-7.6/-7.6 (기대 -8) 표 559.4x59.4→559.4x59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 하(0,0) +12</td><td>이동 11.9 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 하(0,0) +→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 하(0,0) −12</td><td>이동 -12.1 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 하(0,0) −→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 하(0,1) +12</td><td>이동 11.9 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 하(0,1) +→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 하(0,1) −12</td><td>이동 -12.1 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 하(0,1) −→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 하(0,2) +12</td><td>이동 11.9 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 하(0,2) +→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 하(0,2) −12</td><td>이동 -12.1 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 하(0,2) −→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 하(1,0) +12</td><td>이동 11.1 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 하(1,0) +→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 하(1,0) −12</td><td>이동 -12.9 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 하(1,0) −→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 하(1,1) +12</td><td>이동 11.1 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 하(1,1) +→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 하(1,1) −12</td><td>이동 -12.9 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 하(1,1) −→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 하(1,2) +12</td><td>이동 11.1 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 하(1,2) +→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 하(1,2) −12</td><td>이동 -12.9 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 하(1,2) −→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 우(0,0) +12</td><td>이동 12.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 우(0,0) +→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 우(0,0) −12</td><td>이동 -11.2 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 우(0,0) −→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 우(1,0) +12</td><td>이동 12.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 우(1,0) +→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 우(1,0) −12</td><td>이동 -11.2 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 우(1,0) −→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 우(2,0) +12</td><td>이동 12.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 우(2,0) +→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 우(2,0) −12</td><td>이동 -11.2 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 우(2,0) −→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 우(0,1) +12</td><td>이동 12.4 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 우(0,1) +→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 우(0,1) −12</td><td>이동 -11.6 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 우(0,1) −→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 우(1,1) +12</td><td>이동 12.4 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 우(1,1) +→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 우(1,1) −12</td><td>이동 -11.6 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 우(1,1) −→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 우(2,1) +12</td><td>이동 12.4 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 우(2,1) +→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋단발] 우(2,1) −12</td><td>이동 -11.6 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋왕복] 우(2,1) −→복귀</td><td>셀 9 표 59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[연쇄] 마우스 열0 위→아래 순차</td><td>2스텝 정상</td></tr>
-<tr class="ok"><td>✓</td><td>[연쇄] 마우스 열1 위→아래 순차</td><td>2스텝 정상</td></tr>
-<tr class="ok"><td>✓</td><td>[연쇄] 마우스 열2 위→아래 순차</td><td>2스텝 정상</td></tr>
-<tr class="ok"><td>✓</td><td>[클릭진입] 시각(0,0)</td><td>cellIndex=0</td></tr>
-<tr class="ok"><td>✓</td><td>[클릭진입] 시각(0,1)</td><td>cellIndex=1</td></tr>
-<tr class="ok"><td>✓</td><td>[클릭진입] 시각(0,2)</td><td>cellIndex=2</td></tr>
-<tr class="ok"><td>✓</td><td>[클릭진입] 시각(1,0)</td><td>cellIndex=2</td></tr>
-<tr class="ok"><td>✓</td><td>[클릭진입] 시각(1,1)</td><td>cellIndex=3</td></tr>
-<tr class="ok"><td>✓</td><td>[클릭진입] 시각(1,2)</td><td>cellIndex=4</td></tr>
-<tr class="ok"><td>✓</td><td>[클릭진입] 시각(2,0)</td><td>cellIndex=6</td></tr>
-<tr class="ok"><td>✓</td><td>[클릭진입] 시각(2,1)</td><td>cellIndex=7</td></tr>
-<tr class="ok"><td>✓</td><td>[클릭진입] 시각(2,2)</td><td>cellIndex=8</td></tr>
+<table><tr><th></th><th>항목</th><th>상세</th><th style="width:150px">화면</th></tr>
+<tr><td colspan="4" class="cathead"><b>일반이동</b> — Shift 없이 경계선 드래그 — 그 선 전체가 움직인다. 신선한 표의 가로선은 줄일 여유가 없어 무동작이 정상.</td></tr><tr class="ok"><td>✓</td><td>가로 내부선1 ↓ [신선=무동작]</td><td>세그 이동 0.0/0.0/0.0 (기대 0) 표 559.4x59.4→559.4x59.4</td><td class="shotcell"><a href="checklist-shots/000.png" target="_blank"><img src="checklist-shots/000.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>가로 내부선1 ↑ [신선=무동작]</td><td>세그 이동 0.0/0.0/0.0 (기대 0) 표 559.4x59.4→559.4x59.4</td><td class="shotcell"><a href="checklist-shots/001.png" target="_blank"><img src="checklist-shots/001.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>가로 내부선2 ↓ [신선=무동작]</td><td>세그 이동 0.0/0.0/0.0 (기대 0) 표 559.4x59.4→559.4x59.4</td><td class="shotcell"><a href="checklist-shots/002.png" target="_blank"><img src="checklist-shots/002.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>가로 내부선2 ↑ [신선=무동작]</td><td>세그 이동 0.0/0.0/0.0 (기대 0) 표 559.4x59.4→559.4x59.4</td><td class="shotcell"><a href="checklist-shots/003.png" target="_blank"><img src="checklist-shots/003.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>세로 내부선1 →</td><td>세그 이동 8.8/8.8/8.8 (기대 8) 표 559.4x59.4→559.4x59.4</td><td class="shotcell"><a href="checklist-shots/004.png" target="_blank"><img src="checklist-shots/004.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>세로 내부선1 ←</td><td>세그 이동 -7.2/-7.2/-7.2 (기대 -8) 표 559.4x59.4→559.4x59.4</td><td class="shotcell"><a href="checklist-shots/005.png" target="_blank"><img src="checklist-shots/005.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>세로 내부선2 →</td><td>세그 이동 8.4/8.4/8.4 (기대 8) 표 559.4x59.4→559.4x59.4</td><td class="shotcell"><a href="checklist-shots/006.png" target="_blank"><img src="checklist-shots/006.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>세로 내부선2 ←</td><td>세그 이동 -7.6/-7.6/-7.6 (기대 -8) 표 559.4x59.4→559.4x59.4</td><td class="shotcell"><a href="checklist-shots/007.png" target="_blank"><img src="checklist-shots/007.png" alt=""></a></td></tr>
+<tr><td colspan="4" class="cathead"><b>어긋단발</b> — Shift+드래그 한 칸 어긋내기 — 잡은 칸의 경계만 12px, 표 크기 불변.</td></tr><tr class="ok"><td>✓</td><td>하(0,0) +12</td><td>이동 11.9 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/008.png" target="_blank"><img src="checklist-shots/008.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(0,0) −12</td><td>이동 -12.1 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/010.png" target="_blank"><img src="checklist-shots/010.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(0,1) +12</td><td>이동 11.9 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/012.png" target="_blank"><img src="checklist-shots/012.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(0,1) −12</td><td>이동 -12.1 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/014.png" target="_blank"><img src="checklist-shots/014.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(0,2) +12</td><td>이동 11.9 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/016.png" target="_blank"><img src="checklist-shots/016.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(0,2) −12</td><td>이동 -12.1 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/018.png" target="_blank"><img src="checklist-shots/018.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(1,0) +12</td><td>이동 11.1 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/020.png" target="_blank"><img src="checklist-shots/020.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(1,0) −12</td><td>이동 -12.9 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/022.png" target="_blank"><img src="checklist-shots/022.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(1,1) +12</td><td>이동 11.1 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/024.png" target="_blank"><img src="checklist-shots/024.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(1,1) −12</td><td>이동 -12.9 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/026.png" target="_blank"><img src="checklist-shots/026.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(1,2) +12</td><td>이동 11.1 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/028.png" target="_blank"><img src="checklist-shots/028.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(1,2) −12</td><td>이동 -12.9 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/030.png" target="_blank"><img src="checklist-shots/030.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(0,0) +12</td><td>이동 12.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/032.png" target="_blank"><img src="checklist-shots/032.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(0,0) −12</td><td>이동 -11.2 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/034.png" target="_blank"><img src="checklist-shots/034.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(1,0) +12</td><td>이동 12.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/036.png" target="_blank"><img src="checklist-shots/036.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(1,0) −12</td><td>이동 -11.2 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/038.png" target="_blank"><img src="checklist-shots/038.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(2,0) +12</td><td>이동 12.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/040.png" target="_blank"><img src="checklist-shots/040.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(2,0) −12</td><td>이동 -11.2 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/042.png" target="_blank"><img src="checklist-shots/042.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(0,1) +12</td><td>이동 12.4 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/044.png" target="_blank"><img src="checklist-shots/044.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(0,1) −12</td><td>이동 -11.6 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/046.png" target="_blank"><img src="checklist-shots/046.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(1,1) +12</td><td>이동 12.4 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/048.png" target="_blank"><img src="checklist-shots/048.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(1,1) −12</td><td>이동 -11.6 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/050.png" target="_blank"><img src="checklist-shots/050.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(2,1) +12</td><td>이동 12.4 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/052.png" target="_blank"><img src="checklist-shots/052.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(2,1) −12</td><td>이동 -11.6 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/054.png" target="_blank"><img src="checklist-shots/054.png" alt=""></a></td></tr>
+<tr><td colspan="4" class="cathead"><b>어긋왕복</b> — 어긋낸 경계를 반대로 12px — 원래 표로 완전 복귀(치유).</td></tr><tr class="ok"><td>✓</td><td>하(0,0) +→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/009.png" target="_blank"><img src="checklist-shots/009.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(0,0) −→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/011.png" target="_blank"><img src="checklist-shots/011.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(0,1) +→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/013.png" target="_blank"><img src="checklist-shots/013.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(0,1) −→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/015.png" target="_blank"><img src="checklist-shots/015.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(0,2) +→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/017.png" target="_blank"><img src="checklist-shots/017.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(0,2) −→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/019.png" target="_blank"><img src="checklist-shots/019.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(1,0) +→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/021.png" target="_blank"><img src="checklist-shots/021.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(1,0) −→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/023.png" target="_blank"><img src="checklist-shots/023.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(1,1) +→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/025.png" target="_blank"><img src="checklist-shots/025.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(1,1) −→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/027.png" target="_blank"><img src="checklist-shots/027.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(1,2) +→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/029.png" target="_blank"><img src="checklist-shots/029.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>하(1,2) −→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/031.png" target="_blank"><img src="checklist-shots/031.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(0,0) +→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/033.png" target="_blank"><img src="checklist-shots/033.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(0,0) −→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/035.png" target="_blank"><img src="checklist-shots/035.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(1,0) +→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/037.png" target="_blank"><img src="checklist-shots/037.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(1,0) −→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/039.png" target="_blank"><img src="checklist-shots/039.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(2,0) +→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/041.png" target="_blank"><img src="checklist-shots/041.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(2,0) −→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/043.png" target="_blank"><img src="checklist-shots/043.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(0,1) +→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/045.png" target="_blank"><img src="checklist-shots/045.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(0,1) −→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/047.png" target="_blank"><img src="checklist-shots/047.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(1,1) +→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/049.png" target="_blank"><img src="checklist-shots/049.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(1,1) −→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/051.png" target="_blank"><img src="checklist-shots/051.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(2,1) +→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/053.png" target="_blank"><img src="checklist-shots/053.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>우(2,1) −→복귀</td><td>셀 9 표 59.4</td><td class="shotcell"><a href="checklist-shots/055.png" target="_blank"><img src="checklist-shots/055.png" alt=""></a></td></tr>
+<tr><td colspan="4" class="cathead"><b>연쇄</b> — 첫 행을 어긋낸 뒤 아래 행도 같은 방식으로 — 신고 ② 시나리오.</td></tr><tr class="ok"><td>✓</td><td>마우스 열0 위→아래 순차</td><td>2스텝 정상</td><td class="shotcell"><a href="checklist-shots/092.png" target="_blank"><img src="checklist-shots/092.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>마우스 열1 위→아래 순차</td><td>2스텝 정상</td><td class="shotcell"><a href="checklist-shots/093.png" target="_blank"><img src="checklist-shots/093.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>마우스 열2 위→아래 순차</td><td>2스텝 정상</td><td class="shotcell"><a href="checklist-shots/094.png" target="_blank"><img src="checklist-shots/094.png" alt=""></a></td></tr>
+<tr><td colspan="4" class="cathead"><b>클릭진입</b> — 어긋낸 표의 아무 셀이나 클릭하면 커서가 들어가는가.</td></tr><tr class="ok"><td>✓</td><td>시각(0,0)</td><td>cellIndex=0</td><td class="shotcell"><a href="checklist-shots/101.png" target="_blank"><img src="checklist-shots/101.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>시각(0,1)</td><td>cellIndex=1</td><td class="shotcell"><a href="checklist-shots/102.png" target="_blank"><img src="checklist-shots/102.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>시각(0,2)</td><td>cellIndex=2</td><td class="shotcell"><a href="checklist-shots/103.png" target="_blank"><img src="checklist-shots/103.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>시각(1,0)</td><td>cellIndex=2</td><td class="shotcell"><a href="checklist-shots/104.png" target="_blank"><img src="checklist-shots/104.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>시각(1,1)</td><td>cellIndex=3</td><td class="shotcell"><a href="checklist-shots/105.png" target="_blank"><img src="checklist-shots/105.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>시각(1,2)</td><td>cellIndex=4</td><td class="shotcell"><a href="checklist-shots/106.png" target="_blank"><img src="checklist-shots/106.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>시각(2,0)</td><td>cellIndex=6</td><td class="shotcell"><a href="checklist-shots/107.png" target="_blank"><img src="checklist-shots/107.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>시각(2,1)</td><td>cellIndex=7</td><td class="shotcell"><a href="checklist-shots/108.png" target="_blank"><img src="checklist-shots/108.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>시각(2,2)</td><td>cellIndex=8</td><td class="shotcell"><a href="checklist-shots/109.png" target="_blank"><img src="checklist-shots/109.png" alt=""></a></td></tr>
 </table>
 
 <h2>키보드 <span class="badge">42/42</span></h2>
-<table><tr><th></th><th>항목</th><th>상세</th></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (0,0) ArrowDown</td><td>이동 3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (0,0) ArrowUp</td><td>이동 -3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (0,0) ArrowRight</td><td>이동 3.7 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (0,0) ArrowLeft</td><td>이동 -3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (0,1) ArrowDown</td><td>이동 3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (0,1) ArrowUp</td><td>이동 -3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (0,1) ArrowRight</td><td>이동 3.7 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (0,1) ArrowLeft</td><td>이동 -3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (0,2) ArrowDown</td><td>이동 3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (0,2) ArrowUp</td><td>이동 -3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (0,2) ArrowRight [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (0,2) ArrowLeft [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (1,0) ArrowDown</td><td>이동 3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (1,0) ArrowUp</td><td>이동 -3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (1,0) ArrowRight</td><td>이동 3.7 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (1,0) ArrowLeft</td><td>이동 -3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (1,1) ArrowDown</td><td>이동 3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (1,1) ArrowUp</td><td>이동 -3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (1,1) ArrowRight</td><td>이동 3.7 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (1,1) ArrowLeft</td><td>이동 -3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (1,2) ArrowDown</td><td>이동 3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (1,2) ArrowUp</td><td>이동 -3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (1,2) ArrowRight [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (1,2) ArrowLeft [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (2,0) ArrowDown [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (2,0) ArrowUp [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (2,0) ArrowRight</td><td>이동 3.7 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (2,0) ArrowLeft</td><td>이동 -3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (2,1) ArrowDown [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (2,1) ArrowUp [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (2,1) ArrowRight</td><td>이동 3.7 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (2,1) ArrowLeft</td><td>이동 -3.8 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (2,2) ArrowDown [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (2,2) ArrowUp [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (2,2) ArrowRight [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[어긋키보드] (2,2) ArrowLeft [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td></tr>
-<tr class="ok"><td>✓</td><td>[연쇄] 키보드 열0 위→아래 순차</td><td>2스텝 정상</td></tr>
-<tr class="ok"><td>✓</td><td>[연쇄] 키보드 열1 위→아래 순차</td><td>2스텝 정상</td></tr>
-<tr class="ok"><td>✓</td><td>[연쇄] 키보드 열2 위→아래 순차</td><td>2스텝 정상</td></tr>
-<tr class="ok"><td>✓</td><td>[F5이동] 어긋낸 표 S자 순회 8스텝</td><td>전 스텝 이동</td></tr>
-<tr class="ok"><td>✓</td><td>[F5이동] 시각(1,0)→위(병합 진입)</td><td>2,0-2,0 → 1,0-1,0</td></tr>
-<tr class="ok"><td>✓</td><td>[F5이동] 시각(0,0)→아래 연속(끝까지)</td><td>ok ok 정지@3,0-3,0 최종 3,0-3,0</td></tr>
+<table><tr><th></th><th>항목</th><th>상세</th><th style="width:150px">화면</th></tr>
+<tr><td colspan="4" class="cathead"><b>어긋키보드</b> — 셀에서 F5 → Shift+화살표 — 키보드 한 칸 어긋내기. 마지막 행·열의 바깥 방향은 무동작이 정상.</td></tr><tr class="ok"><td>✓</td><td>(0,0) ArrowDown</td><td>이동 3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/056.png" target="_blank"><img src="checklist-shots/056.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(0,0) ArrowUp</td><td>이동 -3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/057.png" target="_blank"><img src="checklist-shots/057.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(0,0) ArrowRight</td><td>이동 3.7 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/058.png" target="_blank"><img src="checklist-shots/058.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(0,0) ArrowLeft</td><td>이동 -3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/059.png" target="_blank"><img src="checklist-shots/059.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(0,1) ArrowDown</td><td>이동 3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/060.png" target="_blank"><img src="checklist-shots/060.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(0,1) ArrowUp</td><td>이동 -3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/061.png" target="_blank"><img src="checklist-shots/061.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(0,1) ArrowRight</td><td>이동 3.7 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/062.png" target="_blank"><img src="checklist-shots/062.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(0,1) ArrowLeft</td><td>이동 -3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/063.png" target="_blank"><img src="checklist-shots/063.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(0,2) ArrowDown</td><td>이동 3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/064.png" target="_blank"><img src="checklist-shots/064.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(0,2) ArrowUp</td><td>이동 -3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/065.png" target="_blank"><img src="checklist-shots/065.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(0,2) ArrowRight [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/066.png" target="_blank"><img src="checklist-shots/066.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(0,2) ArrowLeft [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/067.png" target="_blank"><img src="checklist-shots/067.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(1,0) ArrowDown</td><td>이동 3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/068.png" target="_blank"><img src="checklist-shots/068.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(1,0) ArrowUp</td><td>이동 -3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/069.png" target="_blank"><img src="checklist-shots/069.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(1,0) ArrowRight</td><td>이동 3.7 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/070.png" target="_blank"><img src="checklist-shots/070.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(1,0) ArrowLeft</td><td>이동 -3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/071.png" target="_blank"><img src="checklist-shots/071.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(1,1) ArrowDown</td><td>이동 3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/072.png" target="_blank"><img src="checklist-shots/072.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(1,1) ArrowUp</td><td>이동 -3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/073.png" target="_blank"><img src="checklist-shots/073.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(1,1) ArrowRight</td><td>이동 3.7 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/074.png" target="_blank"><img src="checklist-shots/074.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(1,1) ArrowLeft</td><td>이동 -3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/075.png" target="_blank"><img src="checklist-shots/075.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(1,2) ArrowDown</td><td>이동 3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/076.png" target="_blank"><img src="checklist-shots/076.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(1,2) ArrowUp</td><td>이동 -3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/077.png" target="_blank"><img src="checklist-shots/077.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(1,2) ArrowRight [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/078.png" target="_blank"><img src="checklist-shots/078.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(1,2) ArrowLeft [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/079.png" target="_blank"><img src="checklist-shots/079.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(2,0) ArrowDown [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/080.png" target="_blank"><img src="checklist-shots/080.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(2,0) ArrowUp [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/081.png" target="_blank"><img src="checklist-shots/081.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(2,0) ArrowRight</td><td>이동 3.7 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/082.png" target="_blank"><img src="checklist-shots/082.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(2,0) ArrowLeft</td><td>이동 -3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/083.png" target="_blank"><img src="checklist-shots/083.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(2,1) ArrowDown [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/084.png" target="_blank"><img src="checklist-shots/084.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(2,1) ArrowUp [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/085.png" target="_blank"><img src="checklist-shots/085.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(2,1) ArrowRight</td><td>이동 3.7 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/086.png" target="_blank"><img src="checklist-shots/086.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(2,1) ArrowLeft</td><td>이동 -3.8 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/087.png" target="_blank"><img src="checklist-shots/087.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(2,2) ArrowDown [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/088.png" target="_blank"><img src="checklist-shots/088.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(2,2) ArrowUp [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/089.png" target="_blank"><img src="checklist-shots/089.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(2,2) ArrowRight [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/090.png" target="_blank"><img src="checklist-shots/090.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>(2,2) ArrowLeft [바깥=무동작]</td><td>이동 0.0 표 59.4→59.4</td><td class="shotcell"><a href="checklist-shots/091.png" target="_blank"><img src="checklist-shots/091.png" alt=""></a></td></tr>
+<tr><td colspan="4" class="cathead"><b>연쇄</b> — 첫 행을 어긋낸 뒤 아래 행도 같은 방식으로 — 신고 ② 시나리오.</td></tr><tr class="ok"><td>✓</td><td>키보드 열0 위→아래 순차</td><td>2스텝 정상</td><td class="shotcell"><a href="checklist-shots/095.png" target="_blank"><img src="checklist-shots/095.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>키보드 열1 위→아래 순차</td><td>2스텝 정상</td><td class="shotcell"><a href="checklist-shots/096.png" target="_blank"><img src="checklist-shots/096.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>키보드 열2 위→아래 순차</td><td>2스텝 정상</td><td class="shotcell"><a href="checklist-shots/097.png" target="_blank"><img src="checklist-shots/097.png" alt=""></a></td></tr>
+<tr><td colspan="4" class="cathead"><b>F5이동</b> — 어긋낸 표에서 F5 블록 이동으로 표 전체를 돌 수 있는가 — 신고 ① 시나리오.</td></tr><tr class="ok"><td>✓</td><td>어긋낸 표 S자 순회 8스텝</td><td>전 스텝 이동</td><td class="shotcell"><a href="checklist-shots/098.png" target="_blank"><img src="checklist-shots/098.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>시각(1,0)→위(병합 진입)</td><td>2,0-2,0 → 1,0-1,0</td><td class="shotcell"><a href="checklist-shots/099.png" target="_blank"><img src="checklist-shots/099.png" alt=""></a></td></tr>
+<tr class="ok"><td>✓</td><td>시각(0,0)→아래 연속(끝까지)</td><td>ok ok 정지@3,0-3,0 최종 3,0-3,0</td><td class="shotcell"><a href="checklist-shots/100.png" target="_blank"><img src="checklist-shots/100.png" alt=""></a></td></tr>
 </table>
 
 <h2>사용자 수동 확인 <span class="badge" id="userBadge"></span></h2>
