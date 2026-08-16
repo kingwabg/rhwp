@@ -2372,7 +2372,29 @@ impl Table {
     /// 어긋나며 흡수했던 조각을 병합 해제로 되찾아 이웃에 되돌리고, 크기는 같은 구간을
     /// 공유하는 다른 열/행 셀(목격자)에서 복사한다. 그 결과 아무 셀 경계도 쓰지 않게 된
     /// 격자 줄은 접어서 원래의 단순한 격자로 되돌린다.
+    /// [2026-08-16] 복원도 트랜잭션 — 어긋난 적 없는 셀에 대한 오발 호출(스튜디오 CATCH
+    /// 치유 판정 오류 등)이 격자를 키우는 사고가 실측됐다(키보드 연속 +283HU/회).
+    /// offset_cell_boundary 와 동일하게 결과 불변식 위반 시 롤백 + 거부한다.
     pub fn restore_cell_boundary(
+        &mut self,
+        cell_idx: usize,
+        edge_right: bool,
+    ) -> Result<(), String> {
+        let saved = self.clone();
+        let w0: u64 = self.get_column_widths().iter().map(|&w| w as u64).sum();
+        let h0: u64 = self.effective_row_heights().iter().map(|&h| h as u64).sum();
+        let r = self.restore_cell_boundary_core(cell_idx, edge_right);
+        if r.is_ok() && !self.stagger_invariants_hold(w0, h0) {
+            *self = saved;
+            return Err("이 조작은 표 격자를 깨뜨려 취소했습니다".to_string());
+        }
+        if r.is_err() {
+            *self = saved;
+        }
+        r
+    }
+
+    fn restore_cell_boundary_core(
         &mut self,
         cell_idx: usize,
         edge_right: bool,
