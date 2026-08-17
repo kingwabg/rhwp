@@ -1,0 +1,53 @@
+<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><title>표 조작 전면 감사 2026-08-18</title>
+<style>body{font-family:'Apple SD Gothic Neo',sans-serif;margin:24px;background:#f8fafc;color:#0f172a}
+h1{font-size:22px} .meta{color:#64748b;font-size:13px;margin-bottom:16px}
+table{border-collapse:collapse;width:100%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+th,td{border:1px solid #e2e8f0;padding:8px 10px;font-size:13px;vertical-align:top}
+th{background:#f1f5f9;text-align:left} .id{font-weight:700;color:#475569;white-space:nowrap}
+.d{color:#64748b;font-size:12px;margin-top:3px} img{max-width:420px;border:1px solid #e2e8f0}
+.sum{background:#fff;border:1px solid #e2e8f0;padding:12px 16px;margin:14px 0;font-size:14px;line-height:1.7}</style></head><body>
+<h1>표 조작 전면 감사 — 마우스·키보드 18항목</h1>
+<div class="meta">2026-08-18 · 3×3 기본 표 · 항목마다 새 표에서 실행 → 캡처 → 기하 실측 → 판정 · 빌드 audit-20260818</div>
+<div class="sum"><b>결론: 18/18 정상.</b> 감사에서 결함 1건 발견·수리 — <b>M03 안쪽 가로선(행 높이) 드래그가 완전 무동작</b>이었다.
+원인: 행 리사이즈는 "표 크기 불변" 규칙을 위해 이웃 행을 보상 축소하는데, 기본 표의 행이 이미 글줄 바닥(최소)이라
+드래그 위치가 ±2.7px 창으로 클램프되고 그 미세 커밋마저 엔진 바닥 규약이 거부 → 어떤 드래그도 조용히 사라졌다.
+수리: 보상이 불가능한 경우(클램프 창 초과 드래그)에만 한컴처럼 아래 행을 밀어내며 대상 행을 키운다(표 성장).
+축소 방향은 글줄 바닥 규약대로 무동작 유지. 실측 +15px→행 +14.9px.</div>
+<table><tr><th>ID</th><th>조작</th><th>판정</th><th>실행 후 캡처</th></tr>
+<tr><td class="id">M01</td><td>셀 클릭(캐럿 진입)<div class="d">가운데 셀 클릭 → 캐럿 진입(개체/셀선택 아님)</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/M01.png" loading="lazy"></td></tr><tr><td class="id">M02</td><td>안쪽 세로선 드래그(줄 전체 폭 재분배)<div class="d">캐럿 진입 후 첫 열 우측 세로선 +25px 드래그 — 줄 전체 재분배, 표 폭 불변</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/M02.png" loading="lazy"></td></tr><tr><td class="id">M03</td><td>안쪽 가로선 드래그(행 높이)<div class="d">첫 행 아래 가로선 +15px 드래그 — 행 성장(한컴식, 표 높이 증가). 이번 감사에서 발견·수리된 항목</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상 (이번 감사에서 수리)</td>
+<td><img src="assets/table-audit-20260818/M03.png" loading="lazy"></td></tr><tr><td class="id">M04</td><td>Shift+세로선(한 칸 가로 어긋)<div class="d">Shift+세로선 +20px — 한 칸 가로 어긋내기, 셀 9개·표 폭 불변</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/M04.png" loading="lazy"></td></tr><tr><td class="id">M05</td><td>Shift+가로선(한 칸 세로 어긋)<div class="d">Shift+가로선 +12px — 한 칸 세로 어긋내기, 셀 9개·표 높이 불변</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/M05.png" loading="lazy"></td></tr><tr><td class="id">M06</td><td>바깥 아래 가장자리 드래그(표 높이)<div class="d">바깥 아래 테두리 가장자리 1/3 지점 +25px — 표 높이 조절</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/M06.png" loading="lazy"></td></tr><tr><td class="id">M07</td><td>바깥 오른쪽 가장자리 드래그(표 폭)<div class="d">바깥 오른쪽 테두리 가장자리 +25px — 표 폭 조절</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/M07.png" loading="lazy"></td></tr><tr><td class="id">M08</td><td>바깥 테두리 가운데 클릭(표 개체 선택)<div class="d">바깥 테두리 칸 가운데 클릭 — 표 개체 선택</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/M08.png" loading="lazy"></td></tr><tr><td class="id">M09</td><td>테두리 잡아끌기(표 이동)<div class="d">미선택 상태 테두리 잡아끌기 한 제스처 — 표 이동</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/M09.png" loading="lazy"></td></tr><tr><td class="id">M10</td><td>개체 선택 후 e핸들(폭 조절)<div class="d">개체 선택 후 우변 중점 e핸들 +30px — 표 폭 조절</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/M10.png" loading="lazy"></td></tr><tr><td class="id">M11</td><td>셀 드래그(다중 셀 선택)<div class="d">셀에서 셀로 드래그 — 다중 셀 선택(범위)</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/M11.png" loading="lazy"></td></tr><tr><td class="id">K01</td><td>F5 → 셀 선택 진입<div class="d">F5 — 셀 선택 모드 진입</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/K01.png" loading="lazy"></td></tr><tr><td class="id">K02</td><td>F5 후 화살표 이동(→↓)<div class="d">F5 후 →↓ — 셀 이동(b2 도달)</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/K02.png" loading="lazy"></td></tr><tr><td class="id">K03</td><td>F5+Shift+→(한 칸 어긋)<div class="d">F5 후 Shift+→ ×2 — 키보드 한 칸 어긋내기</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/K03.png" loading="lazy"></td></tr><tr><td class="id">K04</td><td>K03 후 Shift+←로 복원<div class="d">이어서 Shift+← ×2 — 원위치 복원(격자 완전 복귀)</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/K04.png" loading="lazy"></td></tr><tr><td class="id">K05</td><td>F5+Shift+↓(세로 어긋)·↑복원<div class="d">F5 후 Shift+↓↓↑↑ — 세로 어긋·복원 왕복</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/K05.png" loading="lazy"></td></tr><tr><td class="id">K06</td><td>F5+Alt+→(경계선 전체 이동)<div class="d">F5 후 Alt+→ ×2 — 경계선 전체 이동(표 폭 불변)</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/K06.png" loading="lazy"></td></tr><tr><td class="id">K07</td><td>F5 F5(범위)→화살표 확장<div class="d">F5 F5 후 →↓ — 범위 확장(2×2)</div></td>
+<td style="color:#16a34a;font-weight:700;white-space:nowrap">정상</td>
+<td><img src="assets/table-audit-20260818/K07.png" loading="lazy"></td></tr></table></body></html>
