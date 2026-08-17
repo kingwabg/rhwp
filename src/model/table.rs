@@ -2401,7 +2401,64 @@ impl Table {
                         self.cells[left].width = (t.width as i32 - cum) as HwpUnit;
                         return Ok(());
                     }
-                    return Err("이미 어긋난 칸은 기존 선 근처로만 되돌릴 수 있습니다".to_string());
+                    // 스냅 실패 = 낙하점이 스팬 내부 어느 단위 열의 **중간** — 대상을
+                    // 단위 열로 완전 분할(삽입 없음)한 뒤, 낙하점이 든 단위 조각에만
+                    // span1 알고리즘(삽입 분할)을 적용하고 좌우를 재병합한다. 종전
+                    // 맹목 분할(1→2)은 기존 선에 얹혀 "삽입으로 이웃이 밀렸다" 가정
+                    // 산술이 깨졌다(신고 "병합 범위 초과"). 남의 어긋으로 스팬이 된
+                    // 칸의 정상 신규 어긋내기도 이 경로다(실측 S2·S3 셋업).
+                    let t_span = t.col_span;
+                    let mut cum_r = 0i32;
+                    let mut p_col = t.col;
+                    let mut p_off = d;
+                    {
+                        let cols_w = self.get_column_widths();
+                        for k in 1..=t_span {
+                            let wcol =
+                                cols_w.get((boundary - k) as usize).copied().unwrap_or(0) as i32;
+                            if cum_r + wcol > d || k == t_span {
+                                p_col = boundary - k;
+                                p_off =
+                                    (d - cum_r).clamp(MIN_CELL, (wcol - MIN_CELL).max(MIN_CELL));
+                                break;
+                            }
+                            cum_r += wcol;
+                        }
+                    }
+                    self.split_cell_into(t.row, t.col, 1, t_span, true, false)?;
+                    let p_idx = self.cell_index_at(t.row, p_col).ok_or("낙하 조각 소실")?;
+                    let p_w = self.cells[p_idx].width as i32;
+                    self.split_cell_into(t.row, p_col, 1, 2, true, false)?;
+                    let left_piece = self
+                        .cell_index_at(t.row, p_col)
+                        .ok_or("분할 조각(좌) 소실")?;
+                    self.cells[left_piece].width = (p_w - p_off).max(MIN_CELL) as HwpUnit;
+                    let strip = self
+                        .cell_index_at(t.row, p_col + 1)
+                        .ok_or("분할 조각(우) 소실")?;
+                    self.cells[strip].width = p_off as HwpUnit;
+                    // 오른쪽(조각들+이웃) 병합 — p 오른쪽 인덱스는 삽입으로 +1 밀림
+                    self.merge_cells(
+                        t.row,
+                        p_col + 1,
+                        t.row + t.row_span - 1,
+                        boundary + n.col_span,
+                    )?;
+                    let merged = self
+                        .cell_index_at(t.row, p_col + 1)
+                        .ok_or("병합 결과 소실")?;
+                    self.cells[merged].width = (n.width as i32 + d) as HwpUnit;
+                    while self.cells[merged].paragraphs.len() > 1
+                        && self.cells[merged].paragraphs[0].text.is_empty()
+                    {
+                        self.cells[merged].paragraphs.remove(0);
+                    }
+                    if p_col > t.col {
+                        self.merge_cells(t.row, t.col, t.row + t.row_span - 1, p_col)?;
+                    }
+                    let left = self.cell_index_at(t.row, t.col).ok_or("잔여 병합 소실")?;
+                    self.cells[left].width = (t.width as i32 - d) as HwpUnit;
+                    return Ok(());
                 }
                 self.split_cell_into(t.row, t.col, 1, 2, true, false)?;
                 let left = self
