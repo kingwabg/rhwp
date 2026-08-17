@@ -2264,6 +2264,58 @@ impl Table {
                 if d <= 0 {
                     return Err("이웃 칸에 남는 폭이 없습니다".to_string());
                 }
+                // [낙하점 2026-08-18] 행 방향(2026-08-16 재작성)과 대칭 — 낙하점이 이웃
+                // 스팬 안의 **기존 격자선 ±MIN_CELL** 이면 새 선을 만들지 않고 그 선에
+                // 합류한다(재사용). 종전엔 스팬 이웃을 맹목 분할해 같은 x 에 겹선이
+                // 쌓이고 열 폭 해석이 모호해져 불변식 롤백("표 격자를 깨뜨려 취소")이
+                // 났다(실측: b1 우 어긋 후 b2 같은 방향 어긋). 이웃을 자기 격자열대로
+                // 완전 분할(새 열 없음)한 뒤 왼쪽 k 열은 대상에, 나머지는 도로 병합.
+                if n.col_span > 1 {
+                    let cols_w = self.get_column_widths();
+                    let mut cum = 0i32;
+                    for k in 1..n.col_span {
+                        cum += cols_w
+                            .get((boundary + k - 1) as usize)
+                            .copied()
+                            .unwrap_or(0) as i32;
+                        if (d - cum).abs() > MIN_CELL {
+                            continue;
+                        }
+                        let n_span = n.col_span;
+                        self.split_cell_into(n.row, n.col, 1, n_span, true, false)?;
+                        // 내용은 잔여(오른쪽 첫) 조각으로 — split 은 첫 조각에 남긴다
+                        let first = self.cell_index_at(t.row, boundary).ok_or("조각(좌) 소실")?;
+                        let keep = self
+                            .cell_index_at(t.row, boundary + k)
+                            .ok_or("조각(우) 소실")?;
+                        if first != keep {
+                            let (a, b) = if first < keep {
+                                let (x, y) = self.cells.split_at_mut(keep);
+                                (&mut x[first].paragraphs, &mut y[0].paragraphs)
+                            } else {
+                                let (x, y) = self.cells.split_at_mut(first);
+                                (&mut y[0].paragraphs, &mut x[keep].paragraphs)
+                            };
+                            std::mem::swap(a, b);
+                        }
+                        if n_span - k > 1 {
+                            self.merge_cells(
+                                t.row,
+                                boundary + k,
+                                t.row + t.row_span - 1,
+                                boundary + n_span - 1,
+                            )?;
+                        }
+                        let rem = self
+                            .cell_index_at(t.row, boundary + k)
+                            .ok_or("잔여 병합 소실")?;
+                        self.cells[rem].width = (n.width as i32 - cum) as HwpUnit;
+                        self.merge_cells(t.row, t.col, t.row + t.row_span - 1, boundary + k - 1)?;
+                        let merged = self.cell_index_at(t.row, t.col).ok_or("병합 결과 소실")?;
+                        self.cells[merged].width = (t.width as i32 + cum) as HwpUnit;
+                        return Ok(());
+                    }
+                }
                 let n_span = n.col_span;
                 self.split_cell_into(n.row, n.col, 1, n_span + 1, true, false)?;
                 let left = self
@@ -2304,6 +2356,52 @@ impl Table {
                 let d = (-delta).min(t.width as i32 - MIN_CELL);
                 if d <= 0 {
                     return Err("대상 칸에 남는 폭이 없습니다".to_string());
+                }
+                // [낙하점 2026-08-18] 대상이 스팬(이미 어긋나 넓힌 칸)이면 — 종전 맹목
+                // 분할(1→2)은 기존 선에 얹히며 새 열을 만들지 않는데, 이후 산술은 "새 열
+                // 삽입으로 이웃이 밀렸다"를 가정해 병합 범위가 표를 초과했다(신고 토스트
+                // "병합 범위 (1,2)~(2,4)가 표 크기 4×4를 초과"). 기존 선 ±MIN_CELL 이면
+                // 그 선에 합류(완전 분할 후 재병합, 삽입 없음), 그 밖 중간 지점은 산술이
+                // 성립하지 않으므로 명시 거부한다.
+                if t.col_span > 1 {
+                    let cols_w = self.get_column_widths();
+                    let mut cum = 0i32;
+                    for k in 1..t.col_span {
+                        cum += cols_w.get((boundary - k) as usize).copied().unwrap_or(0) as i32;
+                        if (d - cum).abs() > MIN_CELL {
+                            continue;
+                        }
+                        let t_span = t.col_span;
+                        // 내용은 첫(왼쪽) 조각에 남는다 = 잔여에 남는다 ✓
+                        self.split_cell_into(t.row, t.col, 1, t_span, true, false)?;
+                        self.merge_cells(
+                            t.row,
+                            boundary - k,
+                            t.row + t.row_span - 1,
+                            boundary + n.col_span - 1,
+                        )?;
+                        let merged = self
+                            .cell_index_at(t.row, boundary - k)
+                            .ok_or("병합 결과 소실")?;
+                        self.cells[merged].width = (n.width as i32 + cum) as HwpUnit;
+                        if self.cells[merged].paragraphs.len() > 1
+                            && self.cells[merged].paragraphs[0].text.is_empty()
+                        {
+                            self.cells[merged].paragraphs.remove(0);
+                        }
+                        if t_span - k > 1 {
+                            self.merge_cells(
+                                t.row,
+                                t.col,
+                                t.row + t.row_span - 1,
+                                boundary - k - 1,
+                            )?;
+                        }
+                        let left = self.cell_index_at(t.row, t.col).ok_or("잔여 병합 소실")?;
+                        self.cells[left].width = (t.width as i32 - cum) as HwpUnit;
+                        return Ok(());
+                    }
+                    return Err("이미 어긋난 칸은 기존 선 근처로만 되돌릴 수 있습니다".to_string());
                 }
                 self.split_cell_into(t.row, t.col, 1, 2, true, false)?;
                 let left = self
