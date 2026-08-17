@@ -2246,7 +2246,47 @@ impl Table {
             // 이전**하면 열 폭이 span 제약으로 정확히 유도되어 표 폭이 보존되고, 양방향
             // 재이동이 자유로워진다. 정렬선에 닿으면 restore(치유)로 자동 승격한다.
             if !self.is_boundary_aligned(&t, boundary, true) {
-                return self.shift_offset_boundary(cell_idx, n_idx, boundary, true, delta);
+                // [프로브·폴백 2026-08-18] 행(2026-08-16)과 대칭 — 재이동이 다른 행의
+                // 선을 **통과**해야 하면 조각 이전으로는 표현 불가 → 클론 프로브로
+                // 선판정(불변식·thin열·전달거리), 실패 시 복원 후 낙하점 재어긋으로
+                // 폴백해 통과를 지원한다. 키보드 복원(작은 스텝 반복)이 정렬선·이웃
+                // 어긋선을 넘는 순간 불변식 롤백으로 죽던 결함(S3·S4 실측) 수리.
+                let w0: u64 = self.get_column_widths().iter().map(|&w| w as u64).sum();
+                let h0: u64 = self.effective_row_heights().iter().map(|&h| h as u64).sum();
+                let thin = |tb: &Table| {
+                    tb.get_column_widths()
+                        .iter()
+                        .filter(|&&w| (w as i32) < MIN_CELL)
+                        .count()
+                };
+                let thin0 = thin(self);
+                let w_before = t.width as i32;
+                let mut probe = self.clone();
+                let r = probe.shift_offset_boundary(cell_idx, n_idx, boundary, true, delta);
+                let delivered = probe
+                    .cells
+                    .iter()
+                    .find(|c| c.row == t.row && c.col == t.col)
+                    .map(|c| c.width as i32)
+                    .unwrap_or(0)
+                    - w_before;
+                if r.is_ok()
+                    && probe.stagger_invariants_hold(w0, h0)
+                    && thin(&probe) <= thin0
+                    && (delivered - delta).abs() <= MIN_CELL
+                {
+                    *self = probe;
+                    return Ok(());
+                }
+                self.restore_cell_boundary_core(cell_idx, true)?;
+                let t_idx = self
+                    .cell_index_at(t.row, t.col)
+                    .ok_or("복원 후 대상 소실")?;
+                let cum = w_before - self.cells[t_idx].width as i32;
+                if (cum + delta).abs() <= MIN_CELL {
+                    return Ok(()); // 정렬선 ±MIN_CELL 이내 복귀 = 치유(스냅)
+                }
+                return self.offset_cell_boundary_core(t_idx, true, cum + delta);
             }
             if delta > 0 {
                 // [2026-08-17 저녁 철회] "낙하점 도달 시 이웃 조각 전체 흡수(병합)"를
