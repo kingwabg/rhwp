@@ -2249,36 +2249,11 @@ impl Table {
                 return self.shift_offset_boundary(cell_idx, n_idx, boundary, true, delta);
             }
             if delta > 0 {
-                // [합류·통과 2026-08-17] 낙하점이 이웃의 오른쪽 선 ±MIN_CELL 이내거나
-                // 넘어서면 이웃 조각 **전체를 흡수**해 경계를 그 선에 정확히 안착시키고,
-                // 남은 델타는 다음 이웃으로 재귀 전진한다(잔여 ≤ MIN_CELL 이면 정지 =
-                // 전달거리 스냅). 종전 `delta.min(n.width−MIN_CELL)` 클램프는 어떤 큰
-                // 드래그도 선 앞 MIN_CELL(2.7px) 슬리버로 포화시켜, 보이지 않는 조각
-                // 칸이 남았다(신고: F5 이동이 죽은 듯 보임). 내용은 병합으로 보존된다.
-                if delta >= n.width as i32 - MIN_CELL {
-                    let remaining = delta - n.width as i32;
-                    self.merge_cells(
-                        t.row,
-                        t.col,
-                        t.row + t.row_span - 1,
-                        boundary + n.col_span - 1,
-                    )?;
-                    let merged = self
-                        .cell_index_at(t.row, t.col)
-                        .ok_or("합류 병합 결과 소실")?;
-                    self.cells[merged].width = (t.width as i32 + n.width as i32) as HwpUnit;
-                    if remaining > MIN_CELL {
-                        // 재귀 실패(바깥 테두리 등)는 부분 부작용 없이 그 선에서 정지
-                        let saved = self.clone();
-                        if self
-                            .offset_cell_boundary_core(merged, true, remaining)
-                            .is_err()
-                        {
-                            *self = saved;
-                        }
-                    }
-                    return Ok(());
-                }
+                // [2026-08-17 저녁 철회] "낙하점 도달 시 이웃 조각 전체 흡수(병합)"를
+                // 같은 날 넣었다가 되돌렸다 — 어긋내기가 셀을 **합쳐 버리면** 사용자
+                // 규칙("합치기를 하지 않는 한 셀 9개 유지, 순회 1..9") 위반이고, 얇은
+                // 행 표에선 작은 드래그도 흡수 문턱을 넘어 a2 가 a1 으로 사라졌다
+                // (사용자 신고). 신규 어긋내기는 이웃 최소에서 멈추는 게 정본.
                 // 이웃 왼쪽 조각을 잘라 대상에 흡수.
                 // [신고 ② 2026-08-13] 이웃이 **남의 어긋남**으로 span>1 인 경우(다른 행이
                 // 어긋나며 이 이웃이 여러 격자열을 걸치게 된 상태)도 어긋낼 수 있어야 한다 —
@@ -2456,33 +2431,9 @@ impl Table {
                 let region: i32 = (boundary..span_end)
                     .map(|r| eff_rows.get(r as usize).copied().unwrap_or(0) as i32)
                     .sum();
-                // [합류·통과 2026-08-17] 열 방향과 동일 — 낙하점이 이웃 스팬 끝선
-                // ±MIN_CELL 이내거나 넘어서면 이웃 조각 전체를 흡수해 그 선에 안착,
-                // 잔여 델타는 재귀 전진(잔여 ≤ MIN_CELL 정지). 종전엔 region−n_floor
-                // 상한이 큰 드래그를 항상 선 앞 슬리버(2.7px 유령 행)로 포화시켰다.
-                if delta >= region - MIN_CELL {
-                    let remaining = delta - region;
-                    let t_eff: i32 = (t.row..boundary)
-                        .map(|r| eff_rows.get(r as usize).copied().unwrap_or(0) as i32)
-                        .sum();
-                    self.materialize_rows_effective(t.row as usize, (span_end - 1) as usize);
-                    self.merge_cells(t.row, t.col, span_end - 1, t.col + t.col_span - 1)?;
-                    let merged = self
-                        .cell_index_at(t.row, t.col)
-                        .ok_or("합류 병합 결과 소실")?;
-                    self.cells[merged].height = (t_eff + region) as HwpUnit;
-                    if remaining > MIN_CELL {
-                        // 재귀 실패(바깥 테두리 등)는 부분 부작용 없이 그 선에서 정지
-                        let saved = self.clone();
-                        if self
-                            .offset_cell_boundary_core(merged, false, remaining)
-                            .is_err()
-                        {
-                            *self = saved;
-                        }
-                    }
-                    return Ok(());
-                }
+                // [2026-08-17 저녁 철회] 열 방향과 동일 — "끝선 도달 시 이웃 전체
+                // 흡수" 철회(사용자 신고: a1 아래 어긋에 a2 가 합쳐져 사라짐). 이웃
+                // 조각은 바닥(n_floor)까지만 밀리고 셀 수는 보존된다.
                 let d = delta.min(region - n_floor);
                 if d <= 0 {
                     return Err("이웃 칸에 남는 높이가 없습니다".to_string());
