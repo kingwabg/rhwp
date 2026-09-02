@@ -713,17 +713,21 @@ impl Table {
     ///   [12..16] width, [16..20] height, [20..24] z_order,
     ///   [24..32] outer_margin (i16×4), [32..36] instance_id
     pub fn update_ctrl_dimensions(&mut self) {
-        if self.raw_ctrl_data.len() < common_obj_offsets::HEIGHT.end {
-            return;
-        }
         let total_width: HwpUnit = self.get_column_widths().iter().sum();
         let total_height: HwpUnit = self.effective_row_heights().iter().sum();
-        // (1) serialize source — raw_ctrl_data bytes (HWP 직렬화 시 사용).
-        self.raw_ctrl_data[common_obj_offsets::WIDTH].copy_from_slice(&total_width.to_le_bytes());
-        self.raw_ctrl_data[common_obj_offsets::HEIGHT].copy_from_slice(&total_height.to_le_bytes());
-        // (2) [Task #1151 v6] paragraph_layout cache — self.common.width/height.
+        // (1) serialize source — raw_ctrl_data bytes (HWP 직렬화 시 사용). HWPX 로드 표는 raw 가 비어
+        //     있다(parser/hwpx/section.rs `raw_ctrl_data: Vec::new()`) — 그때는 건너뛴다.
+        //     [불변식 가드 2026-09-02] 종전엔 여기서 조기 반환해 (2)도 건너뛰었다 → HWPX 표는
+        //     열 드래그·행 삽입·어긋내기 후에도 common.width/height 가 로드 시 값에 머물렀다.
+        if self.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
+            self.raw_ctrl_data[common_obj_offsets::WIDTH]
+                .copy_from_slice(&total_width.to_le_bytes());
+            self.raw_ctrl_data[common_obj_offsets::HEIGHT]
+                .copy_from_slice(&total_height.to_le_bytes());
+        }
+        // (2) [Task #1151 v6] paragraph_layout cache — self.common.width/height. 항상 갱신.
         // v3 helper (calc_sibling_topandbottom_table_reserved_hu) 가 self.common.height 사용.
-        // dual maintenance 가 필수 — 한쪽만 갱신 시 stale 결함.
+        // dual maintenance 가 필수 — 한쪽만 갱신 시 stale 결함(S4 불변식이 잡는다).
         self.common.width = total_width;
         self.common.height = total_height;
     }
