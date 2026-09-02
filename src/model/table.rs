@@ -481,6 +481,14 @@ impl Table {
         inferred.into_iter().collect()
     }
 
+    /// Studio 표시 힌트(local_resize_*) 초기화 — cell_idx 키라 셀 수·행·열이 바뀌면 무효(D6).
+    pub(crate) fn clear_local_resize_hints(&mut self) {
+        self.local_resize_rows.clear();
+        self.local_resize_cols.clear();
+        self.local_resize_cell_widths.clear();
+        self.local_resize_cell_heights.clear();
+    }
+
     /// 2D 그리드 인덱스를 재구축한다.
     /// 구조 변경(파싱, 행/열 추가/삭제, 병합/분할) 후 호출해야 한다.
     pub fn rebuild_grid(&mut self) {
@@ -694,10 +702,7 @@ impl Table {
         self.row_sizes = vec![target_cols as i16; target_rows as usize];
         self.cells = cells;
         self.zones.clear();
-        self.local_resize_rows.clear();
-        self.local_resize_cols.clear();
-        self.local_resize_cell_widths.clear();
-        self.local_resize_cell_heights.clear();
+        self.clear_local_resize_hints();
         self.update_ctrl_dimensions();
         self.rebuild_grid();
         self.dirty = true;

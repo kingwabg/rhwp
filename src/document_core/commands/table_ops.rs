@@ -56,7 +56,16 @@ impl DocumentCore {
     ) -> Result<T, HwpError> {
         let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
         let saved = table.clone();
-        let out = match f(table) {
+        let r = f(table);
+        // [6단계] 셀 수·행·열이 바뀌면 cell_idx 키 표시 힌트(local_resize_*)는 무효 — 검사 전에 비운다.
+        if r.is_ok()
+            && (table.cells.len() != saved.cells.len()
+                || table.row_count != saved.row_count
+                || table.col_count != saved.col_count)
+        {
+            table.clear_local_resize_hints();
+        }
+        let out = match r {
             Ok(v) => match table.check_invariants() {
                 Ok(()) => {
                     // [5단계] 델타 불변식(D1 폭·D2 높이·D4 내용·D5 슬리버·S5' 과대 셀) — 클래스별.
@@ -1366,10 +1375,16 @@ impl DocumentCore {
             None
         };
 
-        let (needs_reflow, reflow_para_count) = {
+        // [6단계 2026-09-02] 셀 속성 대입은 관문 안에서(구조 불변식·내용 검사, 위반 시 롤백).
+        let (needs_reflow, reflow_para_count) = self.with_table_txn(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            CmdClass::MayGrow,
+            false,
+            |table| {
             let mut needs_reflow = false;
             let mut size_changed = false;
-            let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
             let direct_border_fill_id = if has_border_fill_change {
                 None
             } else {
@@ -1383,9 +1398,7 @@ impl DocumentCore {
                     })
                 })
             };
-            let cell = table.cells.get_mut(cell_idx).ok_or_else(|| {
-                HwpError::RenderError(format!("셀 인덱스 {} 범위 초과", cell_idx))
-            })?;
+            let cell = table.cells.get_mut(cell_idx).ok_or_else(|| format!("셀 인덱스 {} 범위 초과", cell_idx))?;
 
             if let Some(v) = top_u32("width") {
                 needs_reflow |= cell.width != v;
@@ -1442,9 +1455,9 @@ impl DocumentCore {
             if size_changed {
                 table.update_ctrl_dimensions();
             }
-            table.dirty = true;
-            (needs_reflow, table.cells[cell_idx].paragraphs.len())
-        };
+            Ok((needs_reflow, table.cells[cell_idx].paragraphs.len()))
+            },
+        )?;
 
         if needs_reflow {
             let para_count = reflow_para_count;
@@ -1491,12 +1504,10 @@ impl DocumentCore {
             };
 
             // 대상 셀 정보 추출 + border_fill_id 변경
-            let (target_row, target_col, target_col_span, target_row_span) = {
-                let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+            let (target_row, target_col, target_col_span, target_row_span) = self
+                .with_table_txn(section_idx, parent_para_idx, control_idx, CmdClass::MayGrow, false, |table| {
                 let (row, col, col_span, row_span) = {
-                    let cell = table.cells.get_mut(cell_idx).ok_or_else(|| {
-                        HwpError::RenderError(format!("셀 인덱스 {} 범위 초과", cell_idx))
-                    })?;
+                    let cell = table.cells.get_mut(cell_idx).ok_or_else(|| format!("셀 인덱스 {} 범위 초과", cell_idx))?;
                     cell.border_fill_id = new_bf_id;
                     (cell.row, cell.col, cell.col_span, cell.row_span)
                 };
@@ -1508,13 +1519,8 @@ impl DocumentCore {
                     new_bf_has_cell_diagonal,
                     &cell_diagonal_bf_ids,
                 );
-                (
-                    row as usize,
-                    col as usize,
-                    col_span as usize,
-                    row_span as usize,
-                )
-            };
+                Ok((row as usize, col as usize, col_span as usize, row_span as usize))
+            })?;
 
             // 이웃 셀의 공유 엣지 테두리를 갱신
             // borders 배열: [좌(0), 우(1), 상(2), 하(3)]
@@ -2004,16 +2010,26 @@ impl DocumentCore {
             return Ok("{\"ok\":true}".to_string());
         }
 
-        // 셀 업데이트 적용
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        // 입력 방어: 범위 밖 cellIdx를 조용히 건너뛰지 않고 거부한다.
-        let cell_count = table.cells.len();
+        // 입력 방어: 범위 밖 cellIdx를 조용히 건너뛰지 않고 거부한다(관문 밖 — InvalidField 유지).
+        let cell_count = self
+            .get_table_mut(section_idx, parent_para_idx, control_idx)?
+            .cells
+            .len();
         if let Some(bad) = updates.iter().find(|u| u.cell_idx >= cell_count) {
             return Err(HwpError::InvalidField(format!(
                 "셀 인덱스 {} 범위 초과 (총 {}셀)",
                 bad.cell_idx, cell_count
             )));
         }
+        // [6단계 2026-09-02] 셀 크기 대입은 관문 안에서 — 구조 불변식·내용·슬리버·과대 셀 검사, 위반 시 롤백.
+        // 산술(보상·바닥·되감기)은 그대로다; 리플로우 대상은 관문 안에서 산출해 돌려받는다.
+        let reflow_cells = self.with_table_txn(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            CmdClass::MayGrow,
+            false,
+            |table| {
         // [officex] 최소 크기 아래 델타는 **클램프**한다(거부하지 않는다).
         // 한때 거부로 바꿨다가 되돌렸다(2026-07-26). 거부 근거였던 "셀 폭 합 != 표 폭 = 자기모순"이
         // 오진이었기 때문이다 — 열 폭은 그 열 셀들의 **최댓값**으로 유도되는 것이 정의된 계약이라
@@ -2156,24 +2172,15 @@ impl DocumentCore {
                     .copy_from_slice(&original_height.to_le_bytes());
             }
         }
-        table.dirty = true;
-
-        // 너비가 변경된 셀의 모든 문단에 대해 line_segs 재계산 (텍스트 리플로우)
-        let reflow_cells: Vec<(usize, usize)> = {
-            let para = &self.document.sections[section_idx].paragraphs[parent_para_idx];
-            if let Some(Control::Table(table)) = para.controls.get(control_idx) {
-                updates
-                    .iter()
-                    .filter(|u| u.width_delta != 0)
-                    .filter_map(|u| {
-                        let pc = table.cells.get(u.cell_idx)?.paragraphs.len();
-                        Some((u.cell_idx, pc))
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            }
-        };
+        // 너비가 변경된 셀의 모든 문단에 대해 line_segs 재계산 (텍스트 리플로우) — 대상 산출
+        let reflow_cells: Vec<(usize, usize)> = updates
+            .iter()
+            .filter(|u| u.width_delta != 0)
+            .filter_map(|u| Some((u.cell_idx, table.cells.get(u.cell_idx)?.paragraphs.len())))
+            .collect();
+        Ok(reflow_cells)
+            },
+        )?;
         for (cell_idx, para_count) in reflow_cells {
             for cell_para_idx in 0..para_count {
                 self.reflow_cell_paragraph(
