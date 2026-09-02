@@ -990,40 +990,12 @@ impl LayoutEngine {
                 let sr = zone.start_row as usize;
                 let er = (zone.end_row as usize + 1).min(row_count);
                 if sc < col_count && sr < row_count {
-                    let zone_x = table_x
-                        + row_col_x
-                            .get(sr)
-                            .and_then(|r| r.get(sc))
-                            .copied()
-                            .unwrap_or(0.0);
-                    let zone_y = table_y + row_y.get(sr).copied().unwrap_or(0.0);
-                    let zone_x_end = table_x
-                        + row_col_x
-                            .get(sr)
-                            .and_then(|r| {
-                                if ec < r.len() {
-                                    Some(r[ec])
-                                } else {
-                                    r.last().map(|&last_x| {
-                                        // 마지막 열 끝 = 마지막 열 시작 + 해당 셀 너비
-                                        let last_col = r.len() - 1;
-                                        table
-                                            .cells
-                                            .iter()
-                                            .find(|c| {
-                                                c.row as usize == sr && c.col as usize == last_col
-                                            })
-                                            .map(|c| {
-                                                last_x + hwpunit_to_px(c.width as i32, self.dpi)
-                                            })
-                                            .unwrap_or(last_x)
-                                    })
-                                }
-                            })
-                            .unwrap_or(0.0);
-                    // er ≤ row_count 이고 row_y.len() == row_count+1 이라 항상 Some. 종전 폴백은
-                    // row_sizes(행별 셀 수)를 높이로 오독하던 죽은 코드였다.
-                    let zone_y_end = table_y + row_y.get(er).copied().unwrap_or(0.0);
+                    // row_col_x 는 row_count 행 × (col_count+1) 선(row_col_x_px), row_y 는 row_count+1 —
+                    // sc < ec ≤ col_count, sr < er ≤ row_count 라 직접 인덱싱.
+                    let zone_x = table_x + row_col_x[sr][sc];
+                    let zone_y = table_y + row_y[sr];
+                    let zone_x_end = table_x + row_col_x[sr][ec];
+                    let zone_y_end = table_y + row_y[er];
                     let zone_w = (zone_x_end - zone_x).max(0.0);
                     let zone_h = (zone_y_end - zone_y).max(0.0);
                     // [Task #429] 단색/패턴/그라데이션 + 이미지 채우기 (zone 의 별도 image fill 처리는
@@ -1450,7 +1422,13 @@ impl LayoutEngine {
             return rh;
         }
 
-        // 1단계: row_span==1인 셀에서 개별 행 높이 추출
+        // 격자는 함수 상단 1회 — 1단계 저장 층(row_heights_stored) + 1-b 면제 술어(growth_exempt).
+        let g = TableGrid::axes(table);
+
+        // 1단계: row_span==1인 셀에서 개별 행 높이 추출.
+        // 음수 랩(≥ 2^31) 저장 높이는 무시한다 — 격자 row_heights_stored 는 그 값을 max 에 포함하므로
+        // 같은 행에 정상 셀과 랩 셀이 섞인 행(말뭉치 173행: 한글문서파일형식_5.0·1342000_edu_curriculum_map)
+        // 에서 격자 값을 바로 쓰면 행이 0 으로 무너진다. 그래서 span1 max 는 여기서 걸러 뽑는다.
         let mut row_heights = vec![0.0f64; row_count];
         for cell in &table.cells {
             if cell.row_span == 1 && (cell.row as usize) < row_count {
@@ -1464,17 +1442,14 @@ impl LayoutEngine {
             }
         }
         // [2026-08-16 어긋내기] span 전용 행(조각 행)은 span-1 셀이 없어 0 으로 남는다 —
-        // 모델의 get_row_heights(solve_span_gaps 포함)로 채운다. 안 채우면 fit_common 이
+        // 격자 저장 층(span1 max → 옛 모델 솔버 → 400)으로 채운다. 안 채우면 fit_common 이
         // 부족분을 전 행에 배분해 어긋낸 표가 미세 성장한다(3×3 연쇄 실측 +0.7px).
         // 정상 표는 모든 행에 span-1 셀이 있어 이 경로가 발동하지 않는다.
-        if row_heights.iter().any(|&h| h <= 0.0) {
-            let solved = table.get_row_heights();
-            for (r, slot) in row_heights.iter_mut().enumerate() {
-                if *slot <= 0.0 {
-                    if let Some(&hu) = solved.get(r) {
-                        if hu < 0x8000_0000 {
-                            *slot = hwpunit_to_px(hu as i32, self.dpi);
-                        }
+        for (r, slot) in row_heights.iter_mut().enumerate() {
+            if *slot <= 0.0 {
+                if let Some(&hu) = g.row_heights_stored.get(r) {
+                    if hu < 0x8000_0000 {
+                        *slot = hwpunit_to_px(hu as i32, self.dpi);
                     }
                 }
             }
@@ -1491,21 +1466,9 @@ impl LayoutEngine {
                 // 조각 행 판정 = 행의 아래 격자선을 한 열만 쓰는 행 — 정상 병합 표는
                 // 아래 선이 정렬(여러 열)이라 여기 안 걸리고, 신선 표 바닥(1284)도
                 // 종전대로 이 성장 경로가 지킨다.
-                let cell_is_empty = cell
-                    .paragraphs
-                    .iter()
-                    .all(|p| p.text.chars().all(|ch| ch.is_whitespace()));
-                // [2026-08-16 합류] 명시 저장 높이의 빈 셀 × 합류 산물 행 — 성장 제외
-                // (height_measurer 2단계 동일 예외와 한 몸).
-                let stored_explicit = cell.height < 0x8000_0000 && {
-                    let p = cell.effective_padding(&table.padding);
-                    ((cell.height as i32) - (p.top.max(0) as i32 + p.bottom.max(0) as i32)).abs()
-                        > 8
-                };
-                if cell_is_empty
-                    && (table.is_stagger_piece_row(r)
-                        || (stored_explicit && table.is_stagger_joined_row(r)))
-                {
+                // [2026-08-16 합류] 명시 저장 높이의 빈 셀 × 합류 산물 행도 성장 제외 —
+                // 술어는 TableGrid::growth_exempt 한 곳(height_measurer 2단계와 한 몸).
+                if g.growth_exempt(r, cell) {
                     continue;
                 }
                 let (pad_left, pad_right, pad_top, pad_bottom) =

@@ -11,6 +11,7 @@ use crate::model::footnote::{Footnote, FootnoteShape};
 use crate::model::paragraph::Paragraph;
 use crate::model::shape::{Caption, CommonObjAttr, TextWrap, VertRelTo};
 use crate::model::table::{Table, TablePageBreak};
+use crate::model::table_grid::TableGrid;
 
 /// treat_as_char 표가 인라인(텍스트와 나란히)인지 판별
 ///
@@ -1091,9 +1092,13 @@ impl HeightMeasurer {
 
         let row_count = table.row_count as usize;
         let mut row_heights = vec![0.0f64; row_count];
+        // 격자는 함수 상단 1회 — 1단계 저장 층(row_heights_stored) + 2단계 면제 술어(growth_exempt).
+        let g = TableGrid::axes(table);
 
         // 1단계: row_span==1인 셀에서 행별 최대 높이 추출
         // cell.height는 HWP가 저장한 셀 높이 (pad + content, trailing ls 미포함)
+        // 음수 랩(≥ 2^31) 은 무시 — 격자 저장 층은 랩 값을 max 에 포함하므로 정상·랩 혼재 행에서
+        // 격자 값을 바로 쓸 수 없다(table_layout::resolve_row_heights 1단계와 같은 이유).
         for cell in &table.cells {
             if cell.row_span == 1 && (cell.row as usize) < row_count {
                 let r = cell.row as usize;
@@ -1105,16 +1110,13 @@ impl HeightMeasurer {
                 }
             }
         }
-        // [2026-08-16 어긋내기] span 전용 행은 모델 solve_span_gaps 로 채운다 —
+        // [2026-08-16 어긋내기] span 전용 행은 격자 저장 층(옛 모델 솔버)으로 채운다 —
         // table_layout::resolve_row_heights 의 동일 예외와 한 몸(미세 성장 방지).
-        if row_heights.iter().any(|&h| h <= 0.0) {
-            let solved = table.get_row_heights();
-            for (r, slot) in row_heights.iter_mut().enumerate() {
-                if *slot <= 0.0 {
-                    if let Some(&hu) = solved.get(r) {
-                        if hu < 0x8000_0000 {
-                            *slot = hwpunit_to_px(hu as i32, self.dpi);
-                        }
+        for (r, slot) in row_heights.iter_mut().enumerate() {
+            if *slot <= 0.0 {
+                if let Some(&hu) = g.row_heights_stored.get(r) {
+                    if hu < 0x8000_0000 {
+                        *slot = hwpunit_to_px(hu as i32, self.dpi);
                     }
                 }
             }
@@ -1128,22 +1130,11 @@ impl HeightMeasurer {
                 // table_layout::resolve_row_heights 의 동일 예외와 한 몸이다. 빈 문단
                 // lineseg(1000HU)를 성장 근거로 삼으면 글줄보다 얇게 어긋낸 조각이
                 // 측정에서 도로 부풀어 모델(실효 합 보존)과 렌더(표 성장)가 갈린다.
-                let cell_is_empty = cell
-                    .paragraphs
-                    .iter()
-                    .all(|p| p.text.chars().all(|ch| ch.is_whitespace()));
                 // [2026-08-16 합류] 명시 저장 높이(> 패딩 규약)의 빈 셀이 합류 산물
                 // 행에 있으면 성장 제외 — 합류로 어긋선이 공유선이 되면 조각 행
                 // 판정에서 빠지는데, 물질화된 918 등은 사용자 실측 높이다.
-                let stored_explicit = cell.height < 0x8000_0000 && {
-                    let p = cell.effective_padding(&table.padding);
-                    ((cell.height as i32) - (p.top.max(0) as i32 + p.bottom.max(0) as i32)).abs()
-                        > 8
-                };
-                if cell_is_empty
-                    && (table.is_stagger_piece_row(r)
-                        || (stored_explicit && table.is_stagger_joined_row(r)))
-                {
+                // 술어는 TableGrid::growth_exempt 한 곳(table_layout 1-b 와 한 몸).
+                if g.growth_exempt(r, cell) {
                     continue;
                 }
                 // [Task #1785] 셀 패딩 — aim=false 는 layout 의 레거시 보존값 규칙
