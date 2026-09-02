@@ -38,6 +38,40 @@ pub(crate) fn square_band_float_common(
 }
 
 impl DocumentCore {
+    /// [불변식 가드 2026-09-02] 표 구조 명령의 단일 관문 — clone → 명령 → check_invariants → 위반 시 롤백.
+    ///
+    /// 모델 메서드가 Err 를 돌려도, 성공했지만 격자가 깨졌어도 표는 실행 전 상태로 돌아간다
+    /// (split_cells_in_range 루프 중간 실패의 부분 적용 해소). 렌더 캐시(cell_units_cache 등 표 포인터
+    /// 키)는 명령 성공 뒤 recompose 에서만 갱신되므로 롤백 경로에는 무효화가 필요 없다 — 실패 시
+    /// 여기서 바로 돌아가고 레이아웃은 돌지 않는다.
+    fn with_table_txn<T>(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        f: impl FnOnce(&mut crate::model::table::Table) -> Result<T, String>,
+    ) -> Result<T, HwpError> {
+        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+        let saved = table.clone();
+        let out = match f(table) {
+            Ok(v) => match table.check_invariants() {
+                Ok(()) => Ok(v),
+                Err(why) => Err(format!("이 조작은 표 격자를 깨뜨려 취소했습니다 — {why}")),
+            },
+            Err(e) => Err(e),
+        };
+        match out {
+            Ok(v) => {
+                table.dirty = true;
+                Ok(v)
+            }
+            Err(e) => {
+                *table = saved;
+                Err(HwpError::RenderError(e))
+            }
+        }
+    }
+
     pub(crate) fn get_table_mut(
         &mut self,
         section_idx: usize,
@@ -492,13 +526,11 @@ impl DocumentCore {
         row_idx: u16,
         below: bool,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .insert_row(row_idx, below)
-            .map_err(|e| HwpError::RenderError(e))?;
-        table.dirty = true;
-        let row_count = table.row_count;
-        let col_count = table.col_count;
+        let (row_count, col_count) =
+            self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+                t.insert_row(row_idx, below)?;
+                Ok((t.row_count, t.col_count))
+            })?;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
@@ -525,13 +557,11 @@ impl DocumentCore {
         col_idx: u16,
         right: bool,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .insert_column(col_idx, right)
-            .map_err(|e| HwpError::RenderError(e))?;
-        table.dirty = true;
-        let row_count = table.row_count;
-        let col_count = table.col_count;
+        let (row_count, col_count) =
+            self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+                t.insert_column(col_idx, right)?;
+                Ok((t.row_count, t.col_count))
+            })?;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
@@ -557,13 +587,11 @@ impl DocumentCore {
         control_idx: usize,
         row_idx: u16,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .delete_row(row_idx)
-            .map_err(|e| HwpError::RenderError(e))?;
-        table.dirty = true;
-        let row_count = table.row_count;
-        let col_count = table.col_count;
+        let (row_count, col_count) =
+            self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+                t.delete_row(row_idx)?;
+                Ok((t.row_count, t.col_count))
+            })?;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
@@ -589,13 +617,11 @@ impl DocumentCore {
         control_idx: usize,
         col_idx: u16,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .delete_column(col_idx)
-            .map_err(|e| HwpError::RenderError(e))?;
-        table.dirty = true;
-        let row_count = table.row_count;
-        let col_count = table.col_count;
+        let (row_count, col_count) =
+            self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+                t.delete_column(col_idx)?;
+                Ok((t.row_count, t.col_count))
+            })?;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
@@ -624,12 +650,10 @@ impl DocumentCore {
         end_row: u16,
         end_col: u16,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .merge_cells(start_row, start_col, end_row, end_col)
-            .map_err(|e| HwpError::RenderError(e))?;
-        table.dirty = true;
-        let cell_count = table.cells.len();
+        let cell_count = self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+            t.merge_cells(start_row, start_col, end_row, end_col)?;
+            Ok(t.cells.len())
+        })?;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
@@ -721,12 +745,10 @@ impl DocumentCore {
         row: u16,
         col: u16,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .split_cell(row, col)
-            .map_err(|e| HwpError::RenderError(e))?;
-        table.dirty = true;
-        let cell_count = table.cells.len();
+        let cell_count = self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+            t.split_cell(row, col)?;
+            Ok(t.cells.len())
+        })?;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
@@ -757,12 +779,10 @@ impl DocumentCore {
         equal_row_height: bool,
         merge_first: bool,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .split_cell_into(row, col, n_rows, m_cols, equal_row_height, merge_first)
-            .map_err(|e| HwpError::RenderError(e))?;
-        table.dirty = true;
-        let cell_count = table.cells.len();
+        let cell_count = self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+            t.split_cell_into(row, col, n_rows, m_cols, equal_row_height, merge_first)?;
+            Ok(t.cells.len())
+        })?;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
@@ -794,20 +814,12 @@ impl DocumentCore {
         m_cols: u16,
         equal_row_height: bool,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .split_cells_in_range(
-                start_row,
-                start_col,
-                end_row,
-                end_col,
-                n_rows,
-                m_cols,
-                equal_row_height,
-            )
-            .map_err(|e| HwpError::RenderError(e))?;
-        table.dirty = true;
-        let cell_count = table.cells.len();
+        let cell_count = self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+            t.split_cells_in_range(
+                start_row, start_col, end_row, end_col, n_rows, m_cols, equal_row_height,
+            )?;
+            Ok(t.cells.len())
+        })?;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
@@ -911,15 +923,12 @@ impl DocumentCore {
         parent_para_idx: usize,
         control_idx: usize,
     ) -> Result<String, HwpError> {
-        let (source_rows, source_cols, changed_cells) = {
-            let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-            let source_rows = table.row_count;
-            let source_cols = table.col_count;
-            let changed_cells = table
-                .transpose_unmerged_table_in_place()
-                .map_err(HwpError::RenderError)?;
-            (source_rows, source_cols, changed_cells)
-        };
+        let (source_rows, source_cols, changed_cells) =
+            self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+                let (source_rows, source_cols) = (t.row_count, t.col_count);
+                let changed_cells = t.transpose_unmerged_table_in_place()?;
+                Ok((source_rows, source_cols, changed_cells))
+            })?;
 
         self.document.sections[section_idx].raw_stream = None;
         for (cell_idx, para_count) in changed_cells {
@@ -2186,13 +2195,11 @@ impl DocumentCore {
         control_idx: usize,
         widths: Vec<u32>,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .set_column_widths(&widths)
-            .map_err(HwpError::RenderError)?;
-        table.dirty = true;
-        let col_count = table.col_count;
-        let total: u32 = table.get_column_widths().iter().sum();
+        let (col_count, total) =
+            self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+                t.set_column_widths(&widths)?;
+                Ok((t.col_count, t.get_column_widths().iter().sum::<u32>()))
+            })?;
 
         // 폭이 바뀐 셀의 모든 문단을 재배치(line_segs 재계산)한다.
         let reflow: Vec<(usize, usize)> = {
