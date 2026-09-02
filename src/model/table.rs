@@ -896,7 +896,8 @@ impl Table {
     /// ⚠ 다른 셀의 **저장** 높이는 포함하지 않는다 — 보상(±d) 조절이 있는 실파일에서
     /// 저장 높이까지 밑절미로 끌어올리면 행 max 가 커져 표가 자란다(issue_493 실측).
     /// [2026-08-16] 이 격자선이 **어긋난 선**인가 — 내부 선인데 한 열만 경계로 쓴다.
-    fn is_misaligned_line(&self, line: u16) -> bool {
+    /// [격자 뷰 2026-09-02] pub — check_corpus_invariants `predicate_mismatch` 의 오라클(8-b 위임 전까지).
+    pub fn is_misaligned_line(&self, line: u16) -> bool {
         if line == 0 || line >= self.row_count {
             return false; // 바깥 테두리
         }
@@ -918,7 +919,8 @@ impl Table {
     /// 빈 lineseg 성장(1000HU)을 적용하면 줄인 조각이 도로 부풀어 표가 자란다
     /// (3×3 전수 실측: 모델 합은 보존인데 렌더만 +2.7px). 정상 병합 행은 인접 선을
     /// 여러 열이 쓰므로 종전대로 바닥·성장이 적용된다. 1열 표는 제외.
-    pub(crate) fn is_stagger_piece_row(&self, row: usize) -> bool {
+    /// [격자 뷰 2026-09-02] pub — check_corpus_invariants `predicate_mismatch` 의 오라클(8-b 위임 전까지).
+    pub fn is_stagger_piece_row(&self, row: usize) -> bool {
         if self.col_count < 2 {
             return false;
         }
@@ -952,7 +954,8 @@ impl Table {
     /// 경계로 쓰고 일부 열은 스팬으로 관통한다. 두 열이 같은 낙하점에 합류하면
     /// 어긋선이 공유선이 되어 is_misaligned_line 에서 빠지는데, 그 행 역시
     /// 어긋내기 산물이라 빈 셀 글줄 바닥을 강제하면 표가 자란다(합류 실측 +7.6px).
-    fn is_partially_shared_line(&self, line: u16) -> bool {
+    /// [격자 뷰 2026-09-02] pub — check_corpus_invariants `predicate_mismatch` 의 오라클(8-b 위임 전까지).
+    pub fn is_partially_shared_line(&self, line: u16) -> bool {
         if line == 0 || line >= self.row_count {
             return false;
         }
@@ -970,7 +973,8 @@ impl Table {
     /// [2026-08-16 합류] 어긋내기 **합류 산물 행**인가 — 인접 선이 부분 공유선.
     /// 사용자 세로 병합 곁 행도 잡히므로, 호출부는 저장 높이가 명시(> 패딩 규약)인
     /// 빈 셀에만 이 판정으로 글줄 바닥을 면제한다(빈 셀 규약 284 는 종전대로 성장).
-    pub(crate) fn is_stagger_joined_row(&self, row: usize) -> bool {
+    /// [격자 뷰 2026-09-02] pub — check_corpus_invariants `predicate_mismatch` 의 오라클(8-b 위임 전까지).
+    pub fn is_stagger_joined_row(&self, row: usize) -> bool {
         if self.col_count < 2 {
             return false;
         }
@@ -2068,7 +2072,8 @@ impl Table {
     /// 이 경계(대상 셀의 우변/하변에 해당하는 격자선)가 **정렬선**인가 —
     /// 대상 줄 밖의 다른 셀도 이 격자선을 자기 경계로 쓰면 정렬, 아무도 안 쓰면
     /// 어긋난 선이다. 어긋내기가 "신규"인지 "재이동"인지 가르는 단일 판정.
-    fn is_boundary_aligned(&self, t: &Cell, boundary: u16, edge_right: bool) -> bool {
+    /// [격자 뷰 2026-09-02] pub — check_corpus_invariants `predicate_mismatch` 의 오라클(8-b 위임 전까지).
+    pub fn is_boundary_aligned(&self, t: &Cell, boundary: u16, edge_right: bool) -> bool {
         self.cells.iter().any(|c| {
             if edge_right {
                 c.row != t.row && (c.col == boundary || c.col + c.col_span == boundary)

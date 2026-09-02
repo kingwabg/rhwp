@@ -7,6 +7,7 @@ use rhwp::model::control::Control;
 use rhwp::model::paragraph::Paragraph;
 use rhwp::model::shape::ShapeObject;
 use rhwp::model::table::Table;
+use rhwp::model::table_grid::Axis;
 use rhwp::wasm_api::HwpDocument;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -107,6 +108,8 @@ struct Stats {
     rowx_diff: usize,
     piece_rows: usize,
     fallback_tables: usize,
+    solver_disagreement: usize,
+    predicate_mismatch: usize,
 }
 
 fn table_metrics(t: &Table, st: &mut Stats) {
@@ -163,6 +166,84 @@ fn table_metrics(t: &Table, st: &mut Stats) {
     }
 }
 
+/// [격자 뷰 2026-09-02] 8-a lint 2종 — 옛 getter/술어 vs `Table::grid()`.
+/// solver_disagreement: 표 단위(열 폭·저장 행높이 벡터 불일치, TAC 표기).
+/// predicate_mismatch: 행별 piece/joined, 행 축 내부 선별 misaligned/partially_shared,
+/// 셀 경계별 양축 aligned(is_boundary_aligned), S6 죽은 선 — 불일치 1건 = 1줄.
+fn grid_lints(
+    t: &Table,
+    file: &str,
+    path: &str,
+    lints: &[String],
+    st: &mut Stats,
+    solver: &mut Vec<String>,
+    pred: &mut Vec<String>,
+) {
+    let g = t.grid();
+    let tac = t.common.treat_as_char;
+    let mut why = Vec::new();
+    let cw = t.get_column_widths();
+    if g.col_widths != cw {
+        let k = g.col_widths.iter().zip(&cw).position(|(a, b)| a != b).unwrap_or(0);
+        why.push(format!("cols[{k}] grid={:?} legacy={:?}", g.col_widths.get(k), cw.get(k)));
+    }
+    let rh = t.get_row_heights();
+    if g.row_heights_stored != rh {
+        let k = g.row_heights_stored.iter().zip(&rh).position(|(a, b)| a != b).unwrap_or(0);
+        why.push(format!("rows[{k}] grid={:?} legacy={:?}", g.row_heights_stored.get(k), rh.get(k)));
+    }
+    if !why.is_empty() {
+        st.solver_disagreement += 1;
+        solver.push(format!("SOLVER\t{file}\t{path}\ttac={tac}\t{}", why.join("; ")));
+    }
+    let mut mm: Vec<String> = Vec::new();
+    for r in 0..t.row_count as usize {
+        if g.is_piece_row(r) != t.is_stagger_piece_row(r) {
+            mm.push(format!("piece_row {r}"));
+        }
+        if g.is_joined_row(r) != t.is_stagger_joined_row(r) {
+            mm.push(format!("joined_row {r}"));
+        }
+    }
+    for l in 1..t.row_count {
+        if g.is_misaligned(Axis::Rows, l) != t.is_misaligned_line(l) {
+            mm.push(format!("misaligned y{l}"));
+        }
+        if g.is_partially_shared(Axis::Rows, l) != t.is_partially_shared_line(l) {
+            mm.push(format!("partially_shared y{l}"));
+        }
+    }
+    for c in &t.cells {
+        for line in [c.col, c.col.wrapping_add(c.col_span)] {
+            if g.is_aligned_for(Axis::Cols, line, c.row) != t.is_boundary_aligned(c, line, true) {
+                mm.push(format!("aligned x{line} band r{}", c.row));
+            }
+        }
+        for line in [c.row, c.row.wrapping_add(c.row_span)] {
+            if g.is_aligned_for(Axis::Rows, line, c.col) != t.is_boundary_aligned(c, line, false) {
+                mm.push(format!("aligned y{line} band c{}", c.col));
+            }
+        }
+    }
+    let s6 = |word: &str| -> Vec<u16> {
+        lints
+            .iter()
+            .filter(|l| l.starts_with("S6") && l.contains(word))
+            .filter_map(|l| l.rsplit(' ').next()?.parse().ok())
+            .collect()
+    };
+    if g.dead_lines(Axis::Cols) != s6("세로선") {
+        mm.push(format!("dead x {:?} vs {:?}", g.dead_lines(Axis::Cols), s6("세로선")));
+    }
+    if g.dead_lines(Axis::Rows) != s6("가로선") {
+        mm.push(format!("dead y {:?} vs {:?}", g.dead_lines(Axis::Rows), s6("가로선")));
+    }
+    st.predicate_mismatch += mm.len();
+    for m in mm {
+        pred.push(format!("PRED\t{file}\t{path}\t{m}"));
+    }
+}
+
 fn main() {
     let root = std::env::args().nth(1).unwrap_or_else(|| "samples".into());
     let mut files = Vec::new();
@@ -170,6 +251,8 @@ fn main() {
     files.sort();
     let mut st = Stats::default();
     let mut violations: Vec<String> = Vec::new();
+    let mut solver_lines: Vec<String> = Vec::new();
+    let mut pred_lines: Vec<String> = Vec::new();
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     for f in &files {
@@ -208,6 +291,7 @@ fn main() {
                 st.fallback_tables += 1;
             }
             table_metrics(t, &mut st);
+            grid_lints(t, &f.display().to_string(), &path, &lints, &mut st, &mut solver_lines, &mut pred_lines);
         }
     }
     std::panic::set_hook(hook);
@@ -225,6 +309,14 @@ fn main() {
     println!("A2 merged≠span-sum: {} tables", st.a2_mismatch);
     println!("row-x differs from column max: {} tables", st.rowx_diff);
     println!("span-only (piece-row candidate) rows: {} tables", st.piece_rows);
+    println!("solver_disagreement (grid vs get_column_widths/get_row_heights): {} tables", st.solver_disagreement);
+    println!("predicate_mismatch (grid vs legacy predicates): {} lines", st.predicate_mismatch);
+    for l in solver_lines.iter().take(20) {
+        println!("{l}");
+    }
+    for l in pred_lines.iter().take(20) {
+        println!("{l}");
+    }
     violations.sort();
     for v in violations {
         println!("{v}");

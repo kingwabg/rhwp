@@ -16,6 +16,7 @@ pub mod path;
 pub mod shape;
 pub mod style;
 pub mod table;
+pub mod table_grid;
 
 /// HWP 내부 단위 (1/7200 인치, 부호 없음)
 pub type HwpUnit = u32;
