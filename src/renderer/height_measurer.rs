@@ -2814,73 +2814,20 @@ impl MeasuredTable {
 /// 행 단위 분할을 허용하여 페이지 잔여 공간을 활용한다 (Task #398 v2, HanCom-compat).
 pub const BLOCK_UNIT_MAX_ROWS: usize = 3;
 
-/// 표의 모든 셀을 검사하여 rowspan 묶음 블록 경계를 산출한다 (Task #398).
-/// row_block_start[r] = r 행을 포함하는 셀들의 최소 시작 행
-/// row_block_end[r]   = r 행을 포함하는 셀들의 최대 종료 행 (exclusive)
-/// 겹치는 블록은 전이 폐포로 통합한다.
+/// rowspan 묶음 블록 경계 (Task #398) — `TableGrid::row_blocks()`(관통자 없는 y선이 경계) 전개.
+/// row_block_start[r] / row_block_end[r] = r 행을 포함하는 블록 `[s, e)`. 블록 밖(범위 초과) 행은 `[r, r+1)`.
 fn compute_row_blocks(
     table: &crate::model::table::Table,
     row_count: usize,
 ) -> (Vec<usize>, Vec<usize>) {
-    if row_count == 0 {
-        return (Vec::new(), Vec::new());
-    }
     let mut start: Vec<usize> = (0..row_count).collect();
     let mut end: Vec<usize> = (1..=row_count).collect();
-    // 1단계: rowspan>1 셀로 블록 확장
-    for cell in &table.cells {
-        let r0 = cell.row as usize;
-        let rs = (cell.row_span as usize).max(1);
-        if r0 >= row_count {
-            continue;
+    for (s, e) in crate::model::table_grid::TableGrid::lines_only(table).row_blocks() {
+        let e = e.min(row_count);
+        for r in s..e {
+            start[r] = s;
+            end[r] = e;
         }
-        let r1 = (r0 + rs).min(row_count);
-        for r in r0..r1 {
-            if start[r] > r0 {
-                start[r] = r0;
-            }
-            if end[r] < r1 {
-                end[r] = r1;
-            }
-        }
-    }
-    // 2단계: 전이 폐포 (겹치는 블록 통합)
-    loop {
-        let mut changed = false;
-        for r in 0..row_count {
-            let s = start[r];
-            let e = end[r];
-            // 같은 블록 내 모든 행의 start 최소값, end 최대값으로 평탄화
-            let mut new_s = s;
-            let mut new_e = e;
-            for r2 in s..e {
-                if start[r2] < new_s {
-                    new_s = start[r2];
-                }
-                if end[r2] > new_e {
-                    new_e = end[r2];
-                }
-            }
-            if new_s != s || new_e != e {
-                start[r] = new_s;
-                end[r] = new_e;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    // 3단계: 같은 블록 내 모든 행이 동일 (start, end) 가지도록 정규화
-    let mut r = 0;
-    while r < row_count {
-        let s = start[r];
-        let e = end[r];
-        for r2 in s..e {
-            start[r2] = s;
-            end[r2] = e;
-        }
-        r = e;
     }
     (start, end)
 }
