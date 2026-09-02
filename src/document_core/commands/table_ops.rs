@@ -1,5 +1,6 @@
 //! 표/셀 CRUD + 속성 조회·수정 관련 native 메서드
 
+use crate::model::table::CmdClass;
 use super::super::helpers::{
     border_line_type_to_u8_val, color_ref_to_css, json_u32, navigate_path_to_table,
 };
@@ -49,13 +50,23 @@ impl DocumentCore {
         section_idx: usize,
         parent_para_idx: usize,
         control_idx: usize,
+        class: CmdClass,
+        deletes_content: bool,
         f: impl FnOnce(&mut crate::model::table::Table) -> Result<T, String>,
     ) -> Result<T, HwpError> {
         let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
         let saved = table.clone();
         let out = match f(table) {
             Ok(v) => match table.check_invariants() {
-                Ok(()) => Ok(v),
+                Ok(()) => {
+                    // [5단계] 델타 불변식(D1 폭·D2 높이·D4 내용·D5 슬리버·S5' 과대 셀) — 클래스별.
+                    let bad = table.check_deltas(&saved, class, None, deletes_content);
+                    if bad.is_empty() {
+                        Ok(v)
+                    } else {
+                        Err(format!("이 조작은 표 크기 규약을 깨뜨려 취소했습니다 — {}", bad.join("; ")))
+                    }
+                }
                 Err(why) => Err(format!("이 조작은 표 격자를 깨뜨려 취소했습니다 — {why}")),
             },
             Err(e) => Err(e),
@@ -527,7 +538,7 @@ impl DocumentCore {
         below: bool,
     ) -> Result<String, HwpError> {
         let (row_count, col_count) =
-            self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+            self.with_table_txn(section_idx, parent_para_idx, control_idx, CmdClass::KeepWidth, false, |t| {
                 t.insert_row(row_idx, below)?;
                 Ok((t.row_count, t.col_count))
             })?;
@@ -558,7 +569,7 @@ impl DocumentCore {
         right: bool,
     ) -> Result<String, HwpError> {
         let (row_count, col_count) =
-            self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+            self.with_table_txn(section_idx, parent_para_idx, control_idx, CmdClass::KeepHeight, false, |t| {
                 t.insert_column(col_idx, right)?;
                 Ok((t.row_count, t.col_count))
             })?;
@@ -588,7 +599,7 @@ impl DocumentCore {
         row_idx: u16,
     ) -> Result<String, HwpError> {
         let (row_count, col_count) =
-            self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+            self.with_table_txn(section_idx, parent_para_idx, control_idx, CmdClass::KeepWidth, true, |t| {
                 t.delete_row(row_idx)?;
                 Ok((t.row_count, t.col_count))
             })?;
@@ -618,7 +629,7 @@ impl DocumentCore {
         col_idx: u16,
     ) -> Result<String, HwpError> {
         let (row_count, col_count) =
-            self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+            self.with_table_txn(section_idx, parent_para_idx, control_idx, CmdClass::KeepHeight, true, |t| {
                 t.delete_column(col_idx)?;
                 Ok((t.row_count, t.col_count))
             })?;
@@ -650,7 +661,7 @@ impl DocumentCore {
         end_row: u16,
         end_col: u16,
     ) -> Result<String, HwpError> {
-        let cell_count = self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+        let cell_count = self.with_table_txn(section_idx, parent_para_idx, control_idx, CmdClass::KeepWidthHeight, false, |t| {
             t.merge_cells(start_row, start_col, end_row, end_col)?;
             Ok(t.cells.len())
         })?;
@@ -745,7 +756,7 @@ impl DocumentCore {
         row: u16,
         col: u16,
     ) -> Result<String, HwpError> {
-        let cell_count = self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+        let cell_count = self.with_table_txn(section_idx, parent_para_idx, control_idx, CmdClass::KeepWidthHeight, false, |t| {
             t.split_cell(row, col)?;
             Ok(t.cells.len())
         })?;
@@ -779,7 +790,7 @@ impl DocumentCore {
         equal_row_height: bool,
         merge_first: bool,
     ) -> Result<String, HwpError> {
-        let cell_count = self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+        let cell_count = self.with_table_txn(section_idx, parent_para_idx, control_idx, CmdClass::KeepWidthHeight, false, |t| {
             t.split_cell_into(row, col, n_rows, m_cols, equal_row_height, merge_first)?;
             Ok(t.cells.len())
         })?;
@@ -814,7 +825,7 @@ impl DocumentCore {
         m_cols: u16,
         equal_row_height: bool,
     ) -> Result<String, HwpError> {
-        let cell_count = self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+        let cell_count = self.with_table_txn(section_idx, parent_para_idx, control_idx, CmdClass::KeepWidthHeight, false, |t| {
             t.split_cells_in_range(
                 start_row, start_col, end_row, end_col, n_rows, m_cols, equal_row_height,
             )?;
@@ -924,7 +935,7 @@ impl DocumentCore {
         control_idx: usize,
     ) -> Result<String, HwpError> {
         let (source_rows, source_cols, changed_cells) =
-            self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+            self.with_table_txn(section_idx, parent_para_idx, control_idx, CmdClass::MayGrow, false, |t| {
                 let (source_rows, source_cols) = (t.row_count, t.col_count);
                 let changed_cells = t.transpose_unmerged_table_in_place()?;
                 Ok((source_rows, source_cols, changed_cells))
@@ -2196,7 +2207,7 @@ impl DocumentCore {
         widths: Vec<u32>,
     ) -> Result<String, HwpError> {
         let (col_count, total) =
-            self.with_table_txn(section_idx, parent_para_idx, control_idx, |t| {
+            self.with_table_txn(section_idx, parent_para_idx, control_idx, CmdClass::MayGrow, false, |t| {
                 t.set_column_widths(&widths)?;
                 Ok((t.col_count, t.get_column_widths().iter().sum::<u32>()))
             })?;

@@ -9,6 +9,19 @@ pub const CELL_FLAG_PROTECT: u16 = 0x0002;
 pub const CELL_FLAG_HEADER: u16 = 0x0004;
 pub const CELL_FLAG_EDITABLE_IN_FORM: u16 = 0x0008;
 
+/// [불변식 가드 2026-09-02] 표 명령이 보존해야 하는 바깥 크기 — `Table::check_deltas` 의 검사 클래스.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CmdClass {
+    /// 어긋내기·복원·병합·나누기·순델타 0 리사이즈: 표 폭·높이 모두 불변
+    KeepWidthHeight,
+    /// 행 삽입·삭제: 표 폭 불변(높이는 변함)
+    KeepWidth,
+    /// 열 삽입·삭제: 표 높이 불변(폭은 변함)
+    KeepHeight,
+    /// 셀 속성·열 폭 절대 설정·표 성장 허용 리사이즈: 크기 검사 없음(구조·내용·슬리버만)
+    MayGrow,
+}
+
 /// 표 개체 (HWPTAG_TABLE)
 #[derive(Debug, Default, Clone)]
 pub struct Table {
@@ -904,7 +917,30 @@ impl Table {
         if self.col_count < 2 {
             return false;
         }
-        self.is_misaligned_line(row as u16) || self.is_misaligned_line(row as u16 + 1)
+        if !(self.is_misaligned_line(row as u16) || self.is_misaligned_line(row as u16 + 1)) {
+            return false;
+        }
+        // [불변식 가드 2026-09-02] 선 모양만으로는 어긋내기 조각과 **사용자 세로 병합 곁 행**을
+        // 구별할 수 없다 — 3×3 에서 (0,0)-(1,1) 병합 뒤 1번 선은 2열만 쓰고 병합 셀이 관통하므로
+        // 0행이 조각 행으로 오판돼 빈 셀(284 규약)이 글줄 바닥을 잃고 표가 3852→1852 로 줄었다
+        // (ops-matrix c-merge-block, D2 위반). 어긋내기 조각은 저장 높이가 명시값(≠ 패딩 규약)이고
+        // 빈 셀 규약 284 는 한컴이 항상 한 줄로 그리므로, 행의 span1 셀이 **모두** 명시 높이일 때만
+        // 조각 행이다 — 합류 행(is_stagger_joined_row) 호출부의 stored_explicit 가드와 같은 식.
+        self.row_span1_cells_explicit(row)
+    }
+
+    /// 행의 span1 셀이 **모두** 명시 저장 높이(≠ 빈 셀 패딩 규약 ±8HU, 음수 랩 아님)인가.
+    /// span1 셀이 없는 행(관통만)은 참. 조각 행·관통 행에서 글줄 바닥을 면제할 자격 —
+    /// 빈 셀 규약 284 는 한컴이 항상 한 줄로 그리므로 면제하면 표가 줄어든다.
+    fn row_span1_cells_explicit(&self, row: usize) -> bool {
+        self.cells
+            .iter()
+            .filter(|c| c.row as usize == row && c.row_span <= 1)
+            .all(|c| {
+                let p = c.effective_padding(&self.padding);
+                let pad = p.top.max(0) as i64 + p.bottom.max(0) as i64;
+                c.height < 0x8000_0000 && (c.height as i64 - pad).abs() > 8
+            })
     }
 
     /// [2026-08-16 합류] 이 격자선이 **부분 공유선**인가 — 내부 선을 일부 열은
@@ -946,7 +982,9 @@ impl Table {
                 .cells
                 .iter()
                 .any(|c| (c.row as usize) < row && (c.row as usize + c.row_span as usize) > row);
-            if spanned_through {
+            // [불변식 가드 2026-09-02] 관통 행도 조각 행과 같은 자격 검사 — 사용자 세로 병합 아래
+            // 행의 빈 셀(284 규약)은 렌더러처럼 글줄 바닥을 받는다(3×3 2×2 병합: 1행 284→1284).
+            if spanned_through && self.row_span1_cells_explicit(row) {
                 continue;
             }
             if self.is_stagger_piece_row(row) {
@@ -990,7 +1028,9 @@ impl Table {
                 .cells
                 .iter()
                 .any(|c| (c.row as usize) < row && (c.row as usize + c.row_span as usize) > row);
-            if spanned_through {
+            // [불변식 가드 2026-09-02] 관통 행도 조각 행과 같은 자격 검사 — 사용자 세로 병합 아래
+            // 행의 빈 셀(284 규약)은 렌더러처럼 글줄 바닥을 받는다(3×3 2×2 병합: 1행 284→1284).
+            if spanned_through && self.row_span1_cells_explicit(row) {
                 continue;
             }
             if self.is_stagger_piece_row(row) {
@@ -2343,6 +2383,81 @@ impl Table {
                     z.start_row, z.start_col, z.end_row, z.end_col
                 ));
             }
+        }
+        out
+    }
+
+    /// [불변식 가드 2026-09-02] 명령 전후 **델타** 불변식 — 위반 사유 목록(빈 벡터면 통과).
+    ///
+    /// 절대값("행 폭 합 == 표 폭" 등)은 한컴 실물이 위반하므로(말뭉치 2417/3080/1013표) 규칙이 될 수
+    /// 없고, "이 명령이 무엇을 보존해야 하는가"만 명령 클래스로 검사한다. 경고 모드로 먼저 돌려
+    /// 현재 위반하는 조작을 열거한 뒤 산술을 고치고 Err 로 승격한다.
+    ///
+    /// - D1 폭 보존: Σget_column_widths 변화 ≤ 4HU (KeepWidthHeight·KeepWidth)
+    /// - D2 높이 보존: Σeffective_row_heights 변화 ≤ 4HU (KeepWidthHeight·KeepHeight)
+    /// - D3 셀 수: `expected_cell_delta` 가 주어지면 정확히 그만큼
+    /// - D4 내용 보존: 비어 있지 않은 문단의 총 문자 수 불변 (`deletes_content` 가 아닐 때)
+    /// - D5 슬리버 비증가: 폭 < MIN_CELL 열 수·실효 높이 < MIN_CELL 행 수가 늘지 않음
+    /// - S5' 과대 셀 비증가: 크기 ≥ 1_000_000 셀 수가 늘지 않음 (u32 언더플로 ed0bc5c94; 실물에
+    ///   음수 높이 랩 셀이 있어 절대 규칙은 불가)
+    ///
+    /// ±4HU 근거: split_cell 균등 분할 잔여 손실 상한 span−1 HU.
+    pub fn check_deltas(
+        &self,
+        before: &Table,
+        class: CmdClass,
+        expected_cell_delta: Option<i64>,
+        deletes_content: bool,
+    ) -> Vec<String> {
+        const MIN_CELL: u32 = 200;
+        let mut out = Vec::new();
+        let sum_w = |t: &Table| t.get_column_widths().iter().map(|&w| w as u64).sum::<u64>();
+        let sum_h = |t: &Table| t.effective_row_heights().iter().map(|&h| h as u64).sum::<u64>();
+        if matches!(class, CmdClass::KeepWidthHeight | CmdClass::KeepWidth) {
+            let (a, b) = (sum_w(before), sum_w(self));
+            if a.abs_diff(b) > 4 {
+                out.push(format!("D1 표 폭 변화 {a} → {b}"));
+            }
+        }
+        if matches!(class, CmdClass::KeepWidthHeight | CmdClass::KeepHeight) {
+            let (a, b) = (sum_h(before), sum_h(self));
+            if a.abs_diff(b) > 4 {
+                out.push(format!("D2 표 높이 변화 {a} → {b}"));
+            }
+        }
+        if let Some(exp) = expected_cell_delta {
+            let got = self.cells.len() as i64 - before.cells.len() as i64;
+            if got != exp {
+                out.push(format!("D3 셀 수 변화 {got} (기대 {exp})"));
+            }
+        }
+        if !deletes_content {
+            let chars = |t: &Table| {
+                t.cells
+                    .iter()
+                    .flat_map(|c| c.paragraphs.iter())
+                    .map(|p| p.text.chars().count())
+                    .sum::<usize>()
+            };
+            let (a, b) = (chars(before), chars(self));
+            if a != b {
+                out.push(format!("D4 문자 수 변화 {a} → {b}"));
+            }
+        }
+        let thin_cols = |t: &Table| t.get_column_widths().iter().filter(|&&w| w < MIN_CELL).count();
+        let thin_rows =
+            |t: &Table| t.effective_row_heights().iter().filter(|&&h| h < MIN_CELL).count();
+        if thin_cols(self) > thin_cols(before) {
+            out.push(format!("D5 슬리버 열 {} → {}", thin_cols(before), thin_cols(self)));
+        }
+        if thin_rows(self) > thin_rows(before) {
+            out.push(format!("D5 슬리버 행 {} → {}", thin_rows(before), thin_rows(self)));
+        }
+        let huge = |t: &Table| {
+            t.cells.iter().filter(|c| c.width >= 1_000_000 || c.height >= 1_000_000).count()
+        };
+        if huge(self) > huge(before) {
+            out.push(format!("S5 과대 셀 {} → {}", huge(before), huge(self)));
         }
         out
     }

@@ -39,15 +39,31 @@ fn idx_at(doc: &HwpDocument, row: u16, col: u16) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// (셀 수, 행 수, 열 폭 합, 실효 높이 합)
-fn state(doc: &HwpDocument) -> (usize, u16, u32, u32) {
+/// (셀 수, 행 수, 열 폭 합, 실효 높이 합) + 델타 검사용 표 클론
+type State = ((usize, u16, u32, u32), rhwp::model::table::Table);
+fn state(doc: &HwpDocument) -> State {
     let t = table_of(doc);
     (
-        t.cells.len(),
-        t.row_count,
-        t.get_column_widths().iter().sum(),
-        t.effective_row_heights().iter().sum(),
+        (
+            t.cells.len(),
+            t.row_count,
+            t.get_column_widths().iter().sum(),
+            t.effective_row_heights().iter().sum(),
+        ),
+        t.clone(),
     )
+}
+
+/// [5단계 2026-09-02] 케이스 → 델타 검사 클래스. 어긋내기·병합·나누기는 표 크기 불변,
+/// 행 삽입·삭제는 폭 불변, 단일 셀 델타 resize 는 성장 허용. 삭제는 내용이 줄어도 된다.
+fn class_of(cat: &str, id: &str) -> (rhwp::model::table::CmdClass, Option<i64>, bool) {
+    use rhwp::model::table::CmdClass::*;
+    match cat {
+        "어긋내기" => (KeepWidthHeight, Some(0), false),
+        "병합·나누기" => (KeepWidthHeight, None, false),
+        "행·열" => (KeepWidth, None, id.contains("delete")),
+        _ => (MayGrow, None, false),
+    }
 }
 
 fn msg(r: &Result<String, rhwp::error::HwpError>) -> String {
@@ -66,18 +82,22 @@ struct Rec<'a> {
     label: &'a str,
 }
 
-fn emit(
-    rec: Rec,
-    r: Result<String, rhwp::error::HwpError>,
-    before: (usize, u16, u32, u32),
-    doc: &HwpDocument,
-) {
-    let after = state(doc);
+fn emit(rec: Rec, r: Result<String, rhwp::error::HwpError>, before: State, doc: &HwpDocument) {
+    let (before, before_tbl) = before;
+    let (after, after_tbl) = state(doc);
     let w_keep = before.2 == after.2;
     let h_keep = before.3.abs_diff(after.3) <= 4;
+    // 성공한 명령만 델타 검사 — 거부(Err)는 롤백돼 전후 동일이 정상
+    let (class, cell_delta, deletes) = class_of(rec.cat, rec.id);
+    let violations = if r.is_ok() {
+        after_tbl.check_deltas(&before_tbl, class, cell_delta, deletes)
+    } else {
+        Vec::new()
+    };
     println!(
-        "{{\"cat\":\"{}\",\"id\":\"{}\",\"label\":\"{}\",\"result\":\"{}\",\"cells\":\"{}→{}\",\"rows\":\"{}→{}\",\"widthKeep\":{},\"heightKeep\":{}}}",
-        rec.cat, rec.id, rec.label, msg(&r), before.0, after.0, before.1, after.1, w_keep, h_keep
+        "{{\"cat\":\"{}\",\"id\":\"{}\",\"label\":\"{}\",\"result\":\"{}\",\"cells\":\"{}→{}\",\"rows\":\"{}→{}\",\"widthKeep\":{},\"heightKeep\":{},\"violations\":{:?}}}",
+        rec.cat, rec.id, rec.label, msg(&r), before.0, after.0, before.1, after.1, w_keep, h_keep,
+        violations
     );
 }
 
