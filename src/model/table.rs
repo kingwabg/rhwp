@@ -2192,10 +2192,156 @@ impl Table {
             *self = saved;
             return Err("이 조작은 표 격자를 깨뜨려 취소했습니다".to_string());
         }
+        if r.is_ok() {
+            if let Err(why) = self.check_invariants() {
+                *self = saved;
+                return Err(format!("이 조작은 표 격자를 깨뜨려 취소했습니다 — {why}"));
+            }
+        }
         if r.is_err() {
             *self = saved; // 부작용 없는 실패 보장
         }
         r
+    }
+
+    /// [불변식 가드 2026-09-02] 표 **구조** 불변식 — 위반이면 Err(사유).
+    ///
+    /// 공개 명령 종료 시점에만 검사한다 — insert_row_line·split_cells_in_range 루프 등
+    /// 트랜잭션 중간 상태는 의도적으로 위반한다. 항목은 한컴 실물(HWPX 2791표·HWP5 1221표)
+    /// 전수 위반 0건인 것만: 크기 절대 규칙("행 폭 합 == 표 폭" 등)은 실물이 위반하므로
+    /// 여기 넣지 않는다(명령 전후 델타 검사 몫).
+    ///
+    /// - S1 격자: 모든 슬롯이 정확히 한 셀의 span 영역(빈 슬롯·겹침·범위 초과 없음), span ≥ 1
+    /// - S2 row_sizes: 길이 == row_count, 값 == 행별 셀 수(HWP5 스펙)
+    /// - S3 순서: cells 가 (row,col) 행 우선 오름차순·유일 (LIST_HEADER 직렬화 순서)
+    /// - S4 치수: raw_ctrl_data 가 있으면 WIDTH/HEIGHT 바이트 == common.width/height (이중 장부)
+    /// - S5 상한: 셀 크기 < 1_000_000, 행·열·셀 수 ≥ 1 (하한은 두지 않음 — 실물에 높이 0 셀 존재)
+    /// - D6 힌트: local_resize_cell_* 의 cell_idx 가 범위 안
+    pub fn check_invariants(&self) -> Result<(), String> {
+        let rc = self.row_count as usize;
+        let cc = self.col_count as usize;
+        if rc == 0 || cc == 0 || self.cells.is_empty() {
+            return Err(format!("표 구조 손상: 행 {rc}×열 {cc}, 셀 {}개", self.cells.len()));
+        }
+        let mut cover = vec![0u8; rc * cc];
+        for (i, c) in self.cells.iter().enumerate() {
+            if c.col_span == 0 || c.row_span == 0 {
+                return Err(format!("표 구조 손상: 셀 {i} 의 span 이 0"));
+            }
+            if c.width >= 1_000_000 || c.height >= 1_000_000 {
+                return Err(format!("표 구조 손상: 셀 {i} 크기 이상 {}×{}", c.width, c.height));
+            }
+            let r1 = c.row as usize + c.row_span as usize;
+            let c1 = c.col as usize + c.col_span as usize;
+            if r1 > rc || c1 > cc {
+                return Err(format!(
+                    "표 구조 손상: 셀 {i} ({},{}) span {}×{} 이 격자 {rc}×{cc} 밖",
+                    c.row, c.col, c.row_span, c.col_span
+                ));
+            }
+            for r in c.row as usize..r1 {
+                for k in c.col as usize..c1 {
+                    cover[r * cc + k] = cover[r * cc + k].saturating_add(1);
+                }
+            }
+        }
+        if let Some(gi) = cover.iter().position(|&n| n != 1) {
+            let what = if cover[gi] == 0 { "빈 슬롯" } else { "겹침" };
+            return Err(format!("표 구조 손상: 격자 ({},{}) {what}", gi / cc, gi % cc));
+        }
+        for w in self.cells.windows(2) {
+            if (w[0].row, w[0].col) >= (w[1].row, w[1].col) {
+                return Err(format!(
+                    "표 구조 손상: 셀 순서 ({},{}) 뒤에 ({},{})",
+                    w[0].row, w[0].col, w[1].row, w[1].col
+                ));
+            }
+        }
+        if self.row_sizes.len() != rc {
+            return Err(format!("표 구조 손상: row_sizes 길이 {} ≠ 행 수 {rc}", self.row_sizes.len()));
+        }
+        for (r, &n) in self.row_sizes.iter().enumerate() {
+            let actual = self.cells.iter().filter(|c| c.row as usize == r).count();
+            if n as usize != actual {
+                return Err(format!("표 구조 손상: row_sizes[{r}]={n} ≠ 행 셀 수 {actual}"));
+            }
+        }
+        if self.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
+            let rd = |r: std::ops::Range<usize>| {
+                u32::from_le_bytes(self.raw_ctrl_data[r].try_into().unwrap())
+            };
+            let (w, h) = (rd(common_obj_offsets::WIDTH), rd(common_obj_offsets::HEIGHT));
+            if w != self.common.width || h != self.common.height {
+                return Err(format!(
+                    "표 구조 손상: 저장 치수 {w}×{h} ≠ 표시 치수 {}×{}",
+                    self.common.width, self.common.height
+                ));
+            }
+        }
+        let n = self.cells.len();
+        if let Some(&(idx, _)) = self
+            .local_resize_cell_widths
+            .iter()
+            .chain(self.local_resize_cell_heights.iter())
+            .find(|&&(idx, _)| idx >= n)
+        {
+            return Err(format!("표 구조 손상: 표시 힌트 셀 {idx} ≥ 셀 수 {n}"));
+        }
+        Ok(())
+    }
+
+    /// [불변식 가드 2026-09-02] 경고 수준 점검 — 거부하지 않고 사유 목록만 돌려준다.
+    /// - S6 죽은 선: 어떤 셀도 start/end 경계로 쓰지 않는 내부 격자선(목격자 없는 열/행 → 폴백 성장의 뿌리)
+    /// - S7 폴백 도달: get_column_widths/get_row_heights 가 1800/400 기본값을 쓰는 열/행
+    /// - S8 영역: zones 의 start/end 가 격자 밖
+    pub fn lint_invariants(&self) -> Vec<String> {
+        let rc = self.row_count as usize;
+        let cc = self.col_count as usize;
+        let mut out = Vec::new();
+        for line in 1..cc {
+            let used = self.cells.iter().any(|c| {
+                c.col as usize == line || c.col as usize + c.col_span as usize == line
+            });
+            if !used {
+                out.push(format!("S6 죽은 세로선 {line}"));
+            }
+        }
+        for line in 1..rc {
+            let used = self.cells.iter().any(|c| {
+                c.row as usize == line || c.row as usize + c.row_span as usize == line
+            });
+            if !used {
+                out.push(format!("S6 죽은 가로선 {line}"));
+            }
+        }
+        let mut widths = vec![0u32; cc];
+        for c in &self.cells {
+            if c.col_span == 1 && (c.col as usize) < cc {
+                widths[c.col as usize] = widths[c.col as usize].max(c.width);
+            }
+        }
+        self.solve_span_gaps(&mut widths, true);
+        out.extend(
+            widths.iter().enumerate().filter(|(_, &w)| w == 0).map(|(k, _)| format!("S7 열 {k} 폭 폴백(1800)")),
+        );
+        let mut heights = self.get_raw_row_heights();
+        self.solve_span_gaps(&mut heights, false);
+        out.extend(
+            heights.iter().enumerate().filter(|(_, &h)| h == 0).map(|(r, _)| format!("S7 행 {r} 높이 폴백(400)")),
+        );
+        for (i, z) in self.zones.iter().enumerate() {
+            if z.start_col > z.end_col
+                || z.start_row > z.end_row
+                || z.end_col as usize >= cc
+                || z.end_row as usize >= rc
+            {
+                out.push(format!(
+                    "S8 영역 {i} ({},{})-({},{}) 이 격자 {rc}×{cc} 밖",
+                    z.start_row, z.start_col, z.end_row, z.end_col
+                ));
+            }
+        }
+        out
     }
 
     /// 어긋내기 후 표가 온전한가 — 폭 합·실효 높이 합 보존(±4HU), 셀 크기 건전.
@@ -2753,6 +2899,12 @@ impl Table {
         if r.is_ok() && !self.stagger_invariants_hold(w0, h0) {
             *self = saved;
             return Err("이 조작은 표 격자를 깨뜨려 취소했습니다".to_string());
+        }
+        if r.is_ok() {
+            if let Err(why) = self.check_invariants() {
+                *self = saved;
+                return Err(format!("이 조작은 표 격자를 깨뜨려 취소했습니다 — {why}"));
+            }
         }
         if r.is_err() {
             *self = saved;
