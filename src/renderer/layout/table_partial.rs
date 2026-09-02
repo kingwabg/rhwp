@@ -7,9 +7,9 @@ use super::super::render_tree::*;
 use super::super::style_resolver::ResolvedStyleSet;
 use super::super::{hwpunit_to_px, ShapeStyle};
 use super::border_rendering::{
-    build_row_col_x, collect_cell_borders, render_edge_borders, render_transparent_borders,
+    collect_cell_borders, render_edge_borders, render_transparent_borders,
 };
-use super::table_layout::{calc_nested_split_rows, NestedTableSplit};
+use super::table_layout::{calc_nested_split_rows, px_lines, row_col_x_px, NestedTableSplit};
 use super::text_measurement::{estimate_text_width, resolved_to_text_style};
 use super::utils::find_bin_data;
 use super::{CellContext, CellPathEntry, LayoutEngine};
@@ -1502,9 +1502,10 @@ impl LayoutEngine {
         let col_count = table.col_count as usize;
         let row_count = table.row_count as usize;
         let cell_spacing = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
+        let grid = table.grid();
 
         // ── 1. 열 폭 계산 + 2. 행 높이 계산 (table_layout 공유 메서드) ──
-        let col_widths = self.resolve_column_widths(table, col_count);
+        let col_widths = self.resolve_column_widths(&grid, table, col_count);
         let mut row_heights = self.resolve_row_heights(
             table,
             col_count,
@@ -1721,21 +1722,10 @@ impl LayoutEngine {
         }
 
         // ── 3. 누적 위치 계산 ──
-        let mut col_x = vec![0.0f64; col_count + 1];
-        for i in 0..col_count {
-            col_x[i + 1] =
-                col_x[i] + col_widths[i] + if i + 1 < col_count { cell_spacing } else { 0.0 };
-        }
+        let col_x = px_lines(&col_widths, cell_spacing);
 
         // 행별 열 위치 계산 (셀별 독립 너비 지원)
-        let row_col_x = build_row_col_x(
-            table,
-            &col_widths,
-            col_count,
-            row_count,
-            cell_spacing,
-            self.dpi,
-        );
+        let row_col_x = row_col_x_px(&grid, table, &col_widths, cell_spacing, self.dpi);
 
         let table_width = row_col_x
             .iter()

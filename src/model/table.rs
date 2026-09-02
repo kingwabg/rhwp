@@ -69,18 +69,6 @@ pub struct Table {
     /// 구조/내용 변경 시 true → 재측정 필요 (Default: false)
     #[doc(hidden)]
     pub dirty: bool,
-    /// Studio 보상 resize로 행별 독립 가로 경계를 보존해야 하는 행.
-    #[doc(hidden)]
-    pub local_resize_rows: Vec<u16>,
-    /// Studio 보상 resize로 열별 독립 세로 경계를 보존해야 하는 열.
-    #[doc(hidden)]
-    pub local_resize_cols: Vec<u16>,
-    /// Studio 로컬 가로 resize 후 셀별 목표 표시 폭(HWPUNIT).
-    #[doc(hidden)]
-    pub local_resize_cell_widths: Vec<(usize, u32)>,
-    /// Studio 로컬 세로 resize 후 셀별 목표 표시 높이(HWPUNIT).
-    #[doc(hidden)]
-    pub local_resize_cell_heights: Vec<(usize, u32)>,
 }
 
 /// 표 쪽 나눔 종류
@@ -389,9 +377,9 @@ impl Table {
         (0..h).collect()
     }
 
-    /// 저장/복구 후 Studio 런타임 힌트가 사라진 행 단위 가로 resize를 보수적으로 추론한다.
+    /// 행 단위 가로 resize 를 셀 폭 패턴에서 보수적으로 추론한다(로드 경로 규칙 — 런타임 힌트 아님;
+    /// 힌트 필드 local_resize_* 는 9-c 에서 폐기).
     ///
-    /// 한컴 HWP5에는 `local_resize_rows` 같은 rhwp 내부 힌트를 저장할 곳이 없다. 따라서
     /// 같은 셀 배치 패턴을 공유하는 행들 중 다수의 폭 벡터와 다른 소수 행만 행 단위
     /// resize 결과로 간주한다. 병합 패턴이 유일한 행은 원본 문서 구조일 가능성이 높아
     /// 추론 대상에서 제외한다.
@@ -401,19 +389,10 @@ impl Table {
             return Vec::new();
         }
 
-        let explicit_rows = self
-            .local_resize_rows
-            .iter()
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>();
         let mut grouped_rows =
             std::collections::BTreeMap::<Vec<(u16, u16)>, Vec<(u16, Vec<u32>)>>::new();
 
         for row in 0..self.row_count {
-            if explicit_rows.contains(&row) {
-                continue;
-            }
-
             let mut row_cells = self
                 .cells
                 .iter()
@@ -483,14 +462,6 @@ impl Table {
         }
 
         inferred.into_iter().collect()
-    }
-
-    /// Studio 표시 힌트(local_resize_*) 초기화 — cell_idx 키라 셀 수·행·열이 바뀌면 무효(D6).
-    pub(crate) fn clear_local_resize_hints(&mut self) {
-        self.local_resize_rows.clear();
-        self.local_resize_cols.clear();
-        self.local_resize_cell_widths.clear();
-        self.local_resize_cell_heights.clear();
     }
 
     /// 2D 그리드 인덱스를 재구축한다.
@@ -706,7 +677,6 @@ impl Table {
         self.row_sizes = vec![target_cols as i16; target_rows as usize];
         self.cells = cells;
         self.zones.clear();
-        self.clear_local_resize_hints();
         self.update_ctrl_dimensions();
         self.rebuild_grid();
         self.dirty = true;
@@ -2077,7 +2047,6 @@ impl Table {
     /// - S5 개수: 행·열·셀 수 ≥ 1, span ≥ 1. 셀 크기 상한은 두지 않는다 — 실물 HWP5(hwpspec.hwp 등
     ///   4파일 175셀)가 음수 높이를 u32 로 랩해 저장하고 있어(4294962496 = −4800) 절대 규칙이 아니다.
     ///   명령이 새로 만드는 언더플로(ed0bc5c94)는 델타 검사 "과대 셀 수 비증가" 몫.
-    /// - D6 힌트: local_resize_cell_* 의 cell_idx 가 범위 안
     pub fn check_invariants(&self) -> Result<(), String> {
         let rc = self.row_count as usize;
         let cc = self.col_count as usize;
@@ -2135,15 +2104,6 @@ impl Table {
                     self.common.width, self.common.height
                 ));
             }
-        }
-        let n = self.cells.len();
-        if let Some(&(idx, _)) = self
-            .local_resize_cell_widths
-            .iter()
-            .chain(self.local_resize_cell_heights.iter())
-            .find(|&&(idx, _)| idx >= n)
-        {
-            return Err(format!("표 구조 손상: 표시 힌트 셀 {idx} ≥ 셀 수 {n}"));
         }
         Ok(())
     }

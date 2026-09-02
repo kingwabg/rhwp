@@ -10,6 +10,7 @@ use crate::model::control::Control;
 use crate::model::paragraph::Paragraph;
 use crate::model::style::{Alignment, BorderLine, CenterLine};
 use crate::model::table::{TablePageBreak, VerticalAlign};
+use crate::model::table_grid::{Axis, TableGrid};
 use crate::renderer::float_placement::signed_hwpunit;
 
 const ROWBREAK_OBJECT_BOTTOM_BLEED_TOLERANCE_PX: f64 = 64.0;
@@ -66,7 +67,7 @@ fn has_initial_tac_shape_host(paragraphs: &[Paragraph]) -> bool {
 use super::super::composer::effective_text_for_metrics;
 use super::super::{hwpunit_to_px, ShapeStyle};
 use super::border_rendering::{
-    build_row_col_x, collect_cell_borders, create_border_line_nodes, render_cell_diagonal,
+    collect_cell_borders, create_border_line_nodes, render_cell_diagonal,
     render_edge_borders, render_transparent_borders,
 };
 use super::text_measurement::{estimate_text_width, resolved_to_text_style};
@@ -125,116 +126,6 @@ fn top_caption_flow_extra(
     } else {
         0.0
     }
-}
-
-fn build_col_row_y_from_cell_heights(
-    table: &crate::model::table::Table,
-    row_heights: &[f64],
-    row_y: &[f64],
-    col_count: usize,
-    row_count: usize,
-    cell_spacing: f64,
-    dpi: f64,
-) -> Vec<Vec<f64>> {
-    let mut cell_height_grid = vec![vec![None::<f64>; row_count]; col_count];
-    for (cell_idx, cell) in table.cells.iter().enumerate() {
-        if cell.row_span == 1
-            && cell.col_span == 1
-            && cell.height < 0x8000_0000
-            && (cell.col as usize) < col_count
-            && (cell.row as usize) < row_count
-        {
-            let render_height = table
-                .local_resize_cell_heights
-                .iter()
-                .find(|(idx, _)| *idx == cell_idx)
-                .map(|(_, height)| *height)
-                .unwrap_or(cell.height);
-            cell_height_grid[cell.col as usize][cell.row as usize] =
-                Some(hwpunit_to_px(render_height as i32, dpi));
-        }
-    }
-
-    let fallback_h = hwpunit_to_px(400, dpi);
-    let target_total = if table.common.height > 0 {
-        hwpunit_to_px(table.common.height as i32, dpi)
-            + cell_spacing * row_count.saturating_sub(1) as f64
-    } else {
-        row_y.last().copied().unwrap_or(0.0)
-    };
-    let mut col_row_y = vec![vec![0.0f64; row_count + 1]; col_count];
-    for c in 0..col_count {
-        let col_idx = c as u16;
-        if !table.local_resize_cols.contains(&col_idx) {
-            col_row_y[c].clone_from_slice(row_y);
-            continue;
-        }
-        for r in 0..row_count {
-            let h = cell_height_grid[c][r]
-                .or_else(|| row_heights.get(r).copied())
-                .unwrap_or(fallback_h);
-            col_row_y[c][r + 1] =
-                col_row_y[c][r] + h + if r + 1 < row_count { cell_spacing } else { 0.0 };
-        }
-        // 저장 파일의 cell.height는 표 전체 높이와 맞지 않는 보조값일 수 있다.
-        // 열별 누적 높이가 표 외곽과 맞을 때만 독립 horizontal segment로 해석한다.
-        if (col_row_y[c][row_count] - target_total).abs() > 0.5 && row_y.len() == row_count + 1 {
-            col_row_y[c].clone_from_slice(row_y);
-        }
-    }
-    col_row_y
-}
-
-fn has_independent_col_row_y(col_row_y: &[Vec<f64>], row_y: &[f64]) -> bool {
-    col_row_y.iter().any(|cy| {
-        cy.iter()
-            .zip(row_y.iter())
-            .any(|(a, b)| (a - b).abs() > 0.01)
-    })
-}
-
-fn render_cell_box_borders(
-    tree: &mut PageRenderTree,
-    bs: &ResolvedBorderStyle,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-) -> Vec<RenderNode> {
-    let mut nodes = Vec::new();
-    nodes.extend(create_border_line_nodes(
-        tree,
-        &bs.borders[2],
-        x,
-        y,
-        x + w,
-        y,
-    ));
-    nodes.extend(create_border_line_nodes(
-        tree,
-        &bs.borders[3],
-        x,
-        y + h,
-        x + w,
-        y + h,
-    ));
-    nodes.extend(create_border_line_nodes(
-        tree,
-        &bs.borders[0],
-        x,
-        y,
-        x,
-        y + h,
-    ));
-    nodes.extend(create_border_line_nodes(
-        tree,
-        &bs.borders[1],
-        x + w,
-        y,
-        x + w,
-        y + h,
-    ));
-    nodes
 }
 
 pub(crate) fn border_style_has_diagonal(bs: &ResolvedBorderStyle) -> bool {
@@ -921,9 +812,10 @@ impl LayoutEngine {
         let col_count = table.col_count as usize;
         let row_count = table.row_count as usize;
         let cell_spacing = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
+        let grid = table.grid();
 
         // ── 1. 열 폭 + 행 높이 계산 ──
-        let col_widths = self.resolve_column_widths(table, col_count);
+        let col_widths = self.resolve_column_widths(&grid, table, col_count);
         let row_heights = self.resolve_row_heights(
             table,
             col_count,
@@ -934,16 +826,8 @@ impl LayoutEngine {
         );
 
         // ── 2. 누적 위치 계산 ──
-        let mut col_x = vec![0.0f64; col_count + 1];
-        for i in 0..col_count {
-            col_x[i + 1] =
-                col_x[i] + col_widths[i] + if i + 1 < col_count { cell_spacing } else { 0.0 };
-        }
-        let mut row_y = vec![0.0f64; row_count + 1];
-        for i in 0..row_count {
-            row_y[i + 1] =
-                row_y[i] + row_heights[i] + if i + 1 < row_count { cell_spacing } else { 0.0 };
-        }
+        let col_x = px_lines(&col_widths, cell_spacing);
+        let mut row_y = px_lines(&row_heights, cell_spacing);
 
         // 중첩 표 부분 렌더링: row_y를 시프트하여 보이는 행만 표시
         let (row_y_shift, split_row_range, split_y_offset) = if let Some(split) = nested_split {
@@ -969,43 +853,12 @@ impl LayoutEngine {
             (0.0, None, 0.0)
         };
 
-        let row_col_x = build_row_col_x(
-            table,
-            &col_widths,
-            col_count,
-            row_count,
-            cell_spacing,
-            self.dpi,
-        );
-        let independent_col_row_y = if split_row_range.is_none() && !table.common.treat_as_char {
-            let col_row_y = build_col_row_y_from_cell_heights(
-                table,
-                &row_heights,
-                &row_y,
-                col_count,
-                row_count,
-                cell_spacing,
-                self.dpi,
-            );
-            if has_independent_col_row_y(&col_row_y, &row_y) {
-                Some(col_row_y)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
+        let row_col_x = row_col_x_px(&grid, table, &col_widths, cell_spacing, self.dpi);
         let table_width = row_col_x
             .iter()
             .map(|rx| rx.last().copied().unwrap_or(0.0))
             .fold(col_x.last().copied().unwrap_or(0.0), f64::max);
-        let table_height = if let Some(col_row_y) = independent_col_row_y.as_ref() {
-            col_row_y
-                .iter()
-                .filter_map(|cy| cy.last().copied())
-                .fold(row_y.last().copied().unwrap_or(0.0), f64::max)
-        } else if let Some((_, er)) = split_row_range {
+        let table_height = if let Some((_, er)) = split_row_range {
             row_y[er].max(0.0)
         } else {
             row_y.last().copied().unwrap_or(0.0)
@@ -1227,7 +1080,6 @@ impl LayoutEngine {
             enclosing_cell_ctx.clone(),
             &row_col_x,
             &row_y,
-            independent_col_row_y.as_deref(),
             col_count,
             row_count,
             table_x,
@@ -1326,15 +1178,13 @@ impl LayoutEngine {
         }
 
         // ── 6. 테두리 렌더링 ──
-        if independent_col_row_y.is_none() {
-            table_node.children.extend(render_edge_borders(
+        table_node.children.extend(render_edge_borders(
+            tree, &h_edges, &v_edges, &row_col_x, &row_y, table_x, table_y,
+        ));
+        if self.show_transparent_borders.get() {
+            table_node.children.extend(render_transparent_borders(
                 tree, &h_edges, &v_edges, &row_col_x, &row_y, table_x, table_y,
             ));
-            if self.show_transparent_borders.get() {
-                table_node.children.extend(render_transparent_borders(
-                    tree, &h_edges, &v_edges, &row_col_x, &row_y, table_x, table_y,
-                ));
-            }
         }
 
         col_node.children.push(table_node);
@@ -1457,68 +1307,26 @@ impl LayoutEngine {
     /// 열 폭 계산 (단일 셀 + 병합 셀 해결)
     pub(crate) fn resolve_column_widths(
         &self,
+        grid: &TableGrid,
         table: &crate::model::table::Table,
         col_count: usize,
     ) -> Vec<f64> {
-        // 1단계: col_span==1인 셀에서 개별 열 폭 추출
-        let inferred_local_resize_rows = table.inferred_local_resize_rows();
-        let mut col_widths = vec![0.0f64; col_count];
-        for cell in &table.cells {
-            if table.local_resize_rows.contains(&cell.row)
-                || inferred_local_resize_rows.contains(&cell.row)
-            {
-                continue;
-            }
-            if cell.col_span == 1 && (cell.col as usize) < col_count {
-                let w = hwpunit_to_px(cell.width as i32, self.dpi);
-                if w > col_widths[cell.col as usize] {
-                    col_widths[cell.col as usize] = w;
-                }
-            }
-        }
+        // 1-2단계(HU): 격자 솔버 — 지역 조절 추론 행 밖 span1 max → 미지수 1개 스팬 제약 해소.
+        // 미결정 열은 0 으로 돌아오고 아래 px 후처리(균등분할·deficit·1800·잔여)가 이어받는다.
+        let excluded = table.inferred_local_resize_rows();
+        let (sizes_hu, constraints_hu) = grid.solve_axis_with_constraints(Axis::Cols, &excluded);
+        let mut col_widths: Vec<f64> = sizes_hu
+            .iter()
+            .map(|&w| hwpunit_to_px(w as i32, self.dpi))
+            .collect();
+        col_widths.resize(col_count, 0.0);
 
-        // 2단계: 병합 셀에서 미지 열 폭을 반복적으로 해결
+        // 2-b단계(px): 스팬 제약의 미결정 열 균등분할 + 총합 초과분(deficit) 마지막 열 확장
         {
-            let mut constraints: Vec<(usize, usize, f64)> = Vec::new();
-            for cell in &table.cells {
-                if table.local_resize_rows.contains(&cell.row)
-                    || inferred_local_resize_rows.contains(&cell.row)
-                {
-                    continue;
-                }
-                let c = cell.col as usize;
-                let span = cell.col_span as usize;
-                if span > 1 && c + span <= col_count {
-                    let total_w = hwpunit_to_px(cell.width as i32, self.dpi);
-                    if let Some(existing) = constraints.iter_mut().find(|x| x.0 == c && x.1 == span)
-                    {
-                        if total_w > existing.2 {
-                            existing.2 = total_w;
-                        }
-                    } else {
-                        constraints.push((c, span, total_w));
-                    }
-                }
-            }
-            constraints.sort_by_key(|&(_, span, _)| span);
-
-            let max_iter = col_count + constraints.len();
-            for _ in 0..max_iter {
-                let mut progress = false;
-                for &(c, span, total_w) in &constraints {
-                    let known_sum: f64 = (c..c + span).map(|i| col_widths[i]).sum();
-                    let unknown_cols: Vec<usize> =
-                        (c..c + span).filter(|&i| col_widths[i] == 0.0).collect();
-                    if unknown_cols.len() == 1 {
-                        let remaining = (total_w - known_sum).max(0.0);
-                        col_widths[unknown_cols[0]] = remaining;
-                        progress = true;
-                    }
-                }
-                if !progress {
-                    break;
-                }
-            }
+            let constraints: Vec<(usize, usize, f64)> = constraints_hu
+                .into_iter()
+                .map(|(c, span, total)| (c, span, hwpunit_to_px(total as i32, self.dpi)))
+                .collect();
 
             for &(c, span, total_w) in &constraints {
                 let known_sum: f64 = (c..c + span).map(|i| col_widths[i]).sum();
@@ -1645,9 +1453,6 @@ impl LayoutEngine {
         // 1단계: row_span==1인 셀에서 개별 행 높이 추출
         let mut row_heights = vec![0.0f64; row_count];
         for cell in &table.cells {
-            if table.local_resize_cols.contains(&cell.col) {
-                continue;
-            }
             if cell.row_span == 1 && (cell.row as usize) < row_count {
                 let r = cell.row as usize;
                 if cell.height < 0x80000000 {
@@ -1677,9 +1482,6 @@ impl LayoutEngine {
 
         // 1-b단계: 셀 내 실제 컨텐츠 높이 계산
         for cell in &table.cells {
-            if table.local_resize_cols.contains(&cell.col) {
-                continue;
-            }
             if cell.row_span == 1 && (cell.row as usize) < row_count {
                 let r = cell.row as usize;
                 // [2026-08-16 어긋내기] **조각 행의 빈 셀**은 콘텐츠 성장에서 제외한다.
@@ -1749,9 +1551,6 @@ impl LayoutEngine {
         {
             let mut constraints: Vec<(usize, usize, f64)> = Vec::new();
             for cell in &table.cells {
-                if table.local_resize_cols.contains(&cell.col) {
-                    continue;
-                }
                 let r = cell.row as usize;
                 let span = cell.row_span as usize;
                 if span > 1 && r + span <= row_count && cell.height < 0x80000000 {
@@ -1813,9 +1612,6 @@ impl LayoutEngine {
 
         // 2-b단계: 병합 셀 컨텐츠 높이 > 결합 행 높이이면 마지막 행 확장
         for cell in &table.cells {
-            if table.local_resize_cols.contains(&cell.col) {
-                continue;
-            }
             let r = cell.row as usize;
             let span = cell.row_span as usize;
             if span > 1 && r + span <= row_count {
@@ -3769,7 +3565,6 @@ impl LayoutEngine {
         enclosing_cell_ctx: Option<CellContext>,
         row_col_x: &[Vec<f64>],
         row_y: &[f64],
-        independent_col_row_y: Option<&[Vec<f64>]>,
         col_count: usize,
         row_count: usize,
         table_x: f64,
@@ -3784,7 +3579,6 @@ impl LayoutEngine {
         header_footer_padding_compat: bool,
         cellzone_diagonal_origin_covered: &[Vec<bool>],
     ) {
-        let mut independent_border_nodes: Vec<RenderNode> = Vec::new();
         for (cell_idx, cell) in table.cells.iter().enumerate() {
             let c = cell.col as usize;
             let r = cell.row as usize;
@@ -3801,13 +3595,8 @@ impl LayoutEngine {
             }
 
             let cell_x = table_x + row_col_x[r][c];
-            let cell_col_y = independent_col_row_y.and_then(|col_y| col_y.get(c));
             // row_y는 이미 시프트된 상태이므로 음수일 수 있음 (start_row 이전 행).
-            // 독립 셀 높이가 있는 표는 해당 열의 누적 y를 사용한다.
-            let raw_cell_y = table_y
-                + cell_col_y
-                    .and_then(|cy| cy.get(r).copied())
-                    .unwrap_or(row_y[r]);
+            let raw_cell_y = table_y + row_y[r];
             let cell_y = if row_filter.is_some() {
                 raw_cell_y.max(table_y)
             } else {
@@ -3816,13 +3605,7 @@ impl LayoutEngine {
             let end_col = (c + cell.col_span as usize).min(col_count);
             let end_row = (r + cell.row_span as usize).min(row_count);
             let cell_w = row_col_x[r][end_col] - row_col_x[r][c];
-            let raw_cell_h = cell_col_y
-                .and_then(|cy| {
-                    let start = cy.get(r).copied()?;
-                    let end = cy.get(end_row).copied()?;
-                    Some(end - start)
-                })
-                .unwrap_or_else(|| row_y[end_row] - row_y[r]);
+            let raw_cell_h = row_y[end_row] - row_y[r];
             let cell_h = if row_filter.is_some() {
                 // 클램프된 y에 맞게 높이도 조정
                 (raw_cell_h - (cell_y - raw_cell_y)).max(0.0)
@@ -4186,24 +3969,17 @@ impl LayoutEngine {
                 self.add_footnote_superscripts(tree, &mut cell_node, para, styles);
             }
 
-            // (b) 셀 테두리를 수집한다. 열별 높이가 다른 표는 row_y 격자로
-            // 테두리를 그릴 수 없으므로 셀 bbox 기준 라인을 별도로 생성한다.
+            // (b) 셀 테두리를 수집한다.
             if let Some(bs) = border_style {
-                if independent_col_row_y.is_some() {
-                    independent_border_nodes.extend(render_cell_box_borders(
-                        tree, bs, cell_x, cell_y, cell_w, cell_h,
-                    ));
-                } else {
-                    collect_cell_borders(
-                        h_edges,
-                        v_edges,
-                        c,
-                        r,
-                        cell.col_span as usize,
-                        cell.row_span as usize,
-                        &bs.borders,
-                    );
-                }
+                collect_cell_borders(
+                    h_edges,
+                    v_edges,
+                    c,
+                    r,
+                    cell.col_span as usize,
+                    cell.row_span as usize,
+                    &bs.borders,
+                );
             }
 
             table_node.children.push(cell_node);
@@ -4225,9 +4001,6 @@ impl LayoutEngine {
                     ));
                 }
             }
-        }
-        if !independent_border_nodes.is_empty() {
-            table_node.children.extend(independent_border_nodes);
         }
     }
 
@@ -7538,4 +7311,82 @@ impl LayoutEngine {
         }
         total
     }
+}
+
+/// 밴드 크기(px) → 누적 선 위치(px), len n+1, [0]=0. `out[i+1] = out[i] + w_i + (i+1<n ? cell_spacing : 0)` —
+/// layout_table·table_partial·layout_embedded_table 이 같은 순서로 누적하던 것을 한 함수로 고정한다
+/// (Σpx(w_i) ≠ px(Σw_i) ulp — 순서가 바뀌면 render-tree f64 가 흔들린다).
+pub(crate) fn px_lines(sizes_px: &[f64], cell_spacing_px: f64) -> Vec<f64> {
+    let n = sizes_px.len();
+    let mut out = vec![0.0f64; n + 1];
+    for i in 0..n {
+        out[i + 1] = out[i] + sizes_px[i] + if i + 1 < n { cell_spacing_px } else { 0.0 };
+    }
+    out
+}
+
+/// 행별 x선(px). 종전 border_rendering::build_row_col_x 의 두 경로:
+///  (a) 지역 조절 추론 행 — `grid.row_col_x[r]`(HU 누적선, None = 전역) 을 밴드 폭으로 풀어 밴드별
+///      hwpunit_to_px 후 `px_lines` 재누적. cell_spacing 은 모든 밴드 사이(종전 (a) 는 셀 사이에만 넣었으나
+///      cell_spacing≠0 ∧ 스팬 셀 ∧ 추론 행이 겹치는 표는 말뭉치에 없어 단일 규약으로 통일).
+///  (b) 그 외 — 전역 폭과 다른 span1 셀이 있으면 행마다 열별 span1 폭(px) or **렌더러 전역 폭** 누적,
+///      |합 − target| > 0.5px 면 전역. 폴백이 렌더러 후처리(균등분할·deficit·1800·잔여) 결과라 모델 격자의
+///      col_widths 로 대체할 수 없어 px 로 남긴다(모델 폭으로 채우면 스팬만 있는 행이 전역과 어긋난다).
+pub(crate) fn row_col_x_px(
+    grid: &TableGrid,
+    table: &crate::model::table::Table,
+    col_widths: &[f64],
+    cell_spacing_px: f64,
+    dpi: f64,
+) -> Vec<Vec<f64>> {
+    let (cc, rc) = (grid.col_count, grid.row_count);
+    let base = px_lines(col_widths, cell_spacing_px);
+    if grid.row_col_x.iter().any(Option::is_some) {
+        return grid
+            .row_col_x
+            .iter()
+            .map(|o| match o {
+                Some(x) => {
+                    let sizes: Vec<f64> = x
+                        .windows(2)
+                        .map(|w| hwpunit_to_px(w[1].saturating_sub(w[0]) as i32, dpi))
+                        .collect();
+                    px_lines(&sizes, cell_spacing_px)
+                }
+                None => base.clone(),
+            })
+            .collect();
+    }
+    if table.common.treat_as_char {
+        return vec![base; rc];
+    }
+    let mut cell_w = vec![None::<f64>; rc * cc];
+    for c in &table.cells {
+        if c.col_span == 1 && c.width > 0 && (c.col as usize) < cc && (c.row as usize) < rc {
+            cell_w[c.row as usize * cc + c.col as usize] = Some(hwpunit_to_px(c.width as i32, dpi));
+        }
+    }
+    let independent = cell_w
+        .iter()
+        .enumerate()
+        .any(|(i, w)| w.is_some_and(|w| (w - col_widths[i % cc]).abs() > 0.01));
+    if !independent {
+        return vec![base; rc];
+    }
+    let target = if table.common.width > 0 {
+        hwpunit_to_px(table.common.width as i32, dpi) + cell_spacing_px * cc.saturating_sub(1) as f64
+    } else {
+        base.last().copied().unwrap_or(0.0)
+    };
+    (0..rc)
+        .map(|r| {
+            let sizes: Vec<f64> = (0..cc).map(|c| cell_w[r * cc + c].unwrap_or(col_widths[c])).collect();
+            let x = px_lines(&sizes, cell_spacing_px);
+            if (x[cc] - target).abs() > 0.5 {
+                base.clone()
+            } else {
+                x
+            }
+        })
+        .collect()
 }

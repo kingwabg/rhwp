@@ -6,12 +6,13 @@ use super::super::render_tree::*;
 use super::super::style_resolver::ResolvedStyleSet;
 use super::super::{hwpunit_to_px, ShapeStyle, TextStyle};
 use super::border_rendering::{
-    build_row_col_x, collect_cell_borders, render_edge_borders, render_transparent_borders,
+    collect_cell_borders, render_edge_borders, render_transparent_borders,
 };
 use super::text_measurement::{
     is_cjk_char, is_vertical_rotate_char, resolved_to_text_style, vertical_substitute_char,
 };
 use super::utils::{extract_shape_transform, find_bin_data};
+use super::table_layout::{px_lines, row_col_x_px};
 use super::{CellContext, CellPathEntry, LayoutEngine};
 use crate::model::bin_data::BinDataContent;
 use crate::model::control::Control;
@@ -432,16 +433,17 @@ impl LayoutEngine {
         let row_count = table.row_count as usize;
         let cell_spacing = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
 
-        // 열 폭 계산
-        let mut col_widths = vec![0.0f64; col_count];
-        for cell in &table.cells {
-            if cell.col_span == 1 && (cell.col as usize) < col_count {
-                let w = hwpunit_to_px(cell.width as i32, self.dpi);
-                if w > col_widths[cell.col as usize] {
-                    col_widths[cell.col as usize] = w;
-                }
-            }
-        }
+        let grid = table.grid();
+
+        // [격자 9-a 2026-09-02] 열 폭 = 격자 솔버(span1 max + 병합 셀 제약 해소, HU 정수). 종전엔 span1 max
+        // 만 보고 목격자 없는 열을 container/col_count 로 채워 합이 넘치면 전 열을 비례 축소했다 —
+        // table-in-tbox.hwp 의 8열 표는 두 열이 그 폴백을 타 모든 셀이 저장 폭의 0.86 배로 그려졌다. 이제
+        // 셀이 저장 폭과 정확히 일치하고 합 = common.width(44268). 그래도 미결정인 열만 종전 폴백.
+        let mut col_widths: Vec<f64> = grid
+            .solve_axis(crate::model::table_grid::Axis::Cols, &[])
+            .iter()
+            .map(|&w| hwpunit_to_px(w as i32, self.dpi))
+            .collect();
         for c in 0..col_count {
             if col_widths[c] <= 0.0 {
                 col_widths[c] = container.width / col_count as f64;
@@ -469,26 +471,11 @@ impl LayoutEngine {
         let row_heights = self.resolve_row_heights(table, col_count, row_count, None, styles, true);
 
         // 누적 위치 계산
-        let mut col_x = vec![0.0f64; col_count + 1];
-        for i in 0..col_count {
-            col_x[i + 1] =
-                col_x[i] + col_widths[i] + if i + 1 < col_count { cell_spacing } else { 0.0 };
-        }
-        let mut row_y = vec![0.0f64; row_count + 1];
-        for i in 0..row_count {
-            row_y[i + 1] =
-                row_y[i] + row_heights[i] + if i + 1 < row_count { cell_spacing } else { 0.0 };
-        }
+        let col_x = px_lines(&col_widths, cell_spacing);
+        let row_y = px_lines(&row_heights, cell_spacing);
 
         // 행별 열 위치 계산 (셀별 독립 너비 지원)
-        let row_col_x = build_row_col_x(
-            table,
-            &col_widths,
-            col_count,
-            row_count,
-            cell_spacing,
-            self.dpi,
-        );
+        let row_col_x = row_col_x_px(&grid, table, &col_widths, cell_spacing, self.dpi);
 
         let table_width = row_col_x
             .iter()

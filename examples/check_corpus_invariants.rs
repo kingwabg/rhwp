@@ -84,8 +84,6 @@ fn classify(reason: &str) -> &'static str {
         "S4"
     } else if reason.contains("크기 이상") || reason.contains("셀 0개") {
         "S5"
-    } else if reason.contains("표시 힌트") {
-        "D6"
     } else {
         "S1"
     }
@@ -110,6 +108,7 @@ struct Stats {
     fallback_tables: usize,
     solver_disagreement: usize,
     predicate_mismatch: usize,
+    row_col_x_override_rows: usize,
 }
 
 fn table_metrics(t: &Table, st: &mut Stats) {
@@ -233,9 +232,17 @@ fn grid_lints(
     st: &mut Stats,
     solver: &mut Vec<String>,
     pred: &mut Vec<String>,
+    rowx: &mut Vec<String>,
 ) {
     let g = t.grid();
     let tac = t.common.treat_as_char;
+    // 9-b: 격자 행별 x선 오버라이드 = 경로 (a) 지역 조절 추론 행만(Some 행이 하나라도 있는 표). 경로 (b)
+    // 독립 폭 행은 렌더러 전역 폭(px) 폴백이 필요해 table_layout::row_col_x_px 가 px 로 판정한다 — 여기 미집계.
+    let over: Vec<usize> = g.row_col_x.iter().enumerate().filter(|(_, o)| o.is_some()).map(|(r, _)| r).collect();
+    if !over.is_empty() {
+        st.row_col_x_override_rows += 1;
+        rowx.push(format!("ROWX\t{file}\t{path}\tcols={}\trows={over:?}\tcw={:?}", t.col_count, g.col_widths));
+    }
     let mut why = Vec::new();
     let cw = legacy_axis(t, true);
     if g.col_widths != cw {
@@ -308,6 +315,7 @@ fn main() {
     let mut violations: Vec<String> = Vec::new();
     let mut solver_lines: Vec<String> = Vec::new();
     let mut pred_lines: Vec<String> = Vec::new();
+    let mut rowx_lines: Vec<String> = Vec::new();
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     for f in &files {
@@ -346,7 +354,7 @@ fn main() {
                 st.fallback_tables += 1;
             }
             table_metrics(t, &mut st);
-            grid_lints(t, &f.display().to_string(), &path, &lints, &mut st, &mut solver_lines, &mut pred_lines);
+            grid_lints(t, &f.display().to_string(), &path, &lints, &mut st, &mut solver_lines, &mut pred_lines, &mut rowx_lines);
         }
     }
     std::panic::set_hook(hook);
@@ -366,10 +374,14 @@ fn main() {
     println!("span-only (piece-row candidate) rows: {} tables", st.piece_rows);
     println!("solver_disagreement (grid vs legacy solve_span_gaps): {} tables", st.solver_disagreement);
     println!("predicate_mismatch (grid vs legacy predicates): {} lines", st.predicate_mismatch);
+    println!("row_col_x_override_rows (tables with any Some row): {} tables", st.row_col_x_override_rows);
     for l in solver_lines.iter() {
         println!("{l}");
     }
     for l in pred_lines.iter().take(20) {
+        println!("{l}");
+    }
+    for l in rowx_lines.iter() {
         println!("{l}");
     }
     violations.sort();

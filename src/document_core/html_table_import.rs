@@ -786,10 +786,6 @@ impl DocumentCore {
             raw_table_record_attr: tbl_rec_attr,
             raw_table_record_extra: vec![0u8; 2], // 표준 추가 2바이트
             dirty: true,
-            local_resize_rows: Vec::new(),
-            local_resize_cols: Vec::new(),
-            local_resize_cell_widths: Vec::new(),
-            local_resize_cell_heights: Vec::new(),
         };
         table.rebuild_grid();
 

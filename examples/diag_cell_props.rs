@@ -1,4 +1,5 @@
-//! [6단계 2026-09-02] set_cell_properties / resize_table_cells 관문 편입 확인 — 성공 경로 불변식·힌트 초기화(D6).
+//! [6단계 2026-09-02] set_cell_properties / resize_table_cells 관문 편입 확인 — 성공 경로 불변식.
+//! [9-c] localResize 키는 파싱만 되고 무시된다(힌트 필드 폐기) — common 은 격자 유도값 그대로.
 use rhwp::model::control::Control;
 use rhwp::wasm_api::HwpDocument;
 
@@ -14,9 +15,8 @@ fn main() {
     let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as usize, c["controlIdx"].as_u64().unwrap() as usize);
     let show = |doc: &HwpDocument, tag: &str| {
         let t = tbl(doc, pi, ci);
-        println!("{tag}: common={}x{} cell0={}x{} inv={} hints=({},{})", t.common.width, t.common.height,
-            t.cells[0].width, t.cells[0].height, t.check_invariants().err().unwrap_or_else(|| "ok".into()),
-            t.local_resize_cell_widths.len(), t.local_resize_cell_heights.len());
+        println!("{tag}: common={}x{} cell0={}x{} inv={}", t.common.width, t.common.height,
+            t.cells[0].width, t.cells[0].height, t.check_invariants().err().unwrap_or_else(|| "ok".into()));
     };
     show(&doc, "load");
     let r = doc.set_cell_properties(0, pi as u32, ci as u32, 0, r#"{"width":15000,"height":2000,"paddingTop":300}"#);
@@ -32,7 +32,7 @@ fn main() {
     show(&doc, "after local resize");
     let r = doc.resize_table_cells(0, pi as u32, ci as u32, r#"[{"cellIdx":7,"widthDelta":1000}]"#);
     println!("resize(cell 7 of 9) → {}", r.map(|_| "OK".to_string()).unwrap_or_else(|e| format!("{e:?}")));
-    // 구조 변경 뒤 힌트가 비워지는가(D6): 행 삽입
+    // 구조 변경 뒤 불변식 유지: 행 삽입
     let r = doc.insert_table_row_native(0, pi, ci, 0, true);
     println!("insert_row → {}", r.map(|_| "OK".to_string()).unwrap_or_else(|e| format!("{e:?}")));
     show(&doc, "after insert_row");

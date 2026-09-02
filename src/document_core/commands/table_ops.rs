@@ -57,14 +57,6 @@ impl DocumentCore {
         let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
         let saved = table.clone();
         let r = f(table);
-        // [6단계] 셀 수·행·열이 바뀌면 cell_idx 키 표시 힌트(local_resize_*)는 무효 — 검사 전에 비운다.
-        if r.is_ok()
-            && (table.cells.len() != saved.cells.len()
-                || table.row_count != saved.row_count
-                || table.col_count != saved.col_count)
-        {
-            table.clear_local_resize_hints();
-        }
         let out = match r {
             Ok(v) => match table.check_invariants() {
                 Ok(()) => {
@@ -1937,12 +1929,8 @@ impl DocumentCore {
             cell_idx: usize,
             width_delta: i32,
             height_delta: i32,
-            local_resize: bool,
-            render_width: Option<u32>,
-            render_height: Option<u32>,
         }
         let mut updates: Vec<CellUpdate> = Vec::new();
-        let mut force_local_resize = false;
 
         let mut depth = 0i32;
         let mut start = 0usize;
@@ -1958,8 +1946,9 @@ impl DocumentCore {
                     depth -= 1;
                     if depth == 0 {
                         let obj = &inner[start..=i];
-                        // [officex] 혼동 키 방어: 이 API 는 **델타**(widthDelta/heightDelta)와
-                        // 절대 렌더 힌트(renderWidth/renderHeight)만 받는다. 절대 폭을 뜻하는
+                        // [officex] 혼동 키 방어: 이 API 는 **델타**(widthDelta/heightDelta)만 받는다.
+                        // (localResize/renderWidth/renderHeight 는 9-c 힌트 폐기 후 파싱 수용·무시 —
+                        // 구 스튜디오 빌드가 오류를 내지 않게 한다.) 절대 폭을 뜻하는
                         // "width"/"height" 를 보내면 종전엔 조용히 0 델타로 접혀 아무 일도 안
                         // 일어나는데 {ok:true} 가 나갔다 — 호출자는 "리사이즈가 안 먹는다"로만
                         // 보였다(capability-map §3 의 "no-op(불확정)" 정체). 조용한 무동작 대신
@@ -1969,10 +1958,7 @@ impl DocumentCore {
                             if obj.contains(&format!("\"{bad_key}\":")) {
                                 return Err(HwpError::InvalidField(format!(
                                     "resizeTableCells 는 '{bad_key}' 키를 받지 않습니다 — \
-                                     상대 변화는 '{bad_key}Delta', 절대 렌더 크기는 \
-                                     'render{}{}' 를 쓰세요",
-                                    bad_key[..1].to_uppercase(),
-                                    &bad_key[1..],
+                                     상대 변화는 '{bad_key}Delta' 를 쓰세요"
                                 )));
                             }
                         }
@@ -1983,20 +1969,10 @@ impl DocumentCore {
                         }
                         let width_delta = Self::parse_json_i32(obj, "widthDelta").unwrap_or(0);
                         let height_delta = Self::parse_json_i32(obj, "heightDelta").unwrap_or(0);
-                        let local_resize = obj.contains("\"localResize\":true")
-                            || obj.contains("\"localResize\": true");
-                        force_local_resize |= local_resize;
-                        let render_width = Self::parse_json_i32(obj, "renderWidth")
-                            .and_then(|v| (v > 0).then_some(v as u32));
-                        let render_height = Self::parse_json_i32(obj, "renderHeight")
-                            .and_then(|v| (v > 0).then_some(v as u32));
                         updates.push(CellUpdate {
                             cell_idx: cell_idx as usize,
                             width_delta,
                             height_delta,
-                            local_resize,
-                            render_width,
-                            render_height,
                         });
                     }
                 }
@@ -2020,7 +1996,8 @@ impl DocumentCore {
             )));
         }
         // [6단계 2026-09-02] 셀 크기 대입은 관문 안에서 — 구조 불변식·내용·슬리버·과대 셀 검사, 위반 시 롤백.
-        // 산술(보상·바닥·되감기)은 그대로다; 리플로우 대상은 관문 안에서 산출해 돌려받는다.
+        // [9-c] common.width/height 되감기·local_resize 힌트 등록은 폐기 — common 은 update_ctrl_dimensions 의
+        // 격자 유도값 하나만 진실이다.
         let reflow_cells = self.with_table_txn(
             section_idx,
             parent_para_idx,
@@ -2035,43 +2012,27 @@ impl DocumentCore {
         // 게다가 거부는 실사용을 깼다: 운영일지가 셀 3(폭 3192)에 -3000을 주는 정상 경로에서
         // 결과 192가 최소값 200에 8 모자란다는 이유로 배치 전체가 실패했다.
         // 남은 진짜 위험은 산술 오버플로뿐이라 아래 루프에서 i64로 계산해 막는다.
-        let original_width = table.common.width;
-        let original_height = table.common.height;
-        // [2026-08-13] 힌트 없는(raw) 높이 델타의 밑절미: **빈 셀 저장 규약 상태(높이 ≤
+        // [2026-08-13] 높이 델타의 밑절미: **빈 셀 저장 규약 상태(높이 ≤
         // 자기 패딩)일 때만** 글줄 바닥으로 승격한다. 규약 셀(284) 위에 그대로 더하면
         // 바닥(1284~) 아래의 보이지 않는 변화가 되고, 종전 '표시 여유 보존' 분기가 그걸
         // 보정하며 common.height 를 eff 합과 갈라놨다(스테일 +1000 → 렌더 열별 검증 실패
         // → 균등 폴백). 실높이 셀은 순수 모델 산술 유지 — 파싱 파일의 보상(±d) 조절이
-        // 저장 높이 승격으로 표를 키우면 안 된다(issue_493). UI 경로(renderHeight 절대값
-        // 동반)도 모델 기준 그대로 — desired 정확 일치가 계약이다.
+        // 저장 높이 승격으로 표를 키우면 안 된다(issue_493).
         let floor_rows_pre = table.row_line_floors_hu();
         let table_padding = table.padding;
-        let mut applied_width_delta: i64 = 0;
-        let mut applied_height_delta: i64 = 0;
-        let mut width_delta_by_row = std::collections::BTreeMap::<u16, (usize, i64)>::new();
-        let mut height_delta_by_col = std::collections::BTreeMap::<u16, (usize, i64)>::new();
-        let mut local_resize_rows = std::collections::BTreeSet::<u16>::new();
-        let mut local_resize_cols = std::collections::BTreeSet::<u16>::new();
         for upd in &updates {
             if let Some(cell) = table.cells.get_mut(upd.cell_idx) {
                 if upd.width_delta != 0 {
-                    let old_w = cell.width;
                     // [officex] i32 덧셈은 극단 양수에서 panic(debug)/랩어라운드(release) — i64로 올린다.
-                    let new_w = (cell.width as i64 + upd.width_delta as i64)
+                    cell.width = (cell.width as i64 + upd.width_delta as i64)
                         .clamp(Table::MIN_CELL as i64, u32::MAX as i64)
                         as u32;
-                    cell.width = new_w;
-                    let actual_delta = new_w as i64 - old_w as i64;
-                    applied_width_delta += actual_delta;
-                    let entry = width_delta_by_row.entry(cell.row).or_insert((0, 0));
-                    entry.0 += 1;
-                    entry.1 += actual_delta;
                 }
                 if upd.height_delta != 0 {
                     let old_h = cell.height;
                     let pad = cell.effective_padding(&table_padding);
                     let pad_v = (pad.top.max(0) + pad.bottom.max(0)) as u32;
-                    let base_h = if upd.render_height.is_none() && old_h <= pad_v {
+                    let base_h = if old_h <= pad_v {
                         old_h.max(floor_rows_pre.get(cell.row as usize).copied().unwrap_or(0))
                     } else {
                         old_h
@@ -2080,96 +2041,12 @@ impl DocumentCore {
                         .clamp(Table::MIN_CELL as i64, u32::MAX as i64)
                         as u32;
                     cell.height = new_h;
-                    let actual_delta = new_h as i64 - old_h as i64;
-                    applied_height_delta += actual_delta;
-                    let entry = height_delta_by_col.entry(cell.col).or_insert((0, 0));
-                    entry.0 += 1;
-                    entry.1 += actual_delta;
-                }
-            }
-            if upd.local_resize {
-                if let Some(width) = upd.render_width {
-                    if let Some(cell) = table.cells.get(upd.cell_idx) {
-                        local_resize_rows.insert(cell.row);
-                    }
-                    if let Some((_, existing)) = table
-                        .local_resize_cell_widths
-                        .iter_mut()
-                        .find(|(idx, _)| *idx == upd.cell_idx)
-                    {
-                        *existing = width;
-                    } else {
-                        table.local_resize_cell_widths.push((upd.cell_idx, width));
-                    }
-                }
-                if let Some(height) = upd.render_height {
-                    if let Some(cell) = table.cells.get(upd.cell_idx) {
-                        local_resize_cols.insert(cell.col);
-                    }
-                    if let Some((_, existing)) = table
-                        .local_resize_cell_heights
-                        .iter_mut()
-                        .find(|(idx, _)| *idx == upd.cell_idx)
-                    {
-                        *existing = height;
-                    } else {
-                        table.local_resize_cell_heights.push((upd.cell_idx, height));
-                    }
                 }
             }
         }
-        for row in local_resize_rows {
-            if !table.local_resize_rows.contains(&row) {
-                table.local_resize_rows.push(row);
-            }
-        }
-        for col in local_resize_cols {
-            if !table.local_resize_cols.contains(&col) {
-                table.local_resize_cols.push(col);
-            }
-        }
-        for (row, (count, _delta_sum)) in width_delta_by_row {
-            // ⚠ 종전 조건은 `delta_sum == 0 || force_local_resize` 였다 —
-            //   그런데 **정상 열 드래그가 바로 합 0**이다(표 폭을 지키려고 +d/−d 를
-            //   짝으로 보낸다). 그래서 모든 행이 '독립 폭'으로 등록됐고,
-            //   resolve_column_widths 가 그런 행을 열 폭 계산에서 통째로 빼는 바람에
-            //   열이 0에서 출발해 격자가 붕괴했다(2026-08-01 실측 187→24px).
-            //   독립 폭은 **호출자가 localResize 로 요청할 때만**이다(Shift 드래그).
-            if count >= 2 && force_local_resize && !table.local_resize_rows.contains(&row) {
-                table.local_resize_rows.push(row);
-            }
-        }
-        for (col, (count, _delta_sum)) in height_delta_by_col {
-            // 세로도 같은 이유 — 행 경계선 드래그의 합 0 은 정상이다
-            if count >= 2 && force_local_resize && !table.local_resize_cols.contains(&col) {
-                table.local_resize_cols.push(col);
-            }
-        }
+        // 단일 진실: common = 격자 유도 합(update_ctrl_dimensions). 종전 "델타 합 0 이면 원값 되감기"
+        // 도 폐기 — 한 셀만 바꾼 경우 표 폭·높이가 격자(열 max)에 따라 커질 수 있고 그게 계약이다.
         table.update_ctrl_dimensions();
-        // [2026-08-13] 종전의 "표시 height 여유분 보존" 분기(원래높이+raw 델타)는 제거했다 —
-        // eff 행높이에 글줄 바닥이 없던 시절(2026-08-11 이전) update_ctrl 이 raw 합으로
-        // 납작해지는 것을 보상하던 장치인데, 바닥 도입 후엔 이중 계상이 되어
-        // common.height 가 eff 합보다 크게 남았다(스테일 +1000 실측). 이 스테일은
-        // 렌더 열별 높이 검증(target_total ±0.5px)을 깨 균등 폴백을 유발한다.
-        // 이제 단일 진실: common.height = effective_row_heights 합 (update_ctrl_dimensions).
-        if applied_width_delta == 0
-            || (force_local_resize && updates.iter().any(|u| u.width_delta != 0))
-        {
-            table.common.width = original_width;
-            if table.raw_ctrl_data.len() >= common_obj_offsets::WIDTH.end {
-                table.raw_ctrl_data[common_obj_offsets::WIDTH]
-                    .copy_from_slice(&original_width.to_le_bytes());
-            }
-        }
-        if applied_height_delta == 0
-            || (force_local_resize && updates.iter().any(|u| u.height_delta != 0))
-        {
-            table.common.height = original_height;
-            if table.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
-                table.raw_ctrl_data[common_obj_offsets::HEIGHT]
-                    .copy_from_slice(&original_height.to_le_bytes());
-            }
-        }
         // 너비가 변경된 셀의 모든 문단에 대해 line_segs 재계산 (텍스트 리플로우) — 대상 산출
         let reflow_cells: Vec<(usize, usize)> = updates
             .iter()

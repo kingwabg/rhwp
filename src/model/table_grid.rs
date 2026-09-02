@@ -65,11 +65,12 @@ pub struct TableGrid<'a> {
     pub col_widths: Vec<HwpUnit>,
     /// 누적 x선, len col_count+1, [0]=0.
     pub col_x: Vec<HwpUnit>,
-    /// 행별 x선 오버라이드(None = 전역). border_rendering::build_row_col_x 의 HU 이식:
-    ///  (a) inferred_local_resize_rows 행: span1 폭 타일링, 스팬 내부선 비례 보간,
-    ///      잔여 = target − 합: ≤ −X_TOL 무효, ≥ +X_TOL 마지막 선 가산; 어느 행이든 전역과 다르면 채택;
-    ///  (b) 그 외(전역 폭과 다른 span1 셀 존재 시): 열별 span1 폭 or 전역 폭 누적, |합 − target| ≥ X_TOL 면 None.
+    /// 행별 x선 오버라이드(None = 전역). 종전 border_rendering::build_row_col_x 경로 (a) 의 HU 이식:
+    ///  inferred_local_resize_rows 행: span1 폭 타일링, 스팬 내부선 비례 보간,
+    ///  잔여 = target − 합: ≤ −X_TOL 무효, ≥ +X_TOL 마지막 선 가산; 어느 행이든 전역과 다르면 채택.
     ///  target = common.width>0 ? common.width : Σcol_widths. treat_as_char 표는 전부 None.
+    ///  경로 (b)(독립 폭 행: 열별 span1 폭 or **렌더러 전역 폭** 누적) 는 폴백이 렌더러 후처리(균등분할·
+    ///  deficit·1800·잔여) px 값이라 격자가 대신 채울 수 없다 → table_layout::row_col_x_px 가 px 로 수행.
     pub row_col_x: Vec<Option<Vec<HwpUnit>>>,
     // ── 행 축 두 층 ──
     /// 저장 층: span1 max → solve_axis(Rows) → 0 은 400. == get_row_heights.
@@ -294,11 +295,12 @@ impl<'a> TableGrid<'a> {
         line > 0 && (line as usize) < self.count(axis)
     }
 
-    /// 한 축 크기 해소 — 렌더러 산법(table_layout::resolve_column_widths 1-2단계) HU판:
-    /// exclude_rows 밖 span1 max → (start,span) 별 max 로 dedup·span 오름차순 → 미지수 1개 제약
-    /// 반복 해소 (total−known).max(0). **미결정은 0 으로 남긴다**(폴백·균등분할 없음).
-    /// 모델 getter 는 &[] + 1800/400 채움, 렌더러는 &inferred 로 받아 px 후처리를 자기 코드에서 계속한다.
-    pub fn solve_axis(&self, axis: Axis, exclude_rows: &[u16]) -> Vec<HwpUnit> {
+    /// 솔버 입력 — (span1 max 크기, (start,span,total) 제약: (start,span) 별 max·첫 등장 순서·span 오름차순).
+    fn span_constraints(
+        &self,
+        axis: Axis,
+        exclude_rows: &[u16],
+    ) -> (Vec<HwpUnit>, Vec<(usize, usize, HwpUnit)>) {
         let count = self.count(axis);
         let mut sizes = vec![0u32; count];
         let mut constraints: Vec<(usize, usize, HwpUnit)> = Vec::new();
@@ -329,6 +331,25 @@ impl<'a> TableGrid<'a> {
             }
         }
         constraints.sort_by_key(|&(_, span, _)| span);
+        (sizes, constraints)
+    }
+
+    /// 한 축 크기 해소 — 렌더러 산법(table_layout::resolve_column_widths 1-2단계) HU판:
+    /// exclude_rows 밖 span1 max → (start,span) 별 max 로 dedup·span 오름차순 → 미지수 1개 제약
+    /// 반복 해소 (total−known).max(0). **미결정은 0 으로 남긴다**(폴백·균등분할 없음).
+    /// 모델 getter 는 &[] + 1800/400 채움, 렌더러는 &inferred 로 받아 px 후처리를 자기 코드에서 계속한다.
+    pub fn solve_axis(&self, axis: Axis, exclude_rows: &[u16]) -> Vec<HwpUnit> {
+        self.solve_axis_with_constraints(axis, exclude_rows).0
+    }
+
+    /// `solve_axis` + 사용한 스팬 제약 목록(span 오름차순) — 렌더러의 px 후처리(균등분할·deficit) 입력.
+    pub(crate) fn solve_axis_with_constraints(
+        &self,
+        axis: Axis,
+        exclude_rows: &[u16],
+    ) -> (Vec<HwpUnit>, Vec<(usize, usize, HwpUnit)>) {
+        let (mut sizes, constraints) = self.span_constraints(axis, exclude_rows);
+        let count = sizes.len();
         let max_iter = count + constraints.len();
         for _ in 0..max_iter {
             let mut progress = false;
@@ -344,7 +365,7 @@ impl<'a> TableGrid<'a> {
                 break;
             }
         }
-        sizes
+        (sizes, constraints)
     }
 
     /// 옛 모델 솔버(`Table::solve_span_gaps`, 2026-08-04)의 HU판 — 셀 순서대로, (start,span) dedup 없이,
@@ -446,42 +467,16 @@ impl<'a> TableGrid<'a> {
         };
         // (a) 행 단위 resize 추론 행 — 타일링 결과가 어느 행이든 전역과 다르면 채택.
         let inferred = t.inferred_local_resize_rows();
-        if !inferred.is_empty() {
-            let mut any_diff = false;
-            for &r in &inferred {
-                let Some(cand) = self.tile_row(r as usize, target) else { continue };
-                any_diff |= cand != self.col_x;
-                if let Some(slot) = out.get_mut(r as usize) {
-                    *slot = Some(cand);
-                }
+        let mut any_diff = false;
+        for &r in &inferred {
+            let Some(cand) = self.tile_row(r as usize, target) else { continue };
+            any_diff |= cand != self.col_x;
+            if let Some(slot) = out.get_mut(r as usize) {
+                *slot = Some(cand);
             }
-            if any_diff {
-                return out;
-            }
+        }
+        if !any_diff {
             out.iter_mut().for_each(|o| *o = None);
-        }
-        // (b) 독립 폭 행 — span1 폭이 전역과 다른 셀이 있을 때만, 행 합이 target ±X_TOL 안이면 채택.
-        let mut grid: Vec<Option<HwpUnit>> = vec![None; rc * cc];
-        for c in &t.cells {
-            if c.col_span == 1 && c.width > 0 && (c.col as usize) < cc && (c.row as usize) < rc {
-                grid[c.row as usize * cc + c.col as usize] = Some(c.width);
-            }
-        }
-        let independent = grid
-            .iter()
-            .enumerate()
-            .any(|(i, w)| w.is_some_and(|w| w != self.col_widths[i % cc]));
-        if !independent {
-            return out;
-        }
-        for r in 0..rc {
-            let mut x = vec![0u32; cc + 1];
-            for c in 0..cc {
-                x[c + 1] = x[c].saturating_add(grid[r * cc + c].unwrap_or(self.col_widths[c]));
-            }
-            if (x[cc] as i64 - target).abs() < X_TOL_HU as i64 {
-                out[r] = Some(x);
-            }
         }
         out
     }
