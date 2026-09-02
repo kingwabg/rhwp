@@ -1162,7 +1162,7 @@ impl Table {
     }
 
     /// row_sizes를 행별 실제 셀 개수로 재계산한다.
-    fn rebuild_row_sizes(&mut self) {
+    pub(crate) fn rebuild_row_sizes(&mut self) {
         self.row_sizes = (0..self.row_count)
             .map(|r| self.cells.iter().filter(|c| c.row == r).count() as i16)
             .collect();
@@ -2215,7 +2215,9 @@ impl Table {
     /// - S2 row_sizes: 길이 == row_count, 값 == 행별 셀 수(HWP5 스펙)
     /// - S3 순서: cells 가 (row,col) 행 우선 오름차순·유일 (LIST_HEADER 직렬화 순서)
     /// - S4 치수: raw_ctrl_data 가 있으면 WIDTH/HEIGHT 바이트 == common.width/height (이중 장부)
-    /// - S5 상한: 셀 크기 < 1_000_000, 행·열·셀 수 ≥ 1 (하한은 두지 않음 — 실물에 높이 0 셀 존재)
+    /// - S5 개수: 행·열·셀 수 ≥ 1, span ≥ 1. 셀 크기 상한은 두지 않는다 — 실물 HWP5(hwpspec.hwp 등
+    ///   4파일 175셀)가 음수 높이를 u32 로 랩해 저장하고 있어(4294962496 = −4800) 절대 규칙이 아니다.
+    ///   명령이 새로 만드는 언더플로(ed0bc5c94)는 델타 검사 "과대 셀 수 비증가" 몫.
     /// - D6 힌트: local_resize_cell_* 의 cell_idx 가 범위 안
     pub fn check_invariants(&self) -> Result<(), String> {
         let rc = self.row_count as usize;
@@ -2227,9 +2229,6 @@ impl Table {
         for (i, c) in self.cells.iter().enumerate() {
             if c.col_span == 0 || c.row_span == 0 {
                 return Err(format!("표 구조 손상: 셀 {i} 의 span 이 0"));
-            }
-            if c.width >= 1_000_000 || c.height >= 1_000_000 {
-                return Err(format!("표 구조 손상: 셀 {i} 크기 이상 {}×{}", c.width, c.height));
             }
             let r1 = c.row as usize + c.row_span as usize;
             let c1 = c.col as usize + c.col_span as usize;

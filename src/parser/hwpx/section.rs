@@ -1633,7 +1633,6 @@ fn parse_table(
     // 표 내용 파싱 (행/셀)
     let mut buf = Vec::new();
     let mut current_row: u16 = 0;
-    let mut row_sizes: Vec<HwpUnit16> = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -1806,21 +1805,12 @@ fn parse_table(
     table.common.margin.top = table.outer_margin_top;
     table.common.margin.bottom = table.outer_margin_bottom;
 
-    // row_sizes 설정 (행별 셀 높이의 최대값)
-    for r in 0..table.row_count {
-        let max_h = table
-            .cells
-            .iter()
-            .filter(|c| c.row == r && c.row_span == 1)
-            .map(|c| c.height as i16)
-            .max()
-            .unwrap_or(0);
-        row_sizes.push(max_h);
-    }
-    table.row_sizes = row_sizes;
-
     materialize_hwpx_table_attrs(&mut table, table_record_flags);
     table.rebuild_grid();
+    // [불변식 가드 2026-09-02] row_sizes 는 HWP5 스펙대로 행별 셀 수다. 종전엔 행 최대 높이(i16 절단)를
+    // 넣어 HWPX 로드 표 전부가 S2 불변식을 위반했다(말뭉치 2790표). HWPX→HWP 저장은 어댑터가
+    // 이미 셀 수로 다시 채우므로(materialize_table_record_row_sizes) 저장 바이트는 변하지 않는다.
+    table.rebuild_row_sizes();
     Ok(table)
 }
 

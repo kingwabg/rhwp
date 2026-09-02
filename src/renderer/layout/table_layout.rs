@@ -1168,16 +1168,9 @@ impl LayoutEngine {
                                 }
                             })
                             .unwrap_or(0.0);
-                    let zone_y_end = table_y
-                        + row_y.get(er).copied().unwrap_or_else(|| {
-                            // 마지막 행 끝 = 마지막 행 시작 + 해당 행 높이
-                            row_y.get(er - 1).copied().unwrap_or(0.0)
-                                + table
-                                    .row_sizes
-                                    .get(er - 1)
-                                    .map(|&h| hwpunit_to_px(h as i32, self.dpi))
-                                    .unwrap_or(0.0)
-                        });
+                    // er ≤ row_count 이고 row_y.len() == row_count+1 이라 항상 Some. 종전 폴백은
+                    // row_sizes(행별 셀 수)를 높이로 오독하던 죽은 코드였다.
+                    let zone_y_end = table_y + row_y.get(er).copied().unwrap_or(0.0);
                     let zone_w = (zone_x_end - zone_x).max(0.0);
                     let zone_h = (zone_y_end - zone_y).max(0.0);
                     // [Task #429] 단색/패턴/그라데이션 + 이미지 채우기 (zone 의 별도 image fill 처리는
