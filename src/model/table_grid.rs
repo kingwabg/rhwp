@@ -28,6 +28,21 @@ pub struct LineInfo {
     pub crossers: u16,
 }
 
+impl LineInfo {
+    /// 정렬선 — `band` 밖의 줄이 이 선을 경계로 쓴다(is_boundary_aligned 의 `c.row != t.row`).
+    pub fn aligned_for(&self, band: u16) -> bool {
+        self.owners.iter().any(|&o| o != band)
+    }
+    /// 어긋선(내부 선일 때) — 한 줄만 경계로 쓴다.
+    pub fn misaligned(&self) -> bool {
+        self.owners.len() == 1
+    }
+    /// 부분 공유선(내부 선일 때) — 일부는 경계로 쓰고 일부는 관통한다.
+    pub fn partially_shared(&self) -> bool {
+        !self.owners.is_empty() && self.crossers > 0
+    }
+}
+
 /// 낙하점 탐색 결과 — 단위 구간 [line, line+1) 과 구간 내 오프셋(HU), 구간 크기.
 #[derive(Clone, Copy, Debug)]
 pub struct Located {
@@ -60,8 +75,11 @@ pub struct TableGrid<'a> {
     /// 저장 층: span1 max → solve_axis(Rows) → 0 은 400. == get_row_heights.
     pub row_heights_stored: Vec<HwpUnit>,
     pub row_y_stored: Vec<HwpUnit>,
-    /// 실효 층: max(저장, pad+1000, 셀 콘텐츠 바닥); 조각 행과 "span1 셀이 모두 명시 높이인" 관통 행은
-    /// 저장값(빈 셀 284 규약 행은 관통되어도 바닥 적용). == effective_row_heights(8-a 는 옛 구현 호출).
+    /// 행별 글줄 바닥(HU) = max(pad+1000, 행 내 span1 셀 콘텐츠 바닥). 조각 행과 "span1 셀이 모두
+    /// 명시 높이인" 관통 행은 0(저장 높이가 곧 실효 — 빈 셀 284 규약 행은 관통되어도 바닥 적용).
+    /// == row_line_floors_hu.
+    pub row_floors: Vec<u32>,
+    /// 실효 층: max(저장, row_floors). == effective_row_heights.
     pub row_heights_eff: Vec<HwpUnit>,
     pub row_y_eff: Vec<HwpUnit>,
     /// 셀별 콘텐츠 바닥(HU), idx = cell_idx. == cell_content_floors_hu.
@@ -95,6 +113,45 @@ fn own(lines: &mut [LineInfo], start: usize, span: usize, band: u16) {
     }
 }
 
+/// 선 **하나**의 소유 정보 — 격자를 만들지 않고 O(cells) 한 패스(할당은 owners 뿐).
+/// Table 의 술어 위임이 렌더러 셀별 루프에서 불리므로 `lines_only` 의 선별 Vec 할당도 피한다
+/// (52k 셀 표에서 lines_only 는 셀당 수백 Vec 할당 → 렌더 2배 느려짐 실측).
+pub(crate) fn line_info(t: &Table, axis: Axis, line: u16) -> LineInfo {
+    let line = line as usize;
+    let mut info = LineInfo::default();
+    for c in &t.cells {
+        let (start, span, band) = match axis {
+            Axis::Cols => (c.col as usize, c.col_span as usize, c.row),
+            Axis::Rows => (c.row as usize, c.row_span as usize, c.col),
+        };
+        let end = start + span;
+        if start == line || end == line {
+            info.owners.push(band);
+        } else if start < line && line < end {
+            info.crossers = info.crossers.saturating_add(1);
+        }
+    }
+    info.owners.sort_unstable();
+    info.owners.dedup();
+    info
+}
+
+/// 셀 저장 높이가 명시값인가(≠ 빈 셀 패딩 규약 ±8HU, 음수 랩 아님).
+pub(crate) fn stored_explicit(t: &Table, c: &Cell) -> bool {
+    let p = c.effective_padding(&t.padding);
+    let pad = p.top.max(0) as i64 + p.bottom.max(0) as i64;
+    c.height < 0x8000_0000 && (c.height as i64 - pad).abs() > 8
+}
+
+/// 행의 span1 셀이 **모두** 명시 저장 높이인가(span1 셀이 없는 행은 참). 조각 행·관통 행에서 글줄
+/// 바닥을 면제할 자격 — 빈 셀 규약 284 는 한컴이 항상 한 줄로 그리므로 면제하면 표가 줄어든다.
+pub(crate) fn span1_cells_explicit(t: &Table, row: usize) -> bool {
+    t.cells
+        .iter()
+        .filter(|c| c.row as usize == row && c.row_span <= 1)
+        .all(|c| stored_explicit(t, c))
+}
+
 fn cumulative(sizes: &[HwpUnit]) -> Vec<HwpUnit> {
     let mut out = Vec::with_capacity(sizes.len() + 1);
     out.push(0);
@@ -110,7 +167,9 @@ fn as_i32(v: HwpUnit) -> i32 {
 }
 
 impl<'a> TableGrid<'a> {
-    fn build(t: &'a Table) -> Self {
+    /// 1단계 — 선 소유(`col_lines`/`row_lines`)만, O(cells·span). 크기 벡터는 비어 있다.
+    /// Table 의 술어 위임(`is_misaligned_line` 등)이 셀별 루프에서 불려도 솔버·실효 층을 돌리지 않게.
+    pub(crate) fn lines_only(t: &'a Table) -> Self {
         let cc = t.col_count as usize;
         let rc = t.row_count as usize;
         let mut col_lines = vec![LineInfo::default(); cc + 1];
@@ -123,7 +182,7 @@ impl<'a> TableGrid<'a> {
             l.owners.sort_unstable();
             l.owners.dedup();
         }
-        let mut g = TableGrid {
+        TableGrid {
             table: t,
             col_count: cc,
             row_count: rc,
@@ -132,15 +191,26 @@ impl<'a> TableGrid<'a> {
             row_col_x: Vec::new(),
             row_heights_stored: Vec::new(),
             row_y_stored: Vec::new(),
+            row_floors: Vec::new(),
             row_heights_eff: Vec::new(),
             row_y_eff: Vec::new(),
             cell_floors: Vec::new(),
             col_lines,
             row_lines,
             fallback_bands: Vec::new(),
-        };
+        }
+    }
+
+    /// 2단계 — 선 소유 + 양축 크기(저장·실효·바닥). `row_col_x` 는 비어 있다(모델 getter 용).
+    /// Table 로 되돌아 부르지 않는다(cell_content_floors_hu 는 문단 lineseg 만 본다) — 위임 재귀 금지.
+    pub(crate) fn axes(t: &'a Table) -> Self {
+        let mut g = Self::lines_only(t);
         g.col_widths = g.solve_axis(Axis::Cols, &[]);
-        g.row_heights_stored = g.solve_axis(Axis::Rows, &[]);
+        // 행 축은 옛 모델 솔버 의미를 유지한다 — 렌더러가 행 1단계 입력으로 get_row_heights 를 써 왔으므로
+        // 여기서 산법을 바꾸면 화면이 바뀐다(8-b 실측: A2 위반 26표, hwpspec 표 −95px·387쪽 문서 385쪽).
+        // 두 산법은 모순 제약(병합 셀 ≠ 걸친 합)에서만 다르고 어느 쪽이 한컴과 같은지 오라클이 없다.
+        // 통일(렌더러식으로)은 그 26표 캡처 판정 뒤 별도 커밋으로.
+        g.row_heights_stored = g.solve_axis_legacy(Axis::Rows);
         for (axis, sizes, default) in [
             (Axis::Cols, &mut g.col_widths, 1800u32),
             (Axis::Rows, &mut g.row_heights_stored, 400u32),
@@ -154,12 +224,63 @@ impl<'a> TableGrid<'a> {
         }
         g.col_x = cumulative(&g.col_widths);
         g.row_y_stored = cumulative(&g.row_heights_stored);
-        // 실효 층·콘텐츠 바닥은 문단 lineseg 에 의존 — 옛 구현이 곧 정의(단계 8-b 에서 위임 방향 확정).
-        g.row_heights_eff = t.effective_row_heights();
-        g.row_y_eff = cumulative(&g.row_heights_eff);
         g.cell_floors = t.cell_content_floors_hu();
+        g.row_floors = g.compute_row_floors();
+        g.row_heights_eff = g
+            .row_heights_stored
+            .iter()
+            .zip(&g.row_floors)
+            .map(|(&h, &f)| h.max(f))
+            .collect();
+        g.row_y_eff = cumulative(&g.row_heights_eff);
+        g
+    }
+
+    /// 3단계 — 전부(행별 x선 포함). `Table::grid()`.
+    fn build(t: &'a Table) -> Self {
+        let mut g = Self::axes(t);
         g.row_col_x = g.build_row_col_x();
         g
+    }
+
+    /// 행별 글줄 바닥 — 종전 `effective_row_heights`/`row_line_floors_hu` 루프 본문의 한 패스판.
+    ///
+    /// 한컴 저장 규약: 빈 셀의 `cell.height` 는 **패딩만**이다(officex_tac_mid_anchor.hwpx: 셀 284 =
+    /// 142+142, common.height 2568 = 1284×2). 저장 합산만으로 common.height 를 만들면 표가 글줄만큼
+    /// 납작해져 TAC 옆 텍스트가 표 상단에 떠 보였다(2026-08-11). 바닥 = max(pad+1000(10pt 하한),
+    /// 행 내 셀 콘텐츠 바닥(lineseg 실측)) — 12pt 문서에서 측정기(1484)와 200HU 어긋나던 뿌리.
+    /// 면제: 조각 행(is_piece_row) — 저장 높이가 곧 실효(조각 800/284 를 1284 로 부풀리면 common.height
+    /// 5136≠2852); 관통 행(crossers>0)도 span1 셀이 **모두** 명시 높이일 때만 면제 — 사용자 세로 병합
+    /// 아래 행의 빈 셀(284 규약)은 렌더러처럼 바닥을 받는다(3×3 2×2 병합: 1행 284→1284).
+    /// ⚠ 다른 셀의 **저장** 높이는 포함하지 않는다 — 보상(±d) 조절이 있는 실파일에서 행 max 가 커져
+    /// 표가 자란다(issue_493).
+    fn compute_row_floors(&self) -> Vec<u32> {
+        const DEFAULT_LINE_HU: u32 = 1000;
+        let (t, rc) = (self.table, self.row_count);
+        let mut pad_max: Vec<Option<u32>> = vec![None; rc];
+        let mut content_max = vec![0u32; rc];
+        let mut all_explicit = vec![true; rc];
+        for (i, c) in t.cells.iter().enumerate() {
+            let r = c.row as usize;
+            if c.row_span > 1 || r >= rc {
+                continue;
+            }
+            let p = c.effective_padding(&t.padding);
+            let pad = (p.top.max(0) + p.bottom.max(0)) as u32;
+            pad_max[r] = Some(pad_max[r].map_or(pad, |m| m.max(pad)));
+            content_max[r] = content_max[r].max(self.cell_floors.get(i).copied().unwrap_or(0));
+            all_explicit[r] &= self.stored_explicit(c);
+        }
+        let table_pad = (t.padding.top.max(0) + t.padding.bottom.max(0)) as u32;
+        (0..rc)
+            .map(|r| {
+                let spanned_through = self.row_lines[r].crossers > 0;
+                if (spanned_through && all_explicit[r]) || self.piece_row_with(r, all_explicit[r]) {
+                    return 0;
+                }
+                (pad_max[r].unwrap_or(table_pad) + DEFAULT_LINE_HU).max(content_max[r])
+            })
+            .collect()
     }
 
     fn count(&self, axis: Axis) -> usize {
@@ -181,6 +302,7 @@ impl<'a> TableGrid<'a> {
         let count = self.count(axis);
         let mut sizes = vec![0u32; count];
         let mut constraints: Vec<(usize, usize, HwpUnit)> = Vec::new();
+        let mut index: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
         for c in &self.table.cells {
             if exclude_rows.contains(&c.row) {
                 continue;
@@ -192,9 +314,17 @@ impl<'a> TableGrid<'a> {
             if span == 1 && start < count {
                 sizes[start] = sizes[start].max(total);
             } else if span > 1 && start + span <= count {
-                match constraints.iter_mut().find(|x| x.0 == start && x.1 == span) {
-                    Some(e) => e.2 = e.2.max(total),
-                    None => constraints.push((start, span, total)),
+                // (start,span) 별 max — 첫 등장 순서 유지(안정 정렬이 그 순서를 지킨다). 선형 탐색은
+                // 병합 셀이 많은 큰 표에서 O(merges²) 라 인덱스 맵으로.
+                match index.entry((start, span)) {
+                    std::collections::hash_map::Entry::Occupied(e) => {
+                        let slot: &mut (usize, usize, HwpUnit) = &mut constraints[*e.get()];
+                        slot.2 = slot.2.max(total);
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(constraints.len());
+                        constraints.push((start, span, total));
+                    }
                 }
             }
         }
@@ -211,6 +341,47 @@ impl<'a> TableGrid<'a> {
                 }
             }
             if !progress {
+                break;
+            }
+        }
+        sizes
+    }
+
+    /// 옛 모델 솔버(`Table::solve_span_gaps`, 2026-08-04)의 HU판 — 셀 순서대로, (start,span) dedup 없이,
+    /// 미지수 1개이고 total > known 일 때만 대입, 진전 없을 때까지 반복. 미결정은 0.
+    /// 렌더러식 `solve_axis` 와는 모순 제약 표에서만 다르다(첫 등장 셀 vs max, 음수 잔여 skip vs 0 대입).
+    pub fn solve_axis_legacy(&self, axis: Axis) -> Vec<HwpUnit> {
+        let count = self.count(axis);
+        let mut sizes = vec![0u32; count];
+        for c in &self.table.cells {
+            let (start, span, total) = match axis {
+                Axis::Cols => (c.col as usize, c.col_span as usize, c.width),
+                Axis::Rows => (c.row as usize, c.row_span as usize, c.height),
+            };
+            if span == 1 && start < count {
+                sizes[start] = sizes[start].max(total);
+            }
+        }
+        loop {
+            let mut progressed = false;
+            for c in &self.table.cells {
+                let (start, span, total) = match axis {
+                    Axis::Cols => (c.col as usize, c.col_span as usize, c.width),
+                    Axis::Rows => (c.row as usize, c.row_span as usize, c.height),
+                };
+                if span < 2 || start + span > count {
+                    continue;
+                }
+                let mut unknown = (start..start + span).filter(|&i| sizes[i] == 0);
+                if let (Some(u), None) = (unknown.next(), unknown.next()) {
+                    let known: u32 = sizes[start..start + span].iter().sum();
+                    if total > known {
+                        sizes[u] = total - known;
+                        progressed = true;
+                    }
+                }
+            }
+            if !progressed {
                 break;
             }
         }
@@ -334,49 +505,40 @@ impl<'a> TableGrid<'a> {
 
     /// 정렬선인가 — `band` 밖의 줄이 이 선을 경계로 쓴다(is_boundary_aligned).
     pub fn is_aligned_for(&self, axis: Axis, line: u16, band: u16) -> bool {
-        self.lines(axis)
-            .get(line as usize)
-            .is_some_and(|l| l.owners.iter().any(|&o| o != band))
+        self.lines(axis).get(line as usize).is_some_and(|l| l.aligned_for(band))
     }
 
     /// 어긋선 — 내부 선인데 한 줄만 경계로 쓴다(is_misaligned_line).
     pub fn is_misaligned(&self, axis: Axis, line: u16) -> bool {
-        self.interior(axis, line) && self.lines(axis)[line as usize].owners.len() == 1
+        self.interior(axis, line) && self.lines(axis)[line as usize].misaligned()
     }
 
     /// 부분 공유선 — 내부 선을 일부는 경계로 쓰고 일부는 관통한다(is_partially_shared_line).
     pub fn is_partially_shared(&self, axis: Axis, line: u16) -> bool {
-        self.interior(axis, line) && {
-            let l = &self.lines(axis)[line as usize];
-            !l.owners.is_empty() && l.crossers > 0
-        }
+        self.interior(axis, line) && self.lines(axis)[line as usize].partially_shared()
     }
 
-    /// 셀 저장 높이가 명시값인가(≠ 빈 셀 패딩 규약 ±8HU, 음수 랩 아님).
     fn stored_explicit(&self, c: &Cell) -> bool {
-        let p = c.effective_padding(&self.table.padding);
-        let pad = p.top.max(0) as i64 + p.bottom.max(0) as i64;
-        c.height < 0x8000_0000 && (c.height as i64 - pad).abs() > 8
+        stored_explicit(self.table, c)
     }
 
-    /// 행의 span1 셀이 **모두** 명시 저장 높이인가(span1 셀이 없는 행은 참).
     fn row_span1_cells_explicit(&self, row: usize) -> bool {
-        self.table
-            .cells
-            .iter()
-            .filter(|c| c.row as usize == row && c.row_span <= 1)
-            .all(|c| self.stored_explicit(c))
+        span1_cells_explicit(self.table, row)
     }
 
     /// 어긋내기 조각 행 — 위/아래 선이 어긋선이고 행의 span1 셀이 모두 명시 높이(is_stagger_piece_row).
     /// 1열 표는 제외.
     pub fn is_piece_row(&self, row: usize) -> bool {
+        self.piece_row_with(row, self.row_span1_cells_explicit(row))
+    }
+
+    /// is_piece_row 의 명시 높이 자격을 밖에서 넘기는 판(compute_row_floors 의 한 패스 집계용).
+    fn piece_row_with(&self, row: usize, span1_explicit: bool) -> bool {
         if self.col_count < 2 {
             return false;
         }
         let (up, down) = (row as u16, (row + 1) as u16);
-        (self.is_misaligned(Axis::Rows, up) || self.is_misaligned(Axis::Rows, down))
-            && self.row_span1_cells_explicit(row)
+        (self.is_misaligned(Axis::Rows, up) || self.is_misaligned(Axis::Rows, down)) && span1_explicit
     }
 
     /// 어긋내기 합류 산물 행 — 인접 선이 부분 공유선(is_stagger_joined_row). 1열 표는 제외.

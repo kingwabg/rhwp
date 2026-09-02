@@ -166,10 +166,65 @@ fn table_metrics(t: &Table, st: &mut Stats) {
     }
 }
 
+/// 종전 `Table::solve_span_gaps`(8-b 에서 삭제) — 셀 순서대로 "미지수 1개 구간" 을 반복 해소하는 옛 모델
+/// 솔버. grid 의 `solve_axis`(렌더러 산법: (start,span) max-dedup·span 오름차순) 와의 차이는 모순 제약(A2
+/// 위반) 표에서만 나므로 `solver_disagreement` lint 가 그 집합을 계속 열거할 수 있게 여기 보존한다.
+fn legacy_solve(t: &Table, sizes: &mut [u32], cols: bool) {
+    loop {
+        let mut progressed = false;
+        for cell in &t.cells {
+            let (start, span, total) = if cols {
+                (cell.col as usize, cell.col_span as usize, cell.width)
+            } else {
+                (cell.row as usize, cell.row_span as usize, cell.height)
+            };
+            if span < 2 || start + span > sizes.len() {
+                continue;
+            }
+            let unknown: Vec<usize> = (start..start + span).filter(|&i| sizes[i] == 0).collect();
+            if unknown.len() == 1 {
+                let known: u32 = (start..start + span).map(|i| sizes[i]).sum();
+                if total > known {
+                    sizes[unknown[0]] = total - known;
+                    progressed = true;
+                }
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+}
+
+/// 종전 get_column_widths / get_row_heights: span1 max → legacy_solve → 0 은 1800/400.
+fn legacy_axis(t: &Table, cols: bool) -> Vec<u32> {
+    let n = if cols { t.col_count } else { t.row_count } as usize;
+    let mut sizes = vec![0u32; n];
+    for c in &t.cells {
+        let (start, span, v) = if cols {
+            (c.col as usize, c.col_span, c.width)
+        } else {
+            (c.row as usize, c.row_span, c.height)
+        };
+        if span == 1 && start < n {
+            sizes[start] = sizes[start].max(v);
+        }
+    }
+    legacy_solve(t, &mut sizes, cols);
+    let default = if cols { 1800 } else { 400 };
+    for s in &mut sizes {
+        if *s == 0 {
+            *s = default;
+        }
+    }
+    sizes
+}
+
 /// [격자 뷰 2026-09-02] 8-a lint 2종 — 옛 getter/술어 vs `Table::grid()`.
-/// solver_disagreement: 표 단위(열 폭·저장 행높이 벡터 불일치, TAC 표기).
+/// solver_disagreement: 표 단위(열 폭·저장 행높이 벡터 불일치, TAC 표기) — 8-b 이후 옛 산법은 위 legacy_axis.
 /// predicate_mismatch: 행별 piece/joined, 행 축 내부 선별 misaligned/partially_shared,
 /// 셀 경계별 양축 aligned(is_boundary_aligned), S6 죽은 선 — 불일치 1건 = 1줄.
+/// 8-b 이후 Table 술어는 단일 선 프로브(line_info)로, 격자는 전체 스캔으로 계산하므로 두 경로 대조(회귀 감시).
 fn grid_lints(
     t: &Table,
     file: &str,
@@ -182,12 +237,12 @@ fn grid_lints(
     let g = t.grid();
     let tac = t.common.treat_as_char;
     let mut why = Vec::new();
-    let cw = t.get_column_widths();
+    let cw = legacy_axis(t, true);
     if g.col_widths != cw {
         let k = g.col_widths.iter().zip(&cw).position(|(a, b)| a != b).unwrap_or(0);
         why.push(format!("cols[{k}] grid={:?} legacy={:?}", g.col_widths.get(k), cw.get(k)));
     }
-    let rh = t.get_row_heights();
+    let rh = legacy_axis(t, false);
     if g.row_heights_stored != rh {
         let k = g.row_heights_stored.iter().zip(&rh).position(|(a, b)| a != b).unwrap_or(0);
         why.push(format!("rows[{k}] grid={:?} legacy={:?}", g.row_heights_stored.get(k), rh.get(k)));
@@ -309,9 +364,9 @@ fn main() {
     println!("A2 merged≠span-sum: {} tables", st.a2_mismatch);
     println!("row-x differs from column max: {} tables", st.rowx_diff);
     println!("span-only (piece-row candidate) rows: {} tables", st.piece_rows);
-    println!("solver_disagreement (grid vs get_column_widths/get_row_heights): {} tables", st.solver_disagreement);
+    println!("solver_disagreement (grid vs legacy solve_span_gaps): {} tables", st.solver_disagreement);
     println!("predicate_mismatch (grid vs legacy predicates): {} lines", st.predicate_mismatch);
-    for l in solver_lines.iter().take(20) {
+    for l in solver_lines.iter() {
         println!("{l}");
     }
     for l in pred_lines.iter().take(20) {

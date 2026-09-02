@@ -2,6 +2,7 @@
 
 use super::paragraph::Paragraph;
 use super::shape::{common_obj_offsets, Caption};
+use super::table_grid::{self, Axis, TableGrid};
 use super::*;
 
 pub const CELL_FLAG_HAS_MARGIN: u16 = 0x0001;
@@ -356,6 +357,9 @@ impl Cell {
 }
 
 impl Table {
+    /// 셀 최소 크기(HU) — 어긋내기·resize·열 삽입·fit 의 공통 바닥(종전 지역 상수 5곳 통합).
+    pub const MIN_CELL: i32 = 200;
+
     /// [Task #1716] 반복 제목행으로 재사용할 **표 상단의 연속 제목행 블록** `0..H` 를 반환한다.
     ///
     /// 행 r 이 제목행 ⟺ header 셀(`is_header`, rowspan 덮개 포함)이 r 을 덮음. 상단(행 0)부터
@@ -731,8 +735,9 @@ impl Table {
     ///   [12..16] width, [16..20] height, [20..24] z_order,
     ///   [24..32] outer_margin (i16×4), [32..36] instance_id
     pub fn update_ctrl_dimensions(&mut self) {
-        let total_width: HwpUnit = self.get_column_widths().iter().sum();
-        let total_height: HwpUnit = self.effective_row_heights().iter().sum();
+        let g = TableGrid::axes(self);
+        let total_width: HwpUnit = g.col_x.last().copied().unwrap_or(0);
+        let total_height: HwpUnit = g.row_y_eff.last().copied().unwrap_or(0);
         // (1) serialize source — raw_ctrl_data bytes (HWP 직렬화 시 사용). HWPX 로드 표는 raw 가 비어
         //     있다(parser/hwpx/section.rs `raw_ctrl_data: Vec::new()`) — 그때는 건너뛴다.
         //     [불변식 가드 2026-09-02] 종전엔 여기서 조기 반환해 (2)도 건너뛰었다 → HWPX 표는
@@ -799,56 +804,9 @@ impl Table {
         self.common.height as i64 + self.outer_margin_top as i64 + self.outer_margin_bottom as i64
     }
 
+    /// 열별 폭 — 격자 뷰(`TableGrid::col_widths`: span1 max → 스팬 제약 해소 → 0 은 1800).
     pub fn get_column_widths(&self) -> Vec<HwpUnit> {
-        let mut widths = vec![0u32; self.col_count as usize];
-        for cell in &self.cells {
-            if cell.col_span == 1 && (cell.col as usize) < widths.len() {
-                if cell.width > widths[cell.col as usize] {
-                    widths[cell.col as usize] = cell.width;
-                }
-            }
-        }
-        // [경계선 재설계 2026-08-04] 어긋낸 표의 조각 열은 단독(span1) 목격자가 없다 —
-        // 기본값으로 채우면 update_ctrl_dimensions 를 부르는 다음 연산(일반 드래그 등)이
-        // 표를 슬쩍 키운다(신고: 오른쪽 끝이 커짐). 병합 셀 제약으로 먼저 푼다.
-        self.solve_span_gaps(&mut widths, true);
-        // 그래도 폭이 0인 열은 기본값 1800 HWPUNIT (약 6.35mm)
-        for w in &mut widths {
-            if *w == 0 {
-                *w = 1800;
-            }
-        }
-        widths
-    }
-
-    /// 목격자 없는 열/행 크기를 병합 셀 제약(구간 합 = 셀 크기)으로 채운다.
-    /// 정확히 한 구간만 미지수인 병합 셀부터 반복 해소 — 레이아웃 솔버의 모델판.
-    fn solve_span_gaps(&self, sizes: &mut [HwpUnit], cols: bool) {
-        loop {
-            let mut progressed = false;
-            for cell in &self.cells {
-                let (start, span, total) = if cols {
-                    (cell.col as usize, cell.col_span as usize, cell.width)
-                } else {
-                    (cell.row as usize, cell.row_span as usize, cell.height)
-                };
-                if span < 2 || start + span > sizes.len() {
-                    continue;
-                }
-                let unknown: Vec<usize> =
-                    (start..start + span).filter(|&i| sizes[i] == 0).collect();
-                if unknown.len() == 1 {
-                    let known: u32 = (start..start + span).map(|i| sizes[i]).sum();
-                    if total > known {
-                        sizes[unknown[0]] = total - known;
-                        progressed = true;
-                    }
-                }
-            }
-            if !progressed {
-                break;
-            }
-        }
+        TableGrid::axes(self).col_widths
     }
 
     /// 열별 폭(HWPUNIT)을 절대값으로 설정한다.
@@ -895,180 +853,43 @@ impl Table {
     /// effective_row_heights 와 resize 의 raw 델타 밑절미가 공유하는 단일 근거.
     /// ⚠ 다른 셀의 **저장** 높이는 포함하지 않는다 — 보상(±d) 조절이 있는 실파일에서
     /// 저장 높이까지 밑절미로 끌어올리면 행 max 가 커져 표가 자란다(issue_493 실측).
-    /// [2026-08-16] 이 격자선이 **어긋난 선**인가 — 내부 선인데 한 열만 경계로 쓴다.
-    /// [격자 뷰 2026-09-02] pub — check_corpus_invariants `predicate_mismatch` 의 오라클(8-b 위임 전까지).
+    /// 이 격자선(행 축)이 **어긋난 선**인가 — 내부 선인데 한 열만 경계로 쓴다. → `TableGrid::is_misaligned`.
     pub fn is_misaligned_line(&self, line: u16) -> bool {
-        if line == 0 || line >= self.row_count {
-            return false; // 바깥 테두리
-        }
-        let mut first_col: Option<u16> = None;
-        for c in &self.cells {
-            if c.row == line || c.row + c.row_span == line {
-                match first_col {
-                    None => first_col = Some(c.col),
-                    Some(fc) if fc != c.col => return false,
-                    _ => {}
-                }
-            }
-        }
-        first_col.is_some()
+        line > 0 && line < self.row_count && table_grid::line_info(self, Axis::Rows, line).misaligned()
     }
 
-    /// [2026-08-16] 이 행이 **어긋내기 조각 행**인가 — 위 또는 아래 격자선이 어긋난
-    /// 선(한 열 전용)이면 조각이다. 조각 행은 저장 높이가 곧 실효 높이라 글줄 바닥·
-    /// 빈 lineseg 성장(1000HU)을 적용하면 줄인 조각이 도로 부풀어 표가 자란다
-    /// (3×3 전수 실측: 모델 합은 보존인데 렌더만 +2.7px). 정상 병합 행은 인접 선을
-    /// 여러 열이 쓰므로 종전대로 바닥·성장이 적용된다. 1열 표는 제외.
-    /// [격자 뷰 2026-09-02] pub — check_corpus_invariants `predicate_mismatch` 의 오라클(8-b 위임 전까지).
+    /// 이 행이 **어긋내기 조각 행**인가 — 인접 선이 어긋선이고 행의 span1 셀이 모두 명시 높이.
+    /// 조각 행은 저장 높이가 곧 실효 높이라 글줄 바닥·빈 lineseg 성장을 면제한다. → `TableGrid::is_piece_row`.
+    /// 셀별 루프(렌더러 성장 면제)에서 불리므로 선 하나씩 O(cells) 로 판정한다 — 격자 전체 구성 금지.
     pub fn is_stagger_piece_row(&self, row: usize) -> bool {
-        if self.col_count < 2 {
-            return false;
-        }
-        if !(self.is_misaligned_line(row as u16) || self.is_misaligned_line(row as u16 + 1)) {
-            return false;
-        }
-        // [불변식 가드 2026-09-02] 선 모양만으로는 어긋내기 조각과 **사용자 세로 병합 곁 행**을
-        // 구별할 수 없다 — 3×3 에서 (0,0)-(1,1) 병합 뒤 1번 선은 2열만 쓰고 병합 셀이 관통하므로
-        // 0행이 조각 행으로 오판돼 빈 셀(284 규약)이 글줄 바닥을 잃고 표가 3852→1852 로 줄었다
-        // (ops-matrix c-merge-block, D2 위반). 어긋내기 조각은 저장 높이가 명시값(≠ 패딩 규약)이고
-        // 빈 셀 규약 284 는 한컴이 항상 한 줄로 그리므로, 행의 span1 셀이 **모두** 명시 높이일 때만
-        // 조각 행이다 — 합류 행(is_stagger_joined_row) 호출부의 stored_explicit 가드와 같은 식.
-        self.row_span1_cells_explicit(row)
+        self.col_count >= 2
+            && (self.is_misaligned_line(row as u16) || self.is_misaligned_line(row as u16 + 1))
+            && table_grid::span1_cells_explicit(self, row)
     }
 
-    /// 행의 span1 셀이 **모두** 명시 저장 높이(≠ 빈 셀 패딩 규약 ±8HU, 음수 랩 아님)인가.
-    /// span1 셀이 없는 행(관통만)은 참. 조각 행·관통 행에서 글줄 바닥을 면제할 자격 —
-    /// 빈 셀 규약 284 는 한컴이 항상 한 줄로 그리므로 면제하면 표가 줄어든다.
-    fn row_span1_cells_explicit(&self, row: usize) -> bool {
-        self.cells
-            .iter()
-            .filter(|c| c.row as usize == row && c.row_span <= 1)
-            .all(|c| {
-                let p = c.effective_padding(&self.padding);
-                let pad = p.top.max(0) as i64 + p.bottom.max(0) as i64;
-                c.height < 0x8000_0000 && (c.height as i64 - pad).abs() > 8
-            })
-    }
-
-    /// [2026-08-16 합류] 이 격자선이 **부분 공유선**인가 — 내부 선을 일부 열은
-    /// 경계로 쓰고 일부 열은 스팬으로 관통한다. 두 열이 같은 낙하점에 합류하면
-    /// 어긋선이 공유선이 되어 is_misaligned_line 에서 빠지는데, 그 행 역시
-    /// 어긋내기 산물이라 빈 셀 글줄 바닥을 강제하면 표가 자란다(합류 실측 +7.6px).
-    /// [격자 뷰 2026-09-02] pub — check_corpus_invariants `predicate_mismatch` 의 오라클(8-b 위임 전까지).
+    /// 이 격자선(행 축)이 **부분 공유선**인가 — 일부 열은 경계로 쓰고 일부는 관통. → `TableGrid::is_partially_shared`.
     pub fn is_partially_shared_line(&self, line: u16) -> bool {
-        if line == 0 || line >= self.row_count {
-            return false;
-        }
-        let bordered = self
-            .cells
-            .iter()
-            .any(|c| c.row == line || c.row + c.row_span == line);
-        let spanned = self
-            .cells
-            .iter()
-            .any(|c| c.row < line && c.row + c.row_span > line);
-        bordered && spanned
+        line > 0
+            && line < self.row_count
+            && table_grid::line_info(self, Axis::Rows, line).partially_shared()
     }
 
-    /// [2026-08-16 합류] 어긋내기 **합류 산물 행**인가 — 인접 선이 부분 공유선.
-    /// 사용자 세로 병합 곁 행도 잡히므로, 호출부는 저장 높이가 명시(> 패딩 규약)인
-    /// 빈 셀에만 이 판정으로 글줄 바닥을 면제한다(빈 셀 규약 284 는 종전대로 성장).
-    /// [격자 뷰 2026-09-02] pub — check_corpus_invariants `predicate_mismatch` 의 오라클(8-b 위임 전까지).
+    /// 어긋내기 **합류 산물 행**인가 — 인접 선이 부분 공유선. → `TableGrid::is_joined_row`.
     pub fn is_stagger_joined_row(&self, row: usize) -> bool {
-        if self.col_count < 2 {
-            return false;
-        }
-        self.is_partially_shared_line(row as u16) || self.is_partially_shared_line(row as u16 + 1)
+        self.col_count >= 2
+            && (self.is_partially_shared_line(row as u16)
+                || self.is_partially_shared_line(row as u16 + 1))
     }
 
+    /// 행별 **글줄 바닥**(HU) — `TableGrid::row_floors`(조각 행·명시 관통 행은 0).
+    /// effective_row_heights 와 resize 의 raw 델타 밑절미가 공유하는 단일 근거.
     pub fn row_line_floors_hu(&self) -> Vec<u32> {
-        const DEFAULT_LINE_HU: u32 = 1000;
-        let floors = self.cell_content_floors_hu();
-        let row_count = self.row_count as usize;
-        let mut out = vec![0u32; row_count];
-        for (row, slot) in out.iter_mut().enumerate() {
-            let spanned_through = self
-                .cells
-                .iter()
-                .any(|c| (c.row as usize) < row && (c.row as usize + c.row_span as usize) > row);
-            // [불변식 가드 2026-09-02] 관통 행도 조각 행과 같은 자격 검사 — 사용자 세로 병합 아래
-            // 행의 빈 셀(284 규약)은 렌더러처럼 글줄 바닥을 받는다(3×3 2×2 병합: 1행 284→1284).
-            if spanned_through && self.row_span1_cells_explicit(row) {
-                continue;
-            }
-            if self.is_stagger_piece_row(row) {
-                continue;
-            }
-            let pad_vert: u32 = self
-                .cells
-                .iter()
-                .filter(|c| c.row as usize == row && c.row_span <= 1)
-                .map(|c| {
-                    let p = c.effective_padding(&self.padding);
-                    (p.top.max(0) + p.bottom.max(0)) as u32
-                })
-                .max()
-                .unwrap_or((self.padding.top.max(0) + self.padding.bottom.max(0)) as u32);
-            let content_floor: u32 = self
-                .cells
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c.row as usize == row && c.row_span <= 1)
-                .map(|(i, _)| floors.get(i).copied().unwrap_or(0))
-                .max()
-                .unwrap_or(0);
-            *slot = (pad_vert + DEFAULT_LINE_HU).max(content_floor);
-        }
-        out
+        TableGrid::axes(self).row_floors
     }
 
+    /// 행별 **실효** 높이 = max(저장 행높이, 글줄 바닥) — `TableGrid::row_heights_eff`.
     pub fn effective_row_heights(&self) -> Vec<HwpUnit> {
-        const DEFAULT_LINE_HU: u32 = 1000;
-        let floors = self.cell_content_floors_hu();
-        let mut heights = self.get_row_heights();
-        for (row, h) in heights.iter_mut().enumerate() {
-            // [경계선 어긋내기 예외 2026-08-12] **걸침 셀**(위 행에서 시작해 이 행에
-            // 걸치는 row_span 셀)이 있는 행은 어긋내기(offset_cell_boundary)가 만든
-            // 조각 행이다 — 저장 높이가 곧 실효 높이이므로 글줄 바닥을 적용하지
-            // 않는다. 종전엔 조각 행(예: 800/284HU)까지 1284 로 부풀려 어긋낸 표의
-            // common.height 가 실제(2852)보다 크게(5136) 기록됐다(신고 2026-08-12).
-            // 빈 규약 행(전 셀이 이 행에서 시작)은 종전대로 바닥 적용.
-            let spanned_through = self
-                .cells
-                .iter()
-                .any(|c| (c.row as usize) < row && (c.row as usize + c.row_span as usize) > row);
-            // [불변식 가드 2026-09-02] 관통 행도 조각 행과 같은 자격 검사 — 사용자 세로 병합 아래
-            // 행의 빈 셀(284 규약)은 렌더러처럼 글줄 바닥을 받는다(3×3 2×2 병합: 1행 284→1284).
-            if spanned_through && self.row_span1_cells_explicit(row) {
-                continue;
-            }
-            if self.is_stagger_piece_row(row) {
-                continue;
-            }
-            let pad_vert: u32 = self
-                .cells
-                .iter()
-                .filter(|c| c.row as usize == row && c.row_span <= 1)
-                .map(|c| {
-                    let p = c.effective_padding(&self.padding);
-                    (p.top.max(0) + p.bottom.max(0)) as u32
-                })
-                .max()
-                .unwrap_or((self.padding.top.max(0) + self.padding.bottom.max(0)) as u32);
-            // [2026-08-13] 바닥 = max(10pt 고정 하한, 행 내 셀 콘텐츠 바닥(lineseg 실측)).
-            // 10pt 고정(pad+1000)만 쓰면 12pt 문서에서 측정기(콘텐츠 바닥 1484)와 200HU
-            // 어긋나 common.height 가 시각 합과 달라졌다(어긋내기 후 균등 폴백의 한 뿌리).
-            let content_floor: u32 = self
-                .cells
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c.row as usize == row && c.row_span <= 1)
-                .map(|(i, _)| floors.get(i).copied().unwrap_or(0))
-                .max()
-                .unwrap_or(0);
-            *h = (*h).max((pad_vert + DEFAULT_LINE_HU).max(content_floor));
-        }
-        heights
+        TableGrid::axes(self).row_heights_eff
     }
 
     /// [2026-08-16] 행 `r` 를 위에서 `off`(HU) 지점에서 **이분할**해 새 격자선을 만든다.
@@ -1188,16 +1009,7 @@ impl Table {
     /// 행별 높이를 추출한다 (row_span==1인 셀 기준).
     /// 높이가 0인 행은 기본값 400으로 대체 (새 셀 생성용).
     pub fn get_row_heights(&self) -> Vec<HwpUnit> {
-        let mut heights = self.get_raw_row_heights();
-        // [경계선 재설계 2026-08-04] 어긋낸 표의 조각 행 — 열과 같은 제약 해소
-        self.solve_span_gaps(&mut heights, false);
-        // 그래도 높이가 0인 행은 기본값 400 HWPUNIT
-        for h in &mut heights {
-            if *h == 0 {
-                *h = 400;
-            }
-        }
-        heights
+        TableGrid::axes(self).row_heights_stored
     }
 
     /// 행별 높이를 추출한다 (fallback 없이 원본 값 그대로).
@@ -1410,16 +1222,15 @@ impl Table {
         // [officex] 새 열 폭을 그냥 더하면 표가 본문·용지 밖으로 나간다
         // (QA "열 삽입: 폭 배분" — 559.4→745.8px, 오른쪽 끝이 쪽 폭 793.7 초과).
         // 한컴처럼 표 전체 폭을 보존한다: 새 열 포함 전 열을 원래 총폭 비율로 축소하고
-        // 내림 잔여분은 가장 넓은 열에 몰아 합을 정확히 되돌린다. MIN_COLUMN_WIDTH 바닥에
+        // 내림 잔여분은 가장 넓은 열에 몰아 합을 정확히 되돌린다. MIN_CELL 바닥에
         // 닿으면 더 줄이지 않는다 — 열이 지나치게 많을 때만 폭이 조금 는다(가독성 우선).
-        const MIN_COLUMN_WIDTH: u32 = 200;
         if original_total_width > 0 {
             let mut widths = self.get_column_widths();
             let grown: u64 = widths.iter().map(|w| *w as u64).sum();
             if grown > original_total_width {
                 for w in &mut widths {
                     let scaled = (*w as u64 * original_total_width) / grown;
-                    *w = (scaled as u32).max(MIN_COLUMN_WIDTH);
+                    *w = (scaled as u32).max(Self::MIN_CELL as u32);
                 }
                 let assigned: u64 = widths.iter().map(|w| *w as u64).sum();
                 if assigned < original_total_width {
@@ -2074,13 +1885,8 @@ impl Table {
     /// 어긋난 선이다. 어긋내기가 "신규"인지 "재이동"인지 가르는 단일 판정.
     /// [격자 뷰 2026-09-02] pub — check_corpus_invariants `predicate_mismatch` 의 오라클(8-b 위임 전까지).
     pub fn is_boundary_aligned(&self, t: &Cell, boundary: u16, edge_right: bool) -> bool {
-        self.cells.iter().any(|c| {
-            if edge_right {
-                c.row != t.row && (c.col == boundary || c.col + c.col_span == boundary)
-            } else {
-                c.col != t.col && (c.row == boundary || c.row + c.row_span == boundary)
-            }
-        })
+        let (axis, band) = if edge_right { (Axis::Cols, t.row) } else { (Axis::Rows, t.col) };
+        table_grid::line_info(self, axis, boundary).aligned_for(band)
     }
 
     /// 이미 어긋난 경계의 **재이동** — 격자(행·열 수, span)를 그대로 두고 대상/이웃의
@@ -2095,7 +1901,6 @@ impl Table {
         edge_right: bool,
         delta: i32,
     ) -> Result<(), String> {
-        const MIN_CELL: i32 = 200;
         let t = self.cells[cell_idx].clone();
         let n = self.cells[n_idx].clone();
         let size = |c: &Cell| if edge_right { c.width } else { c.height } as i32;
@@ -2168,9 +1973,9 @@ impl Table {
         };
         let floor_of = |idx: usize| -> i32 {
             if edge_right {
-                MIN_CELL
+                Self::MIN_CELL
             } else {
-                self.stagger_piece_floor_hu(idx, &floors, MIN_CELL)
+                self.stagger_piece_floor_hu(idx, &floors, Self::MIN_CELL)
             }
         };
         let space_of = |c: &Cell| -> i32 {
@@ -2216,8 +2021,8 @@ impl Table {
             self.materialize_rows_effective(lo, hi.saturating_sub(1));
             let t_now = self.cells[cell_idx].height as i32;
             let n_now = self.cells[n_idx].height as i32;
-            self.cells[cell_idx].height = (t_now + d).max(MIN_CELL) as HwpUnit;
-            self.cells[n_idx].height = (n_now - d).max(MIN_CELL) as HwpUnit;
+            self.cells[cell_idx].height = (t_now + d).max(Self::MIN_CELL) as HwpUnit;
+            self.cells[n_idx].height = (n_now - d).max(Self::MIN_CELL) as HwpUnit;
         }
         self.rebuild_grid();
         self.update_ctrl_dimensions();
@@ -2367,21 +2172,10 @@ impl Table {
                 out.push(format!("S6 죽은 가로선 {line}"));
             }
         }
-        let mut widths = vec![0u32; cc];
-        for c in &self.cells {
-            if c.col_span == 1 && (c.col as usize) < cc {
-                widths[c.col as usize] = widths[c.col as usize].max(c.width);
-            }
-        }
-        self.solve_span_gaps(&mut widths, true);
-        out.extend(
-            widths.iter().enumerate().filter(|(_, &w)| w == 0).map(|(k, _)| format!("S7 열 {k} 폭 폴백(1800)")),
-        );
-        let mut heights = self.get_raw_row_heights();
-        self.solve_span_gaps(&mut heights, false);
-        out.extend(
-            heights.iter().enumerate().filter(|(_, &h)| h == 0).map(|(r, _)| format!("S7 행 {r} 높이 폴백(400)")),
-        );
+        out.extend(TableGrid::axes(self).fallback_bands.iter().map(|&(axis, k)| match axis {
+            Axis::Cols => format!("S7 열 {k} 폭 폴백(1800)"),
+            Axis::Rows => format!("S7 행 {k} 높이 폴백(400)"),
+        }));
         for (i, z) in self.zones.iter().enumerate() {
             if z.start_col > z.end_col
                 || z.start_row > z.end_row
@@ -2419,7 +2213,6 @@ impl Table {
         expected_cell_delta: Option<i64>,
         deletes_content: bool,
     ) -> Vec<String> {
-        const MIN_CELL: u32 = 200;
         let mut out = Vec::new();
         let sum_w = |t: &Table| t.get_column_widths().iter().map(|&w| w as u64).sum::<u64>();
         let sum_h = |t: &Table| t.effective_row_heights().iter().map(|&h| h as u64).sum::<u64>();
@@ -2454,9 +2247,9 @@ impl Table {
                 out.push(format!("D4 문자 수 변화 {a} → {b}"));
             }
         }
-        let thin_cols = |t: &Table| t.get_column_widths().iter().filter(|&&w| w < MIN_CELL).count();
+        let thin_cols = |t: &Table| t.get_column_widths().iter().filter(|&&w| w < Self::MIN_CELL as u32).count();
         let thin_rows =
-            |t: &Table| t.effective_row_heights().iter().filter(|&&h| h < MIN_CELL).count();
+            |t: &Table| t.effective_row_heights().iter().filter(|&&h| h < Self::MIN_CELL as u32).count();
         if thin_cols(self) > thin_cols(before) {
             out.push(format!("D5 슬리버 열 {} → {}", thin_cols(before), thin_cols(self)));
         }
@@ -2490,7 +2283,6 @@ impl Table {
         edge_right: bool,
         delta: i32,
     ) -> Result<(), String> {
-        const MIN_CELL: i32 = 200; // resize_table_cells 와 같은 최소 크기
         if delta == 0 {
             return Ok(());
         }
@@ -2530,7 +2322,7 @@ impl Table {
                 let thin = |tb: &Table| {
                     tb.get_column_widths()
                         .iter()
-                        .filter(|&&w| (w as i32) < MIN_CELL)
+                        .filter(|&&w| (w as i32) < Self::MIN_CELL)
                         .count()
                 };
                 let thin0 = thin(self);
@@ -2547,7 +2339,7 @@ impl Table {
                 if r.is_ok()
                     && probe.stagger_invariants_hold(w0, h0)
                     && thin(&probe) <= thin0
-                    && (delivered - delta).abs() <= MIN_CELL
+                    && (delivered - delta).abs() <= Self::MIN_CELL
                 {
                     *self = probe;
                     return Ok(());
@@ -2557,7 +2349,7 @@ impl Table {
                     .cell_index_at(t.row, t.col)
                     .ok_or("복원 후 대상 소실")?;
                 let cum = w_before - self.cells[t_idx].width as i32;
-                if (cum + delta).abs() <= MIN_CELL {
+                if (cum + delta).abs() <= Self::MIN_CELL {
                     return Ok(()); // 정렬선 ±MIN_CELL 이내 복귀 = 치유(스냅)
                 }
                 return self.offset_cell_boundary_core(t_idx, true, cum + delta);
@@ -2574,7 +2366,7 @@ impl Table {
                 // 종전 `n.col_span != 1` 거부는 "한 행을 어긋내면 다른 행의 같은 경계가
                 // 전부 막히는" 과잉 차단이었다. 이웃 span 만큼 조각을 낸 뒤 첫 조각만
                 // 대상이 흡수하고 나머지는 도로 합친다(이웃 겉모습 불변).
-                let d = delta.min(n.width as i32 - MIN_CELL);
+                let d = delta.min(n.width as i32 - Self::MIN_CELL);
                 if d <= 0 {
                     return Err("이웃 칸에 남는 폭이 없습니다".to_string());
                 }
@@ -2592,7 +2384,7 @@ impl Table {
                             .get((boundary + k - 1) as usize)
                             .copied()
                             .unwrap_or(0) as i32;
-                        if (d - cum).abs() > MIN_CELL {
+                        if (d - cum).abs() > Self::MIN_CELL {
                             continue;
                         }
                         let n_span = n.col_span;
@@ -2667,7 +2459,7 @@ impl Table {
             } else {
                 // 대상 오른쪽 조각을 잘라 이웃에 넘김 (여기는 정렬된 경계 = 신규 어긋내기.
                 // 이미 어긋난 경계의 역방향은 위 재이동 경로가 처리한다)
-                let d = (-delta).min(t.width as i32 - MIN_CELL);
+                let d = (-delta).min(t.width as i32 - Self::MIN_CELL);
                 if d <= 0 {
                     return Err("대상 칸에 남는 폭이 없습니다".to_string());
                 }
@@ -2682,7 +2474,7 @@ impl Table {
                     let mut cum = 0i32;
                     for k in 1..t.col_span {
                         cum += cols_w.get((boundary - k) as usize).copied().unwrap_or(0) as i32;
-                        if (d - cum).abs() > MIN_CELL {
+                        if (d - cum).abs() > Self::MIN_CELL {
                             continue;
                         }
                         let t_span = t.col_span;
@@ -2733,7 +2525,7 @@ impl Table {
                             if cum_r + wcol > d || k == t_span {
                                 p_col = boundary - k;
                                 p_off =
-                                    (d - cum_r).clamp(MIN_CELL, (wcol - MIN_CELL).max(MIN_CELL));
+                                    (d - cum_r).clamp(Self::MIN_CELL, (wcol - Self::MIN_CELL).max(Self::MIN_CELL));
                                 break;
                             }
                             cum_r += wcol;
@@ -2746,7 +2538,7 @@ impl Table {
                     let left_piece = self
                         .cell_index_at(t.row, p_col)
                         .ok_or("분할 조각(좌) 소실")?;
-                    self.cells[left_piece].width = (p_w - p_off).max(MIN_CELL) as HwpUnit;
+                    self.cells[left_piece].width = (p_w - p_off).max(Self::MIN_CELL) as HwpUnit;
                     let strip = self
                         .cell_index_at(t.row, p_col + 1)
                         .ok_or("분할 조각(우) 소실")?;
@@ -2831,7 +2623,7 @@ impl Table {
                 let thin = |tb: &Table| {
                     tb.effective_row_heights()
                         .iter()
-                        .filter(|&&h| (h as i32) < MIN_CELL)
+                        .filter(|&&h| (h as i32) < Self::MIN_CELL)
                         .count()
                 };
                 let thin0 = thin(self);
@@ -2851,7 +2643,7 @@ impl Table {
                 if r.is_ok()
                     && probe.stagger_invariants_hold(w0, h0)
                     && thin(&probe) <= thin0
-                    && (delivered - delta).abs() <= MIN_CELL
+                    && (delivered - delta).abs() <= Self::MIN_CELL
                 {
                     *self = probe;
                     return Ok(());
@@ -2878,7 +2670,7 @@ impl Table {
                     cum,
                     r.err()
                 );
-                if (cum + delta).abs() <= MIN_CELL {
+                if (cum + delta).abs() <= Self::MIN_CELL {
                     return Ok(()); // 정렬선 ±MIN_CELL 이내 복귀 = 치유(스냅)
                 }
                 return self.offset_cell_boundary_core(t_idx, false, cum + delta);
@@ -2894,7 +2686,7 @@ impl Table {
                 //
                 // 내용 규약: 대상이 흡수하는 구간(그 열의 L..새 선)의 내용은 **아래
                 // 잔여 조각**으로 옮긴다 — "내용은 잔여에 남는다".
-                let n_floor = self.stagger_piece_floor_hu(n_idx, &floors, MIN_CELL);
+                let n_floor = self.stagger_piece_floor_hu(n_idx, &floors, Self::MIN_CELL);
                 // 이 열이 다음으로 만나는 자기 경계(스팬 끝) — 이동 한계의 기준
                 let span_end = n.row + n.row_span; // exclusive line
                 let region: i32 = (boundary..span_end)
@@ -2926,15 +2718,15 @@ impl Table {
                     acc += h;
                 }
                 let t = self.cells[cell_idx].clone();
-                let (join_line, d) = if off <= MIN_CELL && acc > 0 {
+                let (join_line, d) = if off <= Self::MIN_CELL && acc > 0 {
                     (r_star, acc) // 윗선 합류
-                } else if row_h - off <= MIN_CELL && acc + row_h <= region - n_floor {
+                } else if row_h - off <= Self::MIN_CELL && acc + row_h <= region - n_floor {
                     (r_star + 1, acc + row_h) // 아랫선 합류
                 } else {
-                    if row_h < MIN_CELL * 2 {
+                    if row_h < Self::MIN_CELL * 2 {
                         return Err("낙하점 주변에 분할 여유가 없습니다".to_string());
                     }
-                    let off = off.clamp(MIN_CELL, row_h - MIN_CELL);
+                    let off = off.clamp(Self::MIN_CELL, row_h - Self::MIN_CELL);
                     self.insert_row_line(r_star, off, t.col, t.col_span)?;
                     (r_star + 1, acc + off)
                 };
@@ -2961,7 +2753,7 @@ impl Table {
             } else {
                 // 정렬된 경계의 신규 위쪽 어긋내기(이미 어긋난 경계는 재이동 경로가 처리)
                 // 내용은 위 조각(대상 잔여)에 남는다 — 내용 있으면 글줄 바닥, 빈 조각은 MIN_CELL
-                let t_floor = self.stagger_piece_floor_hu(cell_idx, &floors, MIN_CELL);
+                let t_floor = self.stagger_piece_floor_hu(cell_idx, &floors, Self::MIN_CELL);
                 let t_eff = (t.height)
                     .max(eff_rows.get(t.row as usize).copied().unwrap_or(t.height))
                     as i32;
@@ -3285,24 +3077,9 @@ impl Table {
     /// 아무 셀 경계도 쓰지 않는 격자 줄(경계선)을 접는다 — 복원(치유) 뒷정리.
     /// edge_right=false 면 행, true 면 열. 접을 수 있는 줄이 없어질 때까지 반복.
     fn collapse_unused_lines(&mut self, cols: bool) {
+        let axis = if cols { Axis::Cols } else { Axis::Rows };
         loop {
-            let count = if cols { self.col_count } else { self.row_count };
-            let mut target: Option<u16> = None;
-            for line in 1..count {
-                let used = self.cells.iter().any(|c| {
-                    let (start, span) = if cols {
-                        (c.col, c.col_span)
-                    } else {
-                        (c.row, c.row_span)
-                    };
-                    start == line || start + span == line
-                });
-                if !used {
-                    target = Some(line);
-                    break;
-                }
-            }
-            let Some(line) = target else { break };
+            let Some(line) = TableGrid::lines_only(self).dead_lines(axis).first().copied() else { break };
             // 줄 `line` 과 `line-1` 사이 경계선이 미사용 → 줄 line 을 접는다
             for c in self.cells.iter_mut() {
                 let (start, span) = if cols {

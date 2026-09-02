@@ -1,6 +1,6 @@
 //! 표/셀 CRUD + 속성 조회·수정 관련 native 메서드
 
-use crate::model::table::CmdClass;
+use crate::model::table::{CmdClass, Table};
 use super::super::helpers::{
     border_line_type_to_u8_val, color_ref_to_css, json_u32, navigate_path_to_table,
 };
@@ -1925,8 +1925,6 @@ impl DocumentCore {
         control_idx: usize,
         json: &str,
     ) -> Result<String, HwpError> {
-        const MIN_CELL_SIZE: u32 = 200; // 최소 셀 크기 (HWPUNIT)
-
         // JSON 배열을 수동 파싱: [{"cellIdx":N,"widthDelta":D,"heightDelta":D}, ...]
         let trimmed = json.trim();
         if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
@@ -2060,7 +2058,7 @@ impl DocumentCore {
                     let old_w = cell.width;
                     // [officex] i32 덧셈은 극단 양수에서 panic(debug)/랩어라운드(release) — i64로 올린다.
                     let new_w = (cell.width as i64 + upd.width_delta as i64)
-                        .clamp(MIN_CELL_SIZE as i64, u32::MAX as i64)
+                        .clamp(Table::MIN_CELL as i64, u32::MAX as i64)
                         as u32;
                     cell.width = new_w;
                     let actual_delta = new_w as i64 - old_w as i64;
@@ -2079,7 +2077,7 @@ impl DocumentCore {
                         old_h
                     };
                     let new_h = (base_h as i64 + upd.height_delta as i64)
-                        .clamp(MIN_CELL_SIZE as i64, u32::MAX as i64)
+                        .clamp(Table::MIN_CELL as i64, u32::MAX as i64)
                         as u32;
                     cell.height = new_h;
                     let actual_delta = new_h as i64 - old_h as i64;
@@ -2348,8 +2346,6 @@ impl DocumentCore {
         parent_para_idx: usize,
         control_idx: usize,
     ) -> Result<String, HwpError> {
-        const MIN_COL: u32 = 200; // 최소 열 폭 (HWPUNIT)
-
         // 현재 열 폭과 표 바깥 좌우 여백을 읽는다.
         let (widths, outer_lr, horz_rel_to) = {
             let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
@@ -2386,8 +2382,8 @@ impl DocumentCore {
             *last = (*last as u64 + remainder) as u32;
         }
         for w in &mut new_w {
-            if *w < MIN_COL {
-                *w = MIN_COL;
+            if *w < Table::MIN_CELL as u32 {
+                *w = Table::MIN_CELL as u32;
             }
         }
 

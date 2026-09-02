@@ -16,5 +16,5 @@ mod table;
 /// 도형 최소 크기 (HWPUNIT).
 /// 0으로 내려가면 Rectangle은 x_coords=[0,0,0,0]이 되고,
 /// Group은 current/original 스케일이 0이 되어 자식이 전부 사라진다.
-/// table_ops의 MIN_CELL_SIZE와 동일한 기준을 사용한다.
+/// `Table::MIN_CELL`(표 셀 최소 크기)과 동일한 기준을 사용한다.
 pub(crate) const MIN_SHAPE_SIZE: u32 = 200;
