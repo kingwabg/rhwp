@@ -1652,6 +1652,83 @@ impl HwpDocument {
     /// 한컴 규약: 행은 글줄 밑으로 줄어들지 않는다. 스튜디오 리사이즈(드래그·키보드)의
     /// 축소 클램프가 이 값을 최소로 써야 셀 격자와 표 상자(측정 바닥)가 어긋나지 않는다
     /// (2026-08-12 유령 공간 수리).
+    /// [격자 12-b 2026-09-03] 표 논리 격자 — 스튜디오가 px bbox 에서 격자를 역추정하지 않게 한다.
+    /// {colX, rowColX, rowYStored, rowYEff, colLines[{owners,crossers}], rowLines, cellGrid, rowCount, colCount, minCell}
+    /// 좌표는 HU 누적선(len = 개수+1). owners = 그 선을 경계로 쓰는 셀의 앵커 줄(x선이면 행, y선이면 열).
+    #[wasm_bindgen(js_name = getTableGrid)]
+    pub fn get_table_grid(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+    ) -> Result<String, JsValue> {
+        let para = self
+            .document
+            .sections
+            .get(section_idx as usize)
+            .ok_or_else(|| JsValue::from_str("구역 인덱스 범위 초과"))?
+            .paragraphs
+            .get(parent_para_idx as usize)
+            .ok_or_else(|| JsValue::from_str("문단 인덱스 범위 초과"))?;
+        let table = match para.controls.get(control_idx as usize) {
+            Some(crate::model::control::Control::Table(t)) => t,
+            _ => return Err(JsValue::from_str("지정된 컨트롤이 표가 아닙니다")),
+        };
+        let g = table.grid();
+        let lines = |v: &[crate::model::table_grid::LineInfo]| -> Vec<serde_json::Value> {
+            v.iter()
+                .map(|l| serde_json::json!({ "owners": l.owners, "crossers": l.crossers }))
+                .collect()
+        };
+        let out = serde_json::json!({
+            "colX": g.col_x,
+            "rowColX": g.row_col_x,
+            "rowYStored": g.row_y_stored,
+            "rowYEff": g.row_y_eff,
+            "colLines": lines(&g.col_lines),
+            "rowLines": lines(&g.row_lines),
+            "cellGrid": table.cell_grid,
+            "rowCount": g.row_count,
+            "colCount": g.col_count,
+            "minCell": crate::model::table::Table::MIN_CELL,
+        });
+        Ok(out.to_string())
+    }
+
+    /// [격자 12-b 2026-09-03] 셀의 오른쪽("right")/아래("bottom") 경계 이동 허용 델타 창(HU) {min,max} —
+    /// 엔진 바닥(MIN_CELL·조각 행 바닥)이 정본. 스튜디오의 선클램프 상수(1276/1417/200·75px)를 대체한다.
+    #[wasm_bindgen(js_name = getBoundaryMoveRange)]
+    pub fn get_boundary_move_range(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+        cell_idx: u32,
+        edge: &str,
+    ) -> Result<String, JsValue> {
+        let edge_right = match edge {
+            "right" => true,
+            "bottom" => false,
+            _ => return Err(JsValue::from_str("edge 는 right 또는 bottom")),
+        };
+        let para = self
+            .document
+            .sections
+            .get(section_idx as usize)
+            .ok_or_else(|| JsValue::from_str("구역 인덱스 범위 초과"))?
+            .paragraphs
+            .get(parent_para_idx as usize)
+            .ok_or_else(|| JsValue::from_str("문단 인덱스 범위 초과"))?;
+        let table = match para.controls.get(control_idx as usize) {
+            Some(crate::model::control::Control::Table(t)) => t,
+            _ => return Err(JsValue::from_str("지정된 컨트롤이 표가 아닙니다")),
+        };
+        let (min, max) = table
+            .boundary_move_range(cell_idx as usize, edge_right)
+            .map_err(|e| JsValue::from_str(&e))?;
+        Ok(serde_json::json!({ "min": min, "max": max }).to_string())
+    }
+
     #[wasm_bindgen(js_name = getCellContentFloors)]
     pub fn get_cell_content_floors(
         &self,
