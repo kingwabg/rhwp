@@ -43,7 +43,7 @@ impl LineInfo {
     }
 }
 
-/// 낙하점 탐색 결과 — 단위 구간 [line, line+1) 과 구간 내 오프셋(HU), 구간 크기.
+/// 낙하점 탐색 결과(`TableGrid::locate`) — 단위 구간 [line, line+1), 구간 내 오프셋(HU), 구간 크기.
 #[derive(Clone, Copy, Debug)]
 pub struct Located {
     pub line: u16,
@@ -570,26 +570,32 @@ impl<'a> TableGrid<'a> {
             .find(|&k| self.is_aligned_for(axis, k, band))
     }
 
-    /// [from,to) 구간에서 from 선 기준 dist(HU) 가 든 단위 구간·오프셋. 열은 col_widths, 행은 row_heights_eff.
-    /// dist 가 구간을 넘으면 마지막 단위 구간에 off > size 로 돌려준다.
+    /// 낙하점 탐색 — `from` 에서 `to` 쪽으로 실효 단위 구간을 걸어 거리 `dist` 가 든 구간을 찾는다.
+    /// `line` = 구간 [line, line+1), `off` = 구간의 from 쪽 끝에서의 거리, `size` = 구간 크기(실효).
+    /// 마지막 구간을 넘는 거리는 마지막 구간에 얹는다(off ≥ size 가능 — 호출자가 합류·클램프로 처리).
     pub fn locate(&self, axis: Axis, from: u16, to: u16, dist: i32) -> Located {
-        let sizes = match axis {
-            Axis::Cols => &self.col_widths,
-            Axis::Rows => &self.row_heights_eff,
-        };
-        let to = (to as usize).min(sizes.len());
-        let mut k = from as usize;
+        let steps: Vec<u16> = if to > from { (from..to).collect() } else { (to..from).rev().collect() };
         let mut acc = 0i32;
-        while k + 1 < to {
-            let size = as_i32(sizes[k]);
-            if dist < acc.saturating_add(size) {
+        let mut hit = Located { line: from, off: dist, size: 0 };
+        for (i, &k) in steps.iter().enumerate() {
+            let size = self.line_pos(axis, k + 1, true) - self.line_pos(axis, k, true);
+            if dist < acc + size || i + 1 == steps.len() {
+                hit = Located { line: k, off: dist - acc, size };
                 break;
             }
-            acc = acc.saturating_add(size);
-            k += 1;
+            acc += size;
         }
-        let size = sizes.get(k).copied().map_or(0, as_i32);
-        Located { line: k as u16, off: dist - acc, size }
+        hit
+    }
+
+    /// 저장 층 단위 크기(열 폭 / 저장 행높이) 의 [from,to) 구간 합 — 프리미티브가 조각 크기를 못박는 정확값.
+    pub fn interval_sum(&self, axis: Axis, from: u16, to: u16) -> HwpUnit {
+        let sizes = match axis {
+            Axis::Cols => &self.col_widths,
+            Axis::Rows => &self.row_heights_stored,
+        };
+        let (a, b) = ((from as usize).min(sizes.len()), (to as usize).min(sizes.len()));
+        sizes[a..b.max(a)].iter().fold(0u32, |acc, &s| acc.saturating_add(s))
     }
 
     /// 셀 사각형 (x, y, w, h) HU — 전역 x선, y 는 effective_y 로 층 선택. 격자 밖 셀은 None.

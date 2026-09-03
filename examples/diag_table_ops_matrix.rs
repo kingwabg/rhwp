@@ -31,6 +31,25 @@ fn table_of(doc: &HwpDocument) -> &rhwp::model::table::Table {
     panic!("표 없음");
 }
 
+/// [11-b 비교용] 셀 벡터 [(row,col,row_span,col_span,width,height,본문 앞 8자)] — 기본/--legacy 실행을 케이스별로 diff.
+fn cells_vec(t: &rhwp::model::table::Table) -> String {
+    let v: Vec<serde_json::Value> = t
+        .cells
+        .iter()
+        .map(|c| {
+            let text: String = c.paragraphs.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join("|");
+            serde_json::json!([c.row, c.col, c.row_span, c.col_span, c.width, c.height, text.chars().take(8).collect::<String>()])
+        })
+        .collect();
+    serde_json::Value::Array(v).to_string()
+}
+
+fn legacy_switch() {
+    if std::env::args().any(|a| a == "--legacy") {
+        rhwp::model::table::Table::set_stagger_legacy(true);
+    }
+}
+
 fn idx_at(doc: &HwpDocument, row: u16, col: u16) -> usize {
     table_of(doc)
         .cells
@@ -95,13 +114,14 @@ fn emit(rec: Rec, r: Result<String, rhwp::error::HwpError>, before: State, doc: 
         Vec::new()
     };
     println!(
-        "{{\"cat\":\"{}\",\"id\":\"{}\",\"label\":\"{}\",\"result\":\"{}\",\"cells\":\"{}→{}\",\"rows\":\"{}→{}\",\"widthKeep\":{},\"heightKeep\":{},\"violations\":{:?}}}",
+        "{{\"cat\":\"{}\",\"id\":\"{}\",\"label\":\"{}\",\"result\":\"{}\",\"cells\":\"{}→{}\",\"rows\":\"{}→{}\",\"widthKeep\":{},\"heightKeep\":{},\"violations\":{:?},\"cellsVec\":{}}}",
         rec.cat, rec.id, rec.label, msg(&r), before.0, after.0, before.1, after.1, w_keep, h_keep,
-        violations
+        violations, cells_vec(&after_tbl)
     );
 }
 
 fn main() {
+    legacy_switch();
     // ══════════ A. 어긋내기(한 칸 경계) ══════════
     {
         let (mut d, pi, ci) = make();

@@ -23,6 +23,36 @@ fn dump(doc: &HwpDocument, tag: &str) {
     }
 }
 
+fn table_of(doc: &HwpDocument) -> &rhwp::model::table::Table {
+    for para in &doc.document().sections[0].paragraphs {
+        for ctrl in &para.controls {
+            if let rhwp::model::control::Control::Table(t) = ctrl {
+                return t;
+            }
+        }
+    }
+    panic!("표 없음");
+}
+
+/// [11-b 비교용] 셀 벡터 [(row,col,row_span,col_span,width,height,본문 앞 8자)] — 기본/--legacy 실행을 케이스별로 diff.
+fn cells_vec(t: &rhwp::model::table::Table) -> String {
+    let v: Vec<serde_json::Value> = t
+        .cells
+        .iter()
+        .map(|c| {
+            let text: String = c.paragraphs.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join("|");
+            serde_json::json!([c.row, c.col, c.row_span, c.col_span, c.width, c.height, text.chars().take(8).collect::<String>()])
+        })
+        .collect();
+    serde_json::Value::Array(v).to_string()
+}
+
+fn legacy_switch() {
+    if std::env::args().any(|a| a == "--legacy") {
+        rhwp::model::table::Table::set_stagger_legacy(true);
+    }
+}
+
 fn pos_idx(doc: &HwpDocument, row: u16, col: u16) -> usize {
     for para in &doc.document().sections[0].paragraphs {
         for ctrl in &para.controls {
@@ -39,6 +69,7 @@ fn pos_idx(doc: &HwpDocument, row: u16, col: u16) -> usize {
 }
 
 fn main() {
+    legacy_switch();
     let mut doc = HwpDocument::create_empty();
     doc.create_blank_document().unwrap();
     let c: serde_json::Value = serde_json::from_str(
@@ -57,16 +88,19 @@ fn main() {
         let i = pos_idx(&doc, 0, 0);
         let r = doc.offset_cell_boundary_native(0, pi, ci, i, false, 283);
         println!("col0 스텝{} → {:?}", k + 1, r.err());
+        println!("cellsVec col0-{} {}", k + 1, cells_vec(table_of(&doc)));
     }
     dump(&doc, "col0×2");
     for k in 0..4 {
         let i = pos_idx(&doc, 0, 1);
         let r = doc.offset_cell_boundary_native(0, pi, ci, i, false, 283);
         println!("col1 스텝{} → {:?}", k + 1, r.err());
+        println!("cellsVec col1-{} {}", k + 1, cells_vec(table_of(&doc)));
         dump(&doc, &format!("col1 스텝{}", k + 1));
     }
     let i = pos_idx(&doc, 0, 2);
     let r = doc.offset_cell_boundary_native(0, pi, ci, i, false, 2250);
     println!("col2 +2250 → {:?}", r.err());
+    println!("cellsVec col2 {}", cells_vec(table_of(&doc)));
     dump(&doc, "col2 후");
 }

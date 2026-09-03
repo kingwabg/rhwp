@@ -2,8 +2,11 @@
 
 use super::paragraph::Paragraph;
 use super::shape::{common_obj_offsets, Caption};
-use super::table_grid::{self, Axis, TableGrid};
+use super::table_grid::{self, Axis, Located, TableGrid};
 use super::*;
+
+/// [11-b 비교용·임시] `Table::set_stagger_legacy` — 옛 어긋내기 코어로 분기(11-a 에서는 코어가 하나라 읽지 않음).
+static STAGGER_LEGACY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub const CELL_FLAG_HAS_MARGIN: u16 = 0x0001;
 pub const CELL_FLAG_PROTECT: u16 = 0x0002;
@@ -342,6 +345,70 @@ impl Cell {
             paragraphs: vec![para],
         }
     }
+}
+
+/// 축별 (start, span, size) 읽기 — Cols=(col,col_span,width), Rows=(row,row_span,height).
+fn axis_of(c: &Cell, axis: Axis) -> (u16, u16, HwpUnit) {
+    match axis {
+        Axis::Cols => (c.col, c.col_span, c.width),
+        Axis::Rows => (c.row, c.row_span, c.height),
+    }
+}
+
+/// 직교 밴드 (start, span) — Cols 면 (row,row_span), Rows 면 (col,col_span).
+fn ortho_of(c: &Cell, axis: Axis) -> (u16, u16) {
+    match axis {
+        Axis::Cols => (c.row, c.row_span),
+        Axis::Rows => (c.col, c.col_span),
+    }
+}
+
+fn axis_mut(c: &mut Cell, axis: Axis) -> (&mut u16, &mut u16, &mut HwpUnit) {
+    match axis {
+        Axis::Cols => (&mut c.col, &mut c.col_span, &mut c.width),
+        Axis::Rows => (&mut c.row, &mut c.row_span, &mut c.height),
+    }
+}
+
+/// 셀 `c` 의 밴드에서 축 위치 `line` 에서 시작하는 슬롯 키 (row, col).
+fn key_at(axis: Axis, c: &Cell, line: u16) -> (u16, u16) {
+    match axis {
+        Axis::Cols => (c.row, line),
+        Axis::Rows => (line, c.col),
+    }
+}
+
+/// `c` 를 축 방향으로 (앞 span_a·size_a, 뒤 span_b·size_b) 두 조각으로. 뒤 조각은 `second_start` 에서
+/// 시작한다. 내용(문단·필드)은 `content_far` 면 뒤 조각, 아니면 앞 조각에 남고 다른 조각은
+/// `Cell::new_from_template` 빈 셀(문단 모양·테두리 유지, 필드명 없음)이다.
+#[allow(clippy::too_many_arguments)]
+fn split_pieces(
+    c: &Cell,
+    axis: Axis,
+    second_start: u16,
+    span_a: u16,
+    span_b: u16,
+    size_a: HwpUnit,
+    size_b: HwpUnit,
+    content_far: bool,
+) -> (Cell, Cell) {
+    let keep = c.clone();
+    let mut empty = Cell::new_from_template(c.col, c.row, c.width, c.height, c);
+    empty.col_span = c.col_span;
+    empty.row_span = c.row_span;
+    let (mut a, mut b) = if content_far { (empty, keep) } else { (keep, empty) };
+    {
+        let (_, sp, sz) = axis_mut(&mut a, axis);
+        *sp = span_a;
+        *sz = size_a;
+    }
+    {
+        let (s, sp, sz) = axis_mut(&mut b, axis);
+        *s = second_start;
+        *sp = span_b;
+        *sz = size_b;
+    }
+    (a, b)
 }
 
 impl Table {
@@ -862,55 +929,215 @@ impl Table {
         TableGrid::axes(self).row_heights_eff
     }
 
-    /// [2026-08-16] 행 `r` 를 위에서 `off`(HU) 지점에서 **이분할**해 새 격자선을 만든다.
+    /// [2026-08-16 → 11-a 양축 일반화] 선 `k`..`k+1` 사이 `off`(HU) 지점에 **새 격자선**을 삽입한다.
     ///
-    /// 신규 어긋내기의 낙하점이 스팬 이웃의 내부 행에 떨어질 때 쓴다 — 종전
+    /// 신규 어긋내기의 낙하점이 스팬 이웃의 내부 단위 구간에 떨어질 때 쓴다 — 종전
     /// split_cell_into(균등 분할)로는 낙하점 위치의 선을 만들 수 없어, 이웃이 다른
-    /// 열의 어긋 조각에 걸친 스팬이면 격자가 모순돼 트랜잭션이 거부했다(신고
+    /// 줄의 어긋 조각에 걸친 스팬이면 격자가 모순돼 트랜잭션이 거부했다(신고
     /// "오른쪽 어긋내기가 기준(첫 어긋선)을 못 넘어간다").
     ///
-    /// 규약: **col 밴드**의 r 시작 span1 셀만 (off, h−off) 두 조각(내용은 **아래**
-    /// 조각 — "내용은 잔여에" 규약)으로 실제 분할하고, 나머지 셀은 전부 span+1 로
-    /// 관통시킨다 — 어긋선(한 열만 쓰는 내부 선) 모델 유지. 전 열을 쪼개면 빈 조각
-    /// 행에 글줄 바닥이 되살아나 실효 높이가 커진다. 호출 전 연루 행을 물질화할
-    /// 것(원시 284 규약 상태로 나누면 장부가 갈린다).
-    fn insert_row_line(&mut self, r: u16, off: i32, col: u16, col_span: u16) -> Result<(), String> {
-        if off <= 0 {
+    /// 규약: `band`(직교 축 (start, span)) 안에서 k 에서 시작하는 span1 셀만 (off, size−off)
+    /// 두 조각(빈 조각 + 내용 조각, `content_far` 면 내용은 **뒤** 조각 — "내용은 잔여에" 규약)
+    /// 으로 실제 분할하고, k 를 덮는 나머지 셀은 전부 span+1 로 관통시킨다 — 어긋선(한 줄만 쓰는
+    /// 내부 선) 모델 유지. 전 줄을 쪼개면 빈 조각 행에 글줄 바닥이 되살아나 실효 높이가 커진다.
+    /// 행 축은 호출 전 연루 행을 물질화할 것(원시 284 규약 상태로 나누면 장부가 갈린다).
+    /// 빈 조각은 `Cell::new_from_template`(문단 모양 유지) — 열 경로의 split_cell_into 와 같다.
+    pub(crate) fn insert_line(
+        &mut self,
+        axis: Axis,
+        k: u16,
+        band: (u16, u16),
+        off: HwpUnit,
+        content_far: bool,
+    ) -> Result<(), String> {
+        if off == 0 {
             return Err("분할 오프셋이 0 이하".to_string());
         }
-        let band = col..col + col_span;
+        let band = band.0..band.0 + band.1;
+        let g = TableGrid::axes(self);
         let mut new_cells: Vec<Cell> = Vec::with_capacity(self.cells.len() + 1);
         for c in &self.cells {
-            if c.row > r {
+            let (start, span, size) = axis_of(c, axis);
+            let (ortho, _) = ortho_of(c, axis);
+            if start > k {
                 let mut c2 = c.clone();
-                c2.row += 1;
+                *axis_mut(&mut c2, axis).0 += 1;
                 new_cells.push(c2);
-            } else if c.row == r && c.row_span == 1 && band.contains(&c.col) {
-                if (c.height as i32) <= off {
-                    return Err("행 분할 오프셋이 행 높이 이상".to_string());
+            } else if start <= k && start + span > k && band.contains(&ortho) {
+                // 밴드에서 k 를 덮는 셀(줄어드는 쪽) — 새 선 k+1 에서 실제 이분할해 두 조각 크기를 못박는다.
+                // 관통만 시키면 새 선 위치가 격자에서 미결정(span1 목격자 없음)이라 솔버가 임의 해를 고른다.
+                let size_a = g.interval_sum(axis, start, k).saturating_add(off);
+                if size <= size_a {
+                    return Err("분할 오프셋이 칸 크기 이상".to_string());
                 }
-                // 위 조각(빈) + 아래 조각(내용 유지)
-                let mut top = c.clone();
-                top.height = off as HwpUnit;
-                top.paragraphs = vec![crate::model::paragraph::Paragraph::default()];
-                let mut bot = c.clone();
-                bot.row = r + 1;
-                bot.height = (c.height as i32 - off) as HwpUnit;
-                new_cells.push(top);
-                new_cells.push(bot);
-            } else if c.row + c.row_span > r {
-                // r 을 덮는 나머지 셀(다른 열/스팬) — 관통 스팬으로
+                let (a, b) =
+                    split_pieces(c, axis, k + 1, k + 1 - start, start + span - k, size_a, size - size_a, content_far);
+                new_cells.push(a);
+                new_cells.push(b);
+            } else if start + span > k {
+                // k 를 덮는 나머지 셀(다른 줄/스팬) — 관통 스팬으로
                 let mut c2 = c.clone();
-                c2.row_span += 1;
+                *axis_mut(&mut c2, axis).1 += 1;
                 new_cells.push(c2);
             } else {
                 new_cells.push(c.clone());
             }
         }
         self.cells = new_cells;
-        self.row_count += 1;
-        self.rebuild_grid();
+        match axis {
+            Axis::Cols => self.col_count += 1,
+            Axis::Rows => self.row_count += 1,
+        }
+        self.finish_cells();
         Ok(())
+    }
+
+    /// 스팬 셀 `idx` 를 **기존** 내부 선 `line` 에서 이분할한다. 두 조각 크기 = 격자 구간 합 정확값,
+    /// 내용은 `content_far` 면 뒤 조각, 아니면 앞 조각(다른 조각은 빈 템플릿 셀). 반환 = (앞, 뒤) 인덱스.
+    pub(crate) fn split_cell_at_line(
+        &mut self,
+        idx: usize,
+        axis: Axis,
+        line: u16,
+        content_far: bool,
+    ) -> Result<(usize, usize), String> {
+        let c = self
+            .cells
+            .get(idx)
+            .ok_or_else(|| "셀 인덱스가 유효하지 않습니다".to_string())?
+            .clone();
+        let (start, span, _) = axis_of(&c, axis);
+        if line <= start || line >= start + span {
+            return Err(format!("선 {line} 은 셀 ({},{}) 의 내부 선이 아닙니다", c.row, c.col));
+        }
+        let g = TableGrid::axes(self);
+        let (a, b) = split_pieces(
+            &c,
+            axis,
+            line,
+            line - start,
+            start + span - line,
+            g.interval_sum(axis, start, line),
+            g.interval_sum(axis, line, start + span),
+            content_far,
+        );
+        let (ka, kb) = ((a.row, a.col), (b.row, b.col));
+        self.cells[idx] = a;
+        self.cells.push(b);
+        self.finish_cells();
+        let ia = self.cell_index_at(ka.0, ka.1).ok_or("분할 조각(앞) 소실")?;
+        let ib = self.cell_index_at(kb.0, kb.1).ok_or("분할 조각(뒤) 소실")?;
+        Ok((ia, ib))
+    }
+
+    /// 셀 `cell_idx` 의 **끝선**을 `from` → `to` 로 옮긴다 — 합류·복원·통과·전달의 공통 연산.
+    /// 사이 슬롯은 같은 직교 밴드의 이웃(from 에서 시작하는 셀)과 주고받는다: 크는 쪽이 흡수하는
+    /// 조각은 `split_cell_at_line`(내용은 옮기는 선에서 먼 조각) 로 잘라 낸 **빈 조각**이라 문단은
+    /// 절대 이동하지 않고, 크는 셀은 자기 속성·문단을 그대로 둔다(merge_cells 의 primary 규칙·선두
+    /// 빈 문단 제거가 필요 없다). 두 셀 크기 = 절차 상단 격자의 구간 합 정확값. 이웃 전체 흡수
+    /// (셀 수 감소)는 거부한다.
+    pub(crate) fn join_to_line(
+        &mut self,
+        cell_idx: usize,
+        axis: Axis,
+        from: u16,
+        to: u16,
+    ) -> Result<(), String> {
+        let c = self
+            .cells
+            .get(cell_idx)
+            .ok_or_else(|| "셀 인덱스가 유효하지 않습니다".to_string())?
+            .clone();
+        let (start, span, _) = axis_of(&c, axis);
+        if start + span != from {
+            return Err(format!("셀 ({},{}) 의 끝선은 {} 이지 {from} 가 아닙니다", c.row, c.col, start + span));
+        }
+        if to == from {
+            return Ok(());
+        }
+        let n_idx = match axis {
+            Axis::Cols => self.cell_index_at(c.row, from),
+            Axis::Rows => self.cell_index_at(from, c.col),
+        }
+        .ok_or_else(|| {
+            if axis == Axis::Cols { "오른쪽 이웃 셀을 찾지 못했습니다" } else { "아래 이웃 셀을 찾지 못했습니다" }
+                .to_string()
+        })?;
+        let n = self.cells[n_idx].clone();
+        if ortho_of(&n, axis) != ortho_of(&c, axis) {
+            return Err(if axis == Axis::Cols {
+                "위아래 높이가 다른 칸과는 경계를 어긋낼 수 없습니다"
+            } else {
+                "좌우 폭이 다른 칸과는 경계를 어긋낼 수 없습니다"
+            }
+            .to_string());
+        }
+        let (n_start, n_span, _) = axis_of(&n, axis);
+        let n_end = n_start + n_span;
+        if to > n_end || to < start {
+            return Err(if to > from {
+                "낙하점이 이웃 칸을 넘어 셀을 삼키게 됩니다"
+            } else {
+                "낙하점이 대상 칸의 시작선을 넘습니다"
+            }
+            .to_string());
+        }
+        let has_text = |c: &Cell| c.paragraphs.iter().any(|p| p.text.chars().any(|ch| !ch.is_whitespace()));
+        let g = TableGrid::axes(self);
+        // (grower 키, shrinker 키(조각 전체 흡수면 None), 두 크기) — 절차 상단 격자의 구간 합.
+        let (grow_key, shrink_key, grow_size, shrink_size) = if to > from {
+            let sk = (to < n_end).then(|| key_at(axis, &n, to));
+            ((c.row, c.col), sk, g.interval_sum(axis, start, to), g.interval_sum(axis, to, n_end))
+        } else {
+            let sk = (to > start).then_some((c.row, c.col));
+            ((n.row, n.col), sk, g.interval_sum(axis, to, n_end), g.interval_sum(axis, start, to))
+        };
+        // 흡수 조각 = 잘라 낸 빈 조각(내용은 옮기는 선에서 먼 쪽에 남는다). 이웃/대상 **전체**는
+        // 빈 조각(insert_line 산물)일 때만 흡수 — 내용 있는 셀을 삼키지 않는다(셀 수 규칙).
+        let frag_key = if to > from {
+            if to == n_end {
+                if has_text(&n) {
+                    return Err("낙하점이 이웃 칸을 넘어 셀을 삼키게 됩니다".to_string());
+                }
+                (n.row, n.col)
+            } else {
+                let (frag, _rest) = self.split_cell_at_line(n_idx, axis, to, true)?;
+                (self.cells[frag].row, self.cells[frag].col)
+            }
+        } else if to == start {
+            if has_text(&c) {
+                return Err("낙하점이 대상 칸의 시작선을 넘습니다".to_string());
+            }
+            (c.row, c.col)
+        } else {
+            let (_keep, frag) = self.split_cell_at_line(cell_idx, axis, to, false)?;
+            (self.cells[frag].row, self.cells[frag].col)
+        };
+        let frag_idx = self.cells.iter().position(|x| (x.row, x.col) == frag_key).ok_or("흡수 조각 소실")?;
+        self.cells.remove(frag_idx);
+        let gi = self.cells.iter().position(|x| (x.row, x.col) == grow_key).ok_or("합류 대상 소실")?;
+        let (s, sp, sz) = axis_mut(&mut self.cells[gi], axis);
+        if to > from {
+            *sp = to - start;
+        } else {
+            *s = to;
+            *sp = n_end - to;
+        }
+        *sz = grow_size;
+        if let Some(shrink_key) = shrink_key {
+            let si = self.cells.iter().position(|x| (x.row, x.col) == shrink_key).ok_or("합류 대상 소실")?;
+            *axis_mut(&mut self.cells[si], axis).2 = shrink_size;
+        }
+        self.finish_cells();
+        Ok(())
+    }
+
+    /// 프리미티브 공통 마무리 — 셀이 곧 진실: 정렬 → row_sizes → 격자 인덱스 → 표 치수.
+    fn finish_cells(&mut self) {
+        self.cells.sort_by_key(|c| (c.row, c.col));
+        self.rebuild_row_sizes();
+        self.rebuild_grid();
+        self.update_ctrl_dimensions();
     }
 
     /// 어긋내기 등 **행 구조 편집 전 물질화** — [from..=to] 행의 span==1 셀 높이를 실효
@@ -1863,7 +2090,7 @@ impl Table {
     /// 크기만 delta 만큼 주고받는다. 열 폭·행 높이는 span 제약으로 정확히 유도되므로
     /// 표 전체 크기가 보존된다(신고 ③ 성장 종결). 이동 결과가 원래 정렬선에 닿거나
     /// 넘으면 restore(치유)로 승격해 격자를 원래대로 접는다(신고 ① 복귀).
-    fn shift_offset_boundary(
+    fn shift_offset_boundary_legacy(
         &mut self,
         cell_idx: usize,
         n_idx: usize,
@@ -2013,29 +2240,291 @@ impl Table {
         edge_right: bool,
         delta: i32,
     ) -> Result<(), String> {
-        let saved = self.clone();
-        let w0: u64 = self.get_column_widths().iter().map(|&w| w as u64).sum();
-        let h0: u64 = self.effective_row_heights().iter().map(|&h| h as u64).sum();
-        let r = self.offset_cell_boundary_core(cell_idx, edge_right, delta);
-        if r.is_ok() && !self.stagger_invariants_hold(w0, h0) {
-            *self = saved;
-            return Err("이 조작은 표 격자를 깨뜨려 취소했습니다".to_string());
-        }
-        if r.is_ok() {
-            if let Err(why) = self.check_invariants() {
+        if Self::stagger_legacy() {
+            let saved = self.clone();
+            let w0: u64 = self.get_column_widths().iter().map(|&w| w as u64).sum();
+            let h0: u64 = self.effective_row_heights().iter().map(|&h| h as u64).sum();
+            let r = self.offset_cell_boundary_core_legacy(cell_idx, edge_right, delta);
+            if r.is_ok() && !self.stagger_invariants_hold(w0, h0) {
                 *self = saved;
-                return Err(format!("이 조작은 표 격자를 깨뜨려 취소했습니다 — {why}"));
+                return Err("이 조작은 표 격자를 깨뜨려 취소했습니다".to_string());
             }
+            if r.is_ok() {
+                if let Err(why) = self.check_invariants() {
+                    *self = saved;
+                    return Err(format!("이 조작은 표 격자를 깨뜨려 취소했습니다 — {why}"));
+                }
+            }
+            if r.is_err() {
+                *self = saved; // 부작용 없는 실패 보장
+            }
+            return r;
         }
-        if r.is_err() {
-            *self = saved; // 부작용 없는 실패 보장
+        self.transact(CmdClass::KeepWidthHeight, Some(0), |t| t.offset_cell_boundary_core(cell_idx, edge_right, delta))
+    }
+
+    /// [11-b] 어긋내기 **단일 절차** — 격자(TableGrid)로 판정하고 셀 프리미티브 4개로 쓴다.
+    ///
+    /// 축 = edge_right ? Cols : Rows. 행은 거리·여유를 실효 공간(row_heights_eff)으로 판정하고
+    /// 쓰기 직전 `materialize_rows_effective` 로 연루 행을 굳힌다(종전 규약).
+    /// (0) 바깥 테두리·이웃 없음·직교 불일치 → 종전 메시지 Err(`boundary_move_range`).
+    /// (1) 컨텍스트 R — L 이 어긋선: A = 대상 시작 뒤 첫 정렬선, cur_off = pos(L)−pos(A).
+    ///     R1 승격(table.rs:2089 규약: cur_off≠0 ∧ (next_off==0 ∨ 부호 반전)) 또는
+    ///     R3 통과(±d 이전이 인접 단위 구간을 붕괴시키거나 |d−delta|>MIN_CELL) → join_to_line(t, L→A)
+    ///     + collapse, 잔여 |next_off| ≤ MIN_CELL 이면 스냅 종료, 아니면 A 에서 컨텍스트 N 을 1회 계속.
+    ///     R2 재이동: 두 셀 크기 ±d(격자 불변).
+    /// (2) 컨텍스트 N — L 정렬선(신규): 줄어드는 쪽 구간에서 낙하점을 찾아 기존 선 합류(off≤MIN_CELL
+    ///     ∧ acc>0 → 가까운 선 / size−off≤MIN_CELL ∧ acc+size≤room → 먼 선) 아니면 insert_line(양축
+    ///     MIN_CELL 클램프) → join_to_line(t, L→J).
+    /// 재귀·프로브 클론 없음; 클론은 래퍼의 transact 1회.
+    fn offset_cell_boundary_core(&mut self, cell_idx: usize, edge_right: bool, delta: i32) -> Result<(), String> {
+        if delta == 0 {
+            return Ok(());
         }
-        r
+        let axis = if edge_right { Axis::Cols } else { Axis::Rows };
+        let (dmin, dmax) = self.boundary_move_range(cell_idx, edge_right)?; // (0) 검사 포함
+        let t = self.cells[cell_idx].clone();
+        let (t_start, t_span, _) = axis_of(&t, axis);
+        let band = ortho_of(&t, axis);
+        let line = t_start + t_span;
+        let n_idx = self.neighbour_at(&t, axis, line).ok_or("이웃 소실")?;
+        let n = self.cells[n_idx].clone();
+        let (n_start, n_span, _) = axis_of(&n, axis);
+        let n_end = n_start + n_span;
+        let g = TableGrid::axes(self);
+
+        let mut delta = delta;
+        let mut line = line;
+        if !g.is_aligned_for(axis, line, band.0) {
+            // ── 컨텍스트 R ──
+            // 승격 판정선 A = 대상 시작 뒤 첫 정렬선(2089 규약). 합류 목표선 J = 종전 복원 규약(restore_cell_boundary
+            // span≥2 → L−1: 마지막 조각을 이웃에 / extend span1 → L+1: 이웃 첫 조각 흡수, 이웃 span≥2 필요) — 병합
+            // 셀을 어긋낸 경우 A≠J 라 A 로 합류하면 원래 병합까지 풀린다(s4b 실측). 잔여는 J 기준.
+            let a = g.next_aligned_line(axis, t_start, band.0);
+            let join = if t_span >= 2 {
+                Some(line - 1)
+            } else if n_span >= 2 {
+                Some(line + 1)
+            } else {
+                None
+            };
+            let d = delta.clamp(dmin, dmax);
+            // 재이동이 인접 단위 구간(delta>0: [L,L+1) / delta<0: [L−1,L))을 MIN_CELL 밑으로 붕괴시키면
+            // ±d 로는 표현 불가(종전 프로브의 thin·불변식 불합격) → 통과.
+            let adj = if delta > 0 { line } else { line - 1 };
+            let adj_size = g.line_pos(axis, adj + 1, true) - g.line_pos(axis, adj, true);
+            // 종전 thin(probe) ≤ thin0 매핑: 이미 얇은(<MIN_CELL, 로드된 실물) 구간은 더 줄어도 얇은 수가 늘지 않는다.
+            let adj_floor = if adj_size < Self::MIN_CELL { 1 } else { Self::MIN_CELL };
+            let fits = d != 0 && (d - delta).abs() <= Self::MIN_CELL && adj_size - d.abs() >= adj_floor;
+            let promote = a.is_some_and(|a| {
+                let cur_off = g.line_pos(axis, line, true) - g.line_pos(axis, a, true);
+                let next_off = cur_off + delta;
+                cur_off != 0 && (next_off == 0 || cur_off.signum() != next_off.signum())
+            });
+            // 합류 목표가 없으면(종전 복원 불가 = 승격 프로브 실패) 재이동으로 계속한다.
+            if join.is_none() || (!promote && fits) {
+                if d == 0 {
+                    return Err(Self::no_room_msg(delta, edge_right));
+                }
+                if axis == Axis::Rows {
+                    self.materialize_rows_effective(t.row as usize, (n_end - 1) as usize);
+                }
+                let t_now = *axis_mut(&mut self.cells[cell_idx], axis).2 as i32;
+                let n_now = *axis_mut(&mut self.cells[n_idx], axis).2 as i32;
+                *axis_mut(&mut self.cells[cell_idx], axis).2 = (t_now + d).max(Self::MIN_CELL) as HwpUnit;
+                *axis_mut(&mut self.cells[n_idx], axis).2 = (n_now - d).max(Self::MIN_CELL) as HwpUnit;
+                self.finish_cells();
+                return Ok(());
+            }
+            // R1 승격 / R3 통과: A 로 합류 후 잔여를 A 에서 1회 신규 어긋내기. d==0(이웃 소진)도 통과로 —
+            // 종전 프로브 실패 → 복원+재어긋의 순효과(같은 자리 재착지, Ok)와 같다.
+            let j = join.ok_or("정렬선 없음")?;
+            let remainder = g.line_pos(axis, line, true) - g.line_pos(axis, j, true) + delta;
+            if axis == Axis::Rows {
+                self.materialize_rows_effective(t.row as usize, (n_end - 1) as usize); // 행은 쓰기 직전 물질화
+            }
+            self.join_to_line(cell_idx, axis, line, j)?;
+            self.collapse_dead_lines(axis);
+            if remainder.abs() <= Self::MIN_CELL {
+                return Ok(()); // 정렬선 ±MIN_CELL 이내 복귀 = 치유(스냅)
+            }
+            delta = remainder;
+            line = self.cells.iter().position(|c| (c.row, c.col) == (t.row, t.col)).map(|i| {
+                let (s, sp, _) = axis_of(&self.cells[i], axis);
+                s + sp
+            }).ok_or("복원 후 대상 소실")?;
+        }
+
+        // ── 컨텍스트 N — L 정렬선, 신규 어긋내기 ──
+        let t_idx = self.cells.iter().position(|c| (c.row, c.col) == (t.row, t.col)).ok_or("대상 소실")?;
+        let t = self.cells[t_idx].clone();
+        let (t_start, _, _) = axis_of(&t, axis);
+        let n_idx = self.neighbour_at(&t, axis, line).ok_or("이웃 소실")?;
+        let n = self.cells[n_idx].clone();
+        let (n_start, n_span, _) = axis_of(&n, axis);
+        let n_end = n_start + n_span;
+        let g = TableGrid::axes(self);
+        let (s_idx, far) = if delta > 0 { (n_idx, n_end) } else { (t_idx, t_start) };
+        // 여유: 열 = 셀 폭 − MIN_CELL, 행 = Σ실효(delta>0: 이웃 스팬 구간) / max(저장, 실효[첫 행])(delta<0) − 조각 바닥
+        let floor = if edge_right {
+            Self::MIN_CELL
+        } else {
+            self.stagger_piece_floor_hu(s_idx, &g.cell_floors, Self::MIN_CELL)
+        };
+        let space = match (axis, delta > 0) {
+            (Axis::Cols, _) => axis_of(&self.cells[s_idx], axis).2 as i32,
+            (Axis::Rows, true) => g.line_pos(axis, far, true) - g.line_pos(axis, line, true),
+            (Axis::Rows, false) => {
+                let eff = g.row_heights_eff.get(t.row as usize).copied().unwrap_or(t.height);
+                t.height.max(eff) as i32
+            }
+        };
+        let room = space - floor;
+        let d = delta.abs().min(room);
+        if d <= 0 {
+            return Err(Self::no_room_msg(delta, edge_right));
+        }
+        if axis == Axis::Rows {
+            let hi = if delta > 0 { n_end - 1 } else { n_start };
+            self.materialize_rows_effective(t.row as usize, hi as usize);
+        }
+        let g = TableGrid::axes(self);
+        // L 에서 줄어드는 쪽으로 걸어 낙하점이 든 단위 구간 (off = 구간의 L 쪽 끝에서의 거리), acc = L→가까운 선 거리
+        let Located { line: k, off, size } = g.locate(axis, line, far, d);
+        let (near, far_line) = if delta > 0 { (k, k + 1) } else { (k + 1, k) };
+        let acc = (g.line_pos(axis, near, true) - g.line_pos(axis, line, true)).abs();
+        let j = if off <= Self::MIN_CELL && acc > 0 {
+            near
+        } else if size - off <= Self::MIN_CELL && acc + size <= room {
+            far_line
+        } else {
+            if size < Self::MIN_CELL * 2 {
+                return Err("낙하점 주변에 분할 여유가 없습니다".to_string());
+            }
+            let off = off.clamp(Self::MIN_CELL, size - Self::MIN_CELL);
+            let off_k = if delta > 0 { off } else { size - off };
+            self.insert_line(axis, k, band, off_k as HwpUnit, delta > 0)?;
+            if delta > 0 {
+                k + 1
+            } else {
+                line += 1; // 삽입선이 L 앞 → L 인덱스 +1
+                k + 1
+            }
+        };
+        // 전달: 밴드에서 L 로 끝나는 셀(t 또는 삽입 빈 조각)의 끝선을 J 로
+        let from_idx = self.neighbour_at(&t, axis, line - 1).ok_or("대상 소실")?;
+        self.join_to_line(from_idx, axis, line, j)?;
+        Ok(())
+    }
+
+    /// 밴드(직교 좌표 = t) 에서 축 위치 `pos` 슬롯을 점유하는 셀.
+    fn neighbour_at(&self, t: &Cell, axis: Axis, pos: u16) -> Option<usize> {
+        match axis {
+            Axis::Cols => self.cell_index_at(t.row, pos),
+            Axis::Rows => self.cell_index_at(pos, t.col),
+        }
+    }
+
+    fn no_room_msg(delta: i32, edge_right: bool) -> String {
+        match (delta > 0, edge_right) {
+            (true, true) => "이웃 칸에 남는 폭이 없습니다",
+            (true, false) => "이웃 칸에 남는 높이가 없습니다",
+            (false, true) => "대상 칸에 남는 폭이 없습니다",
+            (false, false) => "대상 칸에 남는 높이가 없습니다",
+        }
+        .to_string()
+    }
+
+    /// 경계 이동 **허용 델타** [min, max](HU) — 셀 `cell_idx` 의 우변(edge_right)/하변을 옮길 때
+    /// 대상·이웃이 자기 바닥 밑으로 줄지 않는 범위. 종전 shift_offset_boundary 의 floor 산식 한 곳:
+    /// 열 바닥 = MIN_CELL, 행 바닥 = `stagger_piece_floor_hu`(내용 있으면 글줄 바닥, 빈 조각은 MIN_CELL),
+    /// 행 여유는 **실효 공간** max(저장, 실효 행높이). (0) 검사도 여기서: 바깥 테두리·이웃 없음·직교
+    /// 불일치는 종전 메시지 그대로 Err.
+    /// ponytail: 스팬 셀의 행 여유는 종전대로 max(height, eff[첫 행]) — Σeff 로 바꾸면 legacy 와 갈린다.
+    pub fn boundary_move_range(&self, cell_idx: usize, edge_right: bool) -> Result<(i32, i32), String> {
+        let t = self
+            .cells
+            .get(cell_idx)
+            .ok_or_else(|| "셀 인덱스가 유효하지 않습니다".to_string())?;
+        let axis = if edge_right { Axis::Cols } else { Axis::Rows };
+        let (start, span, _) = axis_of(t, axis);
+        let boundary = start + span;
+        if boundary >= if edge_right { self.col_count } else { self.row_count } {
+            return Err("바깥 테두리는 어긋낼 수 없습니다".to_string());
+        }
+        let n_idx = match axis {
+            Axis::Cols => self.cell_index_at(t.row, boundary),
+            Axis::Rows => self.cell_index_at(boundary, t.col),
+        }
+        .ok_or_else(|| {
+            if edge_right { "오른쪽 이웃 셀을 찾지 못했습니다" } else { "아래 이웃 셀을 찾지 못했습니다" }.to_string()
+        })?;
+        let n = &self.cells[n_idx];
+        if ortho_of(n, axis) != ortho_of(t, axis) {
+            return Err(if edge_right {
+                "위아래 높이가 다른 칸과는 경계를 어긋낼 수 없습니다"
+            } else {
+                "좌우 폭이 다른 칸과는 경계를 어긋낼 수 없습니다"
+            }
+            .to_string());
+        }
+        let g = TableGrid::axes(self);
+        let floor_of = |idx: usize| -> i32 {
+            if edge_right {
+                Self::MIN_CELL
+            } else {
+                self.stagger_piece_floor_hu(idx, &g.cell_floors, Self::MIN_CELL)
+            }
+        };
+        let space_of = |c: &Cell| -> i32 {
+            if edge_right {
+                c.width as i32
+            } else {
+                let eff = g.row_heights_eff.get(c.row as usize).copied().unwrap_or(c.height);
+                c.height.max(eff) as i32
+            }
+        };
+        let max = (space_of(n) - floor_of(n_idx)).max(0);
+        let min = -(space_of(t) - floor_of(cell_idx)).max(0);
+        Ok((min, max))
+    }
+
+    /// 모델층 **트랜잭션 관문** — saved=clone → f → check_invariants → check_deltas(class) → 실패 시
+    /// `*self = saved` 롤백 + Err. 표를 깨뜨리는 조작은 어떤 경로로도 커밋되지 않는다.
+    pub fn transact<T>(
+        &mut self,
+        class: CmdClass,
+        expected_cell_delta: Option<i64>,
+        f: impl FnOnce(&mut Table) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let saved = self.clone();
+        let out = f(self).and_then(|v| {
+            self.check_invariants()
+                .map_err(|why| format!("이 조작은 표 격자를 깨뜨려 취소했습니다 — {why}"))?;
+            let bad = self.check_deltas(&saved, class, expected_cell_delta, false);
+            if !bad.is_empty() {
+                return Err(format!("표 크기 규약을 깨뜨려 취소했습니다 — {}", bad.join(", ")));
+            }
+            Ok(v)
+        });
+        if out.is_err() {
+            *self = saved;
+        }
+        out
+    }
+
+    /// [11-b 비교용·임시] 어긋내기 옛 코어 스위치 — 프로세스 전역. 진단 예제의 `--legacy` 가 켠다.
+    pub fn set_stagger_legacy(on: bool) {
+        STAGGER_LEGACY.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn stagger_legacy() -> bool {
+        STAGGER_LEGACY.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// [불변식 가드 2026-09-02] 표 **구조** 불변식 — 위반이면 Err(사유).
     ///
-    /// 공개 명령 종료 시점에만 검사한다 — insert_row_line·split_cells_in_range 루프 등
+    /// 공개 명령 종료 시점에만 검사한다 — insert_line·split_cells_in_range 루프 등
     /// 트랜잭션 중간 상태는 의도적으로 위반한다. 항목은 한컴 실물(HWPX 2791표·HWP5 1221표)
     /// 전수 위반 0건인 것만: 크기 절대 규칙("행 폭 합 == 표 폭" 등)은 실물이 위반하므로
     /// 여기 넣지 않는다(명령 전후 델타 검사 몫).
@@ -2237,7 +2726,7 @@ impl Table {
             .all(|c| c.width < 1_000_000 && c.height < 1_000_000)
     }
 
-    fn offset_cell_boundary_core(
+    fn offset_cell_boundary_core_legacy(
         &mut self,
         cell_idx: usize,
         edge_right: bool,
@@ -2288,7 +2777,7 @@ impl Table {
                 let thin0 = thin(self);
                 let w_before = t.width as i32;
                 let mut probe = self.clone();
-                let r = probe.shift_offset_boundary(cell_idx, n_idx, boundary, true, delta);
+                let r = probe.shift_offset_boundary_legacy(cell_idx, n_idx, boundary, true, delta);
                 let delivered = probe
                     .cells
                     .iter()
@@ -2304,7 +2793,7 @@ impl Table {
                     *self = probe;
                     return Ok(());
                 }
-                self.restore_cell_boundary_core(cell_idx, true)?;
+                self.restore_cell_boundary_core_legacy(cell_idx, true)?;
                 let t_idx = self
                     .cell_index_at(t.row, t.col)
                     .ok_or("복원 후 대상 소실")?;
@@ -2312,7 +2801,7 @@ impl Table {
                 if (cum + delta).abs() <= Self::MIN_CELL {
                     return Ok(()); // 정렬선 ±MIN_CELL 이내 복귀 = 치유(스냅)
                 }
-                return self.offset_cell_boundary_core(t_idx, true, cum + delta);
+                return self.offset_cell_boundary_core_legacy(t_idx, true, cum + delta);
             }
             if delta > 0 {
                 // [2026-08-17 저녁 철회] "낙하점 도달 시 이웃 조각 전체 흡수(병합)"를
@@ -2595,7 +3084,7 @@ impl Table {
                 };
                 let span0 = eff_span(self, t.row, t.row_span);
                 let mut probe = self.clone();
-                let r = probe.shift_offset_boundary(cell_idx, n_idx, boundary, false, delta);
+                let r = probe.shift_offset_boundary_legacy(cell_idx, n_idx, boundary, false, delta);
                 // 프로브 합격 조건에 **전달 거리**도 본다 — shift 는 인접 행 창으로
                 // 델타를 클램프하므로, 큰 드래그가 다음 선에서 "정상 커밋"으로 잘리면
                 // 통과 이동이 조용히 증발한다(col2 실측 2250→566). 못 채우면 폴백.
@@ -2613,7 +3102,7 @@ impl Table {
                 // "정렬 복귀"로 오판해 복원만 커밋되고 나머지 이동이 증발했다
                 // (col2 실측: +30px 드래그가 +7px 합류에서 정지).
                 let h_before = span0;
-                self.restore_cell_boundary_core(cell_idx, false)?;
+                self.restore_cell_boundary_core_legacy(cell_idx, false)?;
                 let t_idx = self
                     .cell_index_at(t.row, t.col)
                     .ok_or("복원 후 대상 소실")?;
@@ -2633,7 +3122,7 @@ impl Table {
                 if (cum + delta).abs() <= Self::MIN_CELL {
                     return Ok(()); // 정렬선 ±MIN_CELL 이내 복귀 = 치유(스냅)
                 }
-                return self.offset_cell_boundary_core(t_idx, false, cum + delta);
+                return self.offset_cell_boundary_core_legacy(t_idx, false, cum + delta);
             }
             let eff_rows = self.effective_row_heights();
             let floors = self.cell_content_floors_hu();
@@ -2687,7 +3176,7 @@ impl Table {
                         return Err("낙하점 주변에 분할 여유가 없습니다".to_string());
                     }
                     let off = off.clamp(Self::MIN_CELL, row_h - Self::MIN_CELL);
-                    self.insert_row_line(r_star, off, t.col, t.col_span)?;
+                    self.insert_line(Axis::Rows, r_star, (t.col, t.col_span), off as HwpUnit, true)?;
                     (r_star + 1, acc + off)
                 };
                 // 이웃이 join_line 을 가로지르면(스팬) 그 자리에서 이분할 —
@@ -2772,27 +3261,74 @@ impl Table {
         cell_idx: usize,
         edge_right: bool,
     ) -> Result<(), String> {
-        let saved = self.clone();
-        let w0: u64 = self.get_column_widths().iter().map(|&w| w as u64).sum();
-        let h0: u64 = self.effective_row_heights().iter().map(|&h| h as u64).sum();
-        let r = self.restore_cell_boundary_core(cell_idx, edge_right);
-        if r.is_ok() && !self.stagger_invariants_hold(w0, h0) {
-            *self = saved;
-            return Err("이 조작은 표 격자를 깨뜨려 취소했습니다".to_string());
-        }
-        if r.is_ok() {
-            if let Err(why) = self.check_invariants() {
+        if Self::stagger_legacy() {
+            let saved = self.clone();
+            let w0: u64 = self.get_column_widths().iter().map(|&w| w as u64).sum();
+            let h0: u64 = self.effective_row_heights().iter().map(|&h| h as u64).sum();
+            let r = self.restore_cell_boundary_core_legacy(cell_idx, edge_right);
+            if r.is_ok() && !self.stagger_invariants_hold(w0, h0) {
                 *self = saved;
-                return Err(format!("이 조작은 표 격자를 깨뜨려 취소했습니다 — {why}"));
+                return Err("이 조작은 표 격자를 깨뜨려 취소했습니다".to_string());
             }
+            if r.is_ok() {
+                if let Err(why) = self.check_invariants() {
+                    *self = saved;
+                    return Err(format!("이 조작은 표 격자를 깨뜨려 취소했습니다 — {why}"));
+                }
+            }
+            if r.is_err() {
+                *self = saved;
+            }
+            return r;
         }
-        if r.is_err() {
-            *self = saved;
-        }
-        r
+        self.transact(CmdClass::KeepWidthHeight, Some(0), |t| t.restore_cell_boundary_core(cell_idx, edge_right))
     }
 
-    fn restore_cell_boundary_core(
+    /// [11-b] 복원 = 컨텍스트 R 에 p := pos(A) 강제 — join_to_line(t, L→A) + collapse_dead_lines.
+    /// t 가 span1 이어도 같은 식(종전 extend_cell_to_offset_line: A 는 이웃의 첫 내부선).
+    fn restore_cell_boundary_core(&mut self, cell_idx: usize, edge_right: bool) -> Result<(), String> {
+        let axis = if edge_right { Axis::Cols } else { Axis::Rows };
+        let t = self
+            .cells
+            .get(cell_idx)
+            .ok_or_else(|| "셀 인덱스가 유효하지 않습니다".to_string())?
+            .clone();
+        let (t_start, t_span, _) = axis_of(&t, axis);
+        let band = ortho_of(&t, axis);
+        let line = t_start + t_span;
+        // 종전 메시지·검사 순서 유지: span1(옛 extend_cell_to_offset_line) 은 '정렬' 문구, 정렬 검사 → 직교 검사.
+        let span1 = t_span < 2;
+        if line >= if edge_right { self.col_count } else { self.row_count } {
+            return Err(if span1 { "바깥 테두리는 정렬 대상이 아닙니다" } else { "바깥 테두리는 복원 대상이 아닙니다" }.to_string());
+        }
+        let n_idx = self.neighbour_at(&t, axis, line).ok_or_else(|| {
+            if edge_right { "오른쪽 이웃 셀을 찾지 못했습니다" } else { "아래 이웃 셀을 찾지 못했습니다" }.to_string()
+        })?;
+        // 종전 규약 그대로 정렬선 검사는 없다 — span1 은 이웃 span≥2 만 요구(옛 extend), span≥2 는 무조건
+        // 마지막 조각을 이웃에 넘긴다(옛 split·재병합). L 이 정렬선이어도 legacy 가 Ok 였으므로 거부하지 않는다.
+        if span1 && axis_of(&self.cells[n_idx], axis).1 < 2 {
+            return Err("어긋난 경계가 아닙니다".to_string());
+        }
+        if ortho_of(&self.cells[n_idx], axis) != band {
+            return Err(match (edge_right, span1) {
+                (true, true) => "위아래 높이가 다른 칸과는 정렬할 수 없습니다",
+                (true, false) => "위아래 높이가 다른 칸과는 복원할 수 없습니다",
+                (false, true) => "좌우 폭이 다른 칸과는 정렬할 수 없습니다",
+                (false, false) => "좌우 폭이 다른 칸과는 복원할 수 없습니다",
+            }
+            .to_string());
+        }
+        // 합류 목표 = 종전 규약: span≥2 → L−1(마지막 조각을 이웃에), span1 → L+1(이웃 첫 조각 흡수).
+        // 대상 시작 뒤 첫 정렬선이 아니다 — 병합 셀을 어긋낸 경우 그 선으로 가면 원래 병합까지 풀린다.
+        // 행도 물질화하지 않는다 — 종전 복원(split_cell·merge_cells)은 저장 층 그대로 다뤘고, 어긋내기가
+        // 먼저 물질화한 행은 이미 명시값이라 결과가 같다(물질화하면 정렬선 복원에서 저장 높이가 갈린다).
+        let a = if !span1 { line - 1 } else { line + 1 };
+        self.join_to_line(cell_idx, axis, line, a)?;
+        self.collapse_dead_lines(axis);
+        Ok(())
+    }
+
+    fn restore_cell_boundary_core_legacy(
         &mut self,
         cell_idx: usize,
         edge_right: bool,
@@ -2805,7 +3341,7 @@ impl Table {
 
         if edge_right {
             if t.col_span < 2 {
-                return self.extend_cell_to_offset_line(cell_idx, true);
+                return self.extend_cell_to_offset_line_legacy(cell_idx, true);
             }
             let boundary = t.col + t.col_span;
             if boundary >= self.col_count {
@@ -2853,10 +3389,10 @@ impl Table {
                     self.cells[i].paragraphs.remove(0);
                 }
             }
-            self.collapse_unused_lines(true);
+            self.collapse_dead_lines(Axis::Cols);
         } else {
             if t.row_span < 2 {
-                return self.extend_cell_to_offset_line(cell_idx, false);
+                return self.extend_cell_to_offset_line_legacy(cell_idx, false);
             }
             let boundary = t.row + t.row_span;
             if boundary >= self.row_count {
@@ -2901,7 +3437,7 @@ impl Table {
                     self.cells[i].paragraphs.remove(0);
                 }
             }
-            self.collapse_unused_lines(false);
+            self.collapse_dead_lines(Axis::Rows);
         }
         self.rebuild_grid();
         self.update_ctrl_dimensions();
@@ -2911,7 +3447,7 @@ impl Table {
     /// 치유 반대 방향: 정렬된 칸의 경계를 **어긋난 선 쪽으로** 끌어 맞춘다.
     /// 이웃이 어긋나(스팬≥2) 있을 때, 이웃의 첫 조각을 대상이 흡수해 전 열/행이
     /// 어긋난 선 위치로 정렬되고, 못 쓰게 된 원래 격자 줄은 접힌다.
-    fn extend_cell_to_offset_line(
+    fn extend_cell_to_offset_line_legacy(
         &mut self,
         cell_idx: usize,
         edge_right: bool,
@@ -2974,7 +3510,7 @@ impl Table {
                     self.cells[i].width = w;
                 }
             }
-            self.collapse_unused_lines(true);
+            self.collapse_dead_lines(Axis::Cols);
         } else {
             let boundary = t.row + t.row_span;
             if boundary >= self.row_count {
@@ -3027,17 +3563,17 @@ impl Table {
                     self.cells[i].height = h;
                 }
             }
-            self.collapse_unused_lines(false);
+            self.collapse_dead_lines(Axis::Rows);
         }
         self.rebuild_grid();
         self.update_ctrl_dimensions();
         Ok(())
     }
 
-    /// 아무 셀 경계도 쓰지 않는 격자 줄(경계선)을 접는다 — 복원(치유) 뒷정리.
-    /// edge_right=false 면 행, true 면 열. 접을 수 있는 줄이 없어질 때까지 반복.
-    fn collapse_unused_lines(&mut self, cols: bool) {
-        let axis = if cols { Axis::Cols } else { Axis::Rows };
+    /// 죽은 내부 선(어떤 셀도 경계로 쓰지 않는 선, `TableGrid::dead_lines`)을 접는다 — 복원·합류·통과 뒷정리.
+    /// 접을 선이 없어질 때까지 반복(선 수 단조 감소).
+    pub(crate) fn collapse_dead_lines(&mut self, axis: Axis) {
+        let cols = axis == Axis::Cols;
         loop {
             let Some(line) = TableGrid::lines_only(self).dead_lines(axis).first().copied() else { break };
             // 줄 `line` 과 `line-1` 사이 경계선이 미사용 → 줄 line 을 접는다
@@ -3061,6 +3597,8 @@ impl Table {
             self.rebuild_row_sizes();
             self.rebuild_grid();
         }
+        // 접힌 뒤 표 치수 재계산 — join_to_line 의 finish_cells 는 죽은 선이 살아 있을 때 돌아 stale 치수를 남긴다.
+        self.update_ctrl_dimensions();
     }
 
     pub fn split_cells_in_range(
