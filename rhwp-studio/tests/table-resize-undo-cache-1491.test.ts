@@ -39,7 +39,6 @@ test('undo/redo는 표 로컬 resize 런타임 캐시를 비운다', () => {
 test('표 resize 런타임 캐시 정리는 local segment와 bbox 캐시를 함께 비운다', () => {
   const clear = methodBlock('clearTableResizeRuntimeCache');
 
-  assert.match(clear, /tableLocalResizeSegments\.clear\(\)/, 'local resize segment 캐시 삭제 필요');
   assert.match(clear, /cachedTableRef = null/, '표 ref 캐시 삭제 필요');
   assert.match(clear, /cachedCellBboxes = null/, 'bbox 캐시 삭제 필요');
   assert.match(clear, /tableResizeRenderer\?\.clear\(\)/, 'hover/drag marker 삭제 필요');

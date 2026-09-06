@@ -796,29 +796,25 @@ export const tableCommands: CommandDef[] = [
         const range = equalizeTargetRange(ih, dims);
         const bboxes = services.wasm.getTableCellBboxes(sec, ppi, ci);
         const bboxByCellIdx = new Map(bboxes.map(bbox => [bbox.cellIdx, bbox]));
-        const cells: Array<{ idx: number; height: number; renderHeight: number }> = [];
+        // heightDelta 는 표시 높이 대비 변화량(엔진 base = 빈 셀이면 글줄 바닥 = 표시 높이)
+        const cells: Array<{ idx: number; displayHeight: number }> = [];
         for (let i = 0; i < dims.cellCount; i++) {
           const info = services.wasm.getCellInfo(sec, ppi, ci, i);
           if (!isCellInRange(info, range)) continue;
           if (info.rowSpan > 1) continue;
-          const h = services.wasm.getCellProperties(sec, ppi, ci, i).height;
           const bbox = bboxByCellIdx.get(i);
-          const renderHeight = bbox ? Math.round(bbox.h * 75) : h;
-          cells.push({ idx: i, height: h, renderHeight });
+          if (!bbox) continue;
+          cells.push({ idx: i, displayHeight: Math.round(bbox.h * 75) });
         }
         if (cells.length < 2) return;
-        const totalHeight = cells.reduce((sum, cell) => sum + cell.renderHeight, 0);
+        const totalHeight = cells.reduce((sum, cell) => sum + cell.displayHeight, 0);
         const avgHeight = Math.round(totalHeight / cells.length);
         const updates: Parameters<CommandServices['wasm']['resizeTableCells']>[3] = [];
         let changed = false;
         for (const c of cells) {
-          if (c.renderHeight !== avgHeight) changed = true;
-          updates.push({
-            cellIdx: c.idx,
-            heightDelta: 0,
-            localResize: true,
-            renderHeight: avgHeight,
-          });
+          const delta = avgHeight - c.displayHeight;
+          if (delta !== 0) changed = true;
+          updates.push({ cellIdx: c.idx, heightDelta: delta });
         }
         if (!changed) return;
         safeTableOp(() => ih.executeOperation({
@@ -852,30 +848,25 @@ export const tableCommands: CommandDef[] = [
         const range = equalizeTargetRange(ih, dims);
         const bboxes = services.wasm.getTableCellBboxes(sec, ppi, ci);
         const bboxByCellIdx = new Map(bboxes.map(bbox => [bbox.cellIdx, bbox]));
-        const cells: Array<{ idx: number; col: number; width: number; renderWidth: number }> = [];
+        const cells: Array<{ idx: number; col: number; width: number; displayWidth: number }> = [];
         for (let i = 0; i < dims.cellCount; i++) {
           const info = services.wasm.getCellInfo(sec, ppi, ci, i);
           if (!isCellInRange(info, range)) continue;
           if (info.rowSpan > 1) continue;
           const w = services.wasm.getCellProperties(sec, ppi, ci, i).width;
           const bbox = bboxByCellIdx.get(i);
-          const renderWidth = bbox ? Math.round(bbox.w * 75) : w;
-          cells.push({ idx: i, col: info.col, width: w, renderWidth });
+          const displayWidth = bbox ? Math.round(bbox.w * 75) : w;
+          cells.push({ idx: i, col: info.col, width: w, displayWidth });
         }
         if (cells.length < 2) return;
-        const totalWidth = cells.reduce((sum, cell) => sum + cell.renderWidth, 0);
+        const totalWidth = cells.reduce((sum, cell) => sum + cell.displayWidth, 0);
         const avgWidth = Math.round(totalWidth / cells.length);
         const updates: Parameters<CommandServices['wasm']['resizeTableCells']>[3] = [];
         let changed = false;
         for (const c of cells) {
           const delta = avgWidth - c.width;
-          if (delta !== 0 || c.renderWidth !== avgWidth) changed = true;
-          updates.push({
-            cellIdx: c.idx,
-            widthDelta: delta,
-            localResize: true,
-            renderWidth: avgWidth,
-          });
+          if (delta !== 0) changed = true;
+          updates.push({ cellIdx: c.idx, widthDelta: delta });
         }
         if (!changed) return;
         safeTableOp(() => ih.executeOperation({
