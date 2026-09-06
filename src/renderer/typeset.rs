@@ -10832,6 +10832,10 @@ impl TypesetEngine {
                     s.tag & crate::model::paragraph::LineSeg::TAG_IMPLEMENTATION_PROPERTY == 0
                 });
             st.vpos_ladder_dirty = false;
+            // [2026-09-07] 새 쪽/단의 첫 문단은 스냅하지 않는다. 항목이 없으면 prev_layout_para 는 **이전 쪽**의 문단이라
+            // 그 저장 끝 위치(vpos+lh+ls)를 이 쪽 기준(base=현재 문단 vpos)으로 더해 흐름이 허공에서 시작했다
+            // (교육과정 9구역: 쪽나누기 표제 "▣ 고등학교" 가 0 → 42.1px 에서 시작 → 뒤 표 선언 높이 초과로 통째 이월 → 빈 쪽).
+            return;
         }
         let mut hc = HeightCursor {
             dpi: self.dpi,
