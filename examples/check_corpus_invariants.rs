@@ -13,13 +13,18 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in rd.flatten() {
         let p = e.path();
         if p.is_dir() {
             collect(&p, out);
         } else if matches!(
-            p.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()).as_deref(),
+            p.extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .as_deref(),
             Some("hwp") | Some("hwpx")
         ) {
             out.push(p);
@@ -41,8 +46,12 @@ fn walk_paragraphs<'a>(paras: &'a [Paragraph], path: &str, out: &mut Vec<(String
                 Control::Shape(s) => walk_shape(s, &cp, out),
                 Control::Header(h) => walk_paragraphs(&h.paragraphs, &format!("{cp}/header"), out),
                 Control::Footer(f) => walk_paragraphs(&f.paragraphs, &format!("{cp}/footer"), out),
-                Control::Footnote(f) => walk_paragraphs(&f.paragraphs, &format!("{cp}/footnote"), out),
-                Control::Endnote(e) => walk_paragraphs(&e.paragraphs, &format!("{cp}/endnote"), out),
+                Control::Footnote(f) => {
+                    walk_paragraphs(&f.paragraphs, &format!("{cp}/footnote"), out)
+                }
+                Control::Endnote(e) => {
+                    walk_paragraphs(&e.paragraphs, &format!("{cp}/endnote"), out)
+                }
                 Control::HiddenComment(h) => {
                     walk_paragraphs(&h.paragraphs, &format!("{cp}/hidden"), out)
                 }
@@ -118,7 +127,12 @@ fn table_metrics(t: &Table, st: &mut Stats) {
     // A1 폭: 행별 앵커 셀 폭 합 vs common.width
     let mut any_row_mismatch = false;
     for r in 0..t.row_count {
-        let sum: u64 = t.cells.iter().filter(|c| c.row == r).map(|c| c.width as u64).sum();
+        let sum: u64 = t
+            .cells
+            .iter()
+            .filter(|c| c.row == r)
+            .map(|c| c.width as u64)
+            .sum();
         if sum.abs_diff(t.common.width as u64) > 4 {
             any_row_mismatch = true;
         }
@@ -148,15 +162,17 @@ fn table_metrics(t: &Table, st: &mut Stats) {
             && (cw[c0..c1].iter().map(|&w| w as u64).sum::<u64>()).abs_diff(c.width as u64) > 4)
             || (c.row_span > 1
                 && r1 <= rh.len()
-                && (rh[r0..r1].iter().map(|&h| h as u64).sum::<u64>()).abs_diff(c.height as u64) > 4)
+                && (rh[r0..r1].iter().map(|&h| h as u64).sum::<u64>()).abs_diff(c.height as u64)
+                    > 4)
     });
     if a2 {
         st.a2_mismatch += 1;
     }
     // 행별 x선 차이: span1 셀 폭이 열 max 와 다른 행이 있는가
-    if t.cells.iter().any(|c| {
-        c.col_span == 1 && (c.col as usize) < cw.len() && c.width != cw[c.col as usize]
-    }) {
+    if t.cells
+        .iter()
+        .any(|c| c.col_span == 1 && (c.col as usize) < cw.len() && c.width != cw[c.col as usize])
+    {
         st.rowx_diff += 1;
     }
     // 조각 행 후보: row_span==1 셀이 하나도 없는 행
@@ -238,25 +254,55 @@ fn grid_lints(
     let tac = t.common.treat_as_char;
     // 9-b: 격자 행별 x선 오버라이드 = 경로 (a) 지역 조절 추론 행만(Some 행이 하나라도 있는 표). 경로 (b)
     // 독립 폭 행은 렌더러 전역 폭(px) 폴백이 필요해 table_layout::row_col_x_px 가 px 로 판정한다 — 여기 미집계.
-    let over: Vec<usize> = g.row_col_x.iter().enumerate().filter(|(_, o)| o.is_some()).map(|(r, _)| r).collect();
+    let over: Vec<usize> = g
+        .row_col_x
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.is_some())
+        .map(|(r, _)| r)
+        .collect();
     if !over.is_empty() {
         st.row_col_x_override_rows += 1;
-        rowx.push(format!("ROWX\t{file}\t{path}\tcols={}\trows={over:?}\tcw={:?}", t.col_count, g.col_widths));
+        rowx.push(format!(
+            "ROWX\t{file}\t{path}\tcols={}\trows={over:?}\tcw={:?}",
+            t.col_count, g.col_widths
+        ));
     }
     let mut why = Vec::new();
     let cw = legacy_axis(t, true);
     if g.col_widths != cw {
-        let k = g.col_widths.iter().zip(&cw).position(|(a, b)| a != b).unwrap_or(0);
-        why.push(format!("cols[{k}] grid={:?} legacy={:?}", g.col_widths.get(k), cw.get(k)));
+        let k = g
+            .col_widths
+            .iter()
+            .zip(&cw)
+            .position(|(a, b)| a != b)
+            .unwrap_or(0);
+        why.push(format!(
+            "cols[{k}] grid={:?} legacy={:?}",
+            g.col_widths.get(k),
+            cw.get(k)
+        ));
     }
     let rh = legacy_axis(t, false);
     if g.row_heights_stored != rh {
-        let k = g.row_heights_stored.iter().zip(&rh).position(|(a, b)| a != b).unwrap_or(0);
-        why.push(format!("rows[{k}] grid={:?} legacy={:?}", g.row_heights_stored.get(k), rh.get(k)));
+        let k = g
+            .row_heights_stored
+            .iter()
+            .zip(&rh)
+            .position(|(a, b)| a != b)
+            .unwrap_or(0);
+        why.push(format!(
+            "rows[{k}] grid={:?} legacy={:?}",
+            g.row_heights_stored.get(k),
+            rh.get(k)
+        ));
     }
     if !why.is_empty() {
         st.solver_disagreement += 1;
-        solver.push(format!("SOLVER\t{file}\t{path}\ttac={tac}\t{}", why.join("; ")));
+        solver.push(format!(
+            "SOLVER\t{file}\t{path}\ttac={tac}\t{}",
+            why.join("; ")
+        ));
     }
     let mut mm: Vec<String> = Vec::new();
     for r in 0..t.row_count as usize {
@@ -295,10 +341,18 @@ fn grid_lints(
             .collect()
     };
     if g.dead_lines(Axis::Cols) != s6("세로선") {
-        mm.push(format!("dead x {:?} vs {:?}", g.dead_lines(Axis::Cols), s6("세로선")));
+        mm.push(format!(
+            "dead x {:?} vs {:?}",
+            g.dead_lines(Axis::Cols),
+            s6("세로선")
+        ));
     }
     if g.dead_lines(Axis::Rows) != s6("가로선") {
-        mm.push(format!("dead y {:?} vs {:?}", g.dead_lines(Axis::Rows), s6("가로선")));
+        mm.push(format!(
+            "dead y {:?} vs {:?}",
+            g.dead_lines(Axis::Rows),
+            s6("가로선")
+        ));
     }
     st.predicate_mismatch += mm.len();
     for m in mm {
@@ -320,11 +374,20 @@ fn main() {
     std::panic::set_hook(Box::new(|_| {}));
     for f in &files {
         st.files += 1;
-        let Ok(bytes) = std::fs::read(f) else { st.parse_fail += 1; continue };
+        let Ok(bytes) = std::fs::read(f) else {
+            st.parse_fail += 1;
+            continue;
+        };
         let doc = match std::panic::catch_unwind(|| HwpDocument::from_bytes(&bytes)) {
             Ok(Ok(d)) => d,
-            Ok(Err(_)) => { st.parse_fail += 1; continue }
-            Err(_) => { st.panics += 1; continue }
+            Ok(Err(_)) => {
+                st.parse_fail += 1;
+                continue;
+            }
+            Err(_) => {
+                st.panics += 1;
+                continue;
+            }
         };
         let document = doc.document();
         let mut tables = Vec::new();
@@ -354,7 +417,16 @@ fn main() {
                 st.fallback_tables += 1;
             }
             table_metrics(t, &mut st);
-            grid_lints(t, &f.display().to_string(), &path, &lints, &mut st, &mut solver_lines, &mut pred_lines, &mut rowx_lines);
+            grid_lints(
+                t,
+                &f.display().to_string(),
+                &path,
+                &lints,
+                &mut st,
+                &mut solver_lines,
+                &mut pred_lines,
+                &mut rowx_lines,
+            );
         }
     }
     std::panic::set_hook(hook);
@@ -363,7 +435,10 @@ fn main() {
         st.files, st.parse_fail, st.panics, st.tables, st.nested
     );
     println!("STRUCT violations by id: {:?}", st.by_id);
-    println!("LINT counts (lines): {:?}  tables_with_S7_fallback={}", st.lint, st.fallback_tables);
+    println!(
+        "LINT counts (lines): {:?}  tables_with_S7_fallback={}",
+        st.lint, st.fallback_tables
+    );
     println!(
         "A1 width: rows-sum≠common {} tables; cell_spacing≠0 {} tables, formula Σ+(n+1)cs ok {}",
         st.a1w_mismatch, st.a1w_spacing_tables, st.a1w_spacing_formula_ok
@@ -371,10 +446,22 @@ fn main() {
     println!("A1 height: Σeff≠common {} tables", st.a1h_mismatch);
     println!("A2 merged≠span-sum: {} tables", st.a2_mismatch);
     println!("row-x differs from column max: {} tables", st.rowx_diff);
-    println!("span-only (piece-row candidate) rows: {} tables", st.piece_rows);
-    println!("solver_disagreement (grid vs legacy solve_span_gaps): {} tables", st.solver_disagreement);
-    println!("predicate_mismatch (grid vs legacy predicates): {} lines", st.predicate_mismatch);
-    println!("row_col_x_override_rows (tables with any Some row): {} tables", st.row_col_x_override_rows);
+    println!(
+        "span-only (piece-row candidate) rows: {} tables",
+        st.piece_rows
+    );
+    println!(
+        "solver_disagreement (grid vs legacy solve_span_gaps): {} tables",
+        st.solver_disagreement
+    );
+    println!(
+        "predicate_mismatch (grid vs legacy predicates): {} lines",
+        st.predicate_mismatch
+    );
+    println!(
+        "row_col_x_override_rows (tables with any Some row): {} tables",
+        st.row_col_x_override_rows
+    );
     for l in solver_lines.iter() {
         println!("{l}");
     }

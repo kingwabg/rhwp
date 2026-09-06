@@ -304,7 +304,8 @@ impl<'a> TableGrid<'a> {
         let count = self.count(axis);
         let mut sizes = vec![0u32; count];
         let mut constraints: Vec<(usize, usize, HwpUnit)> = Vec::new();
-        let mut index: std::collections::HashMap<(usize, usize), usize> = std::collections::HashMap::new();
+        let mut index: std::collections::HashMap<(usize, usize), usize> =
+            std::collections::HashMap::new();
         for c in &self.table.cells {
             if exclude_rows.contains(&c.row) {
                 continue;
@@ -368,7 +369,6 @@ impl<'a> TableGrid<'a> {
         (sizes, constraints)
     }
 
-
     /// build_row_col_x 경로 (a) 의 한 행: span1 셀 폭 타일링 + 스팬 내부선 비례 보간 + 잔여 규칙.
     fn tile_row(&self, r: usize, target: i64) -> Option<Vec<HwpUnit>> {
         let cc = self.col_count;
@@ -411,7 +411,11 @@ impl<'a> TableGrid<'a> {
         if residual >= X_TOL_HU as i64 {
             cand[cc] += residual;
         }
-        Some(cand.into_iter().map(|v| v.clamp(0, u32::MAX as i64) as u32).collect())
+        Some(
+            cand.into_iter()
+                .map(|v| v.clamp(0, u32::MAX as i64) as u32)
+                .collect(),
+        )
     }
 
     fn build_row_col_x(&self) -> Vec<Option<Vec<HwpUnit>>> {
@@ -429,7 +433,9 @@ impl<'a> TableGrid<'a> {
         let inferred = t.inferred_local_resize_rows();
         let mut any_diff = false;
         for &r in &inferred {
-            let Some(cand) = self.tile_row(r as usize, target) else { continue };
+            let Some(cand) = self.tile_row(r as usize, target) else {
+                continue;
+            };
             any_diff |= cand != self.col_x;
             if let Some(slot) = out.get_mut(r as usize) {
                 *slot = Some(cand);
@@ -460,7 +466,9 @@ impl<'a> TableGrid<'a> {
 
     /// 정렬선인가 — `band` 밖의 줄이 이 선을 경계로 쓴다(is_boundary_aligned).
     pub fn is_aligned_for(&self, axis: Axis, line: u16, band: u16) -> bool {
-        self.lines(axis).get(line as usize).is_some_and(|l| l.aligned_for(band))
+        self.lines(axis)
+            .get(line as usize)
+            .is_some_and(|l| l.aligned_for(band))
     }
 
     /// 어긋선 — 내부 선인데 한 줄만 경계로 쓴다(is_misaligned_line).
@@ -493,7 +501,8 @@ impl<'a> TableGrid<'a> {
             return false;
         }
         let (up, down) = (row as u16, (row + 1) as u16);
-        (self.is_misaligned(Axis::Rows, up) || self.is_misaligned(Axis::Rows, down)) && span1_explicit
+        (self.is_misaligned(Axis::Rows, up) || self.is_misaligned(Axis::Rows, down))
+            && span1_explicit
     }
 
     /// 어긋내기 합류 산물 행 — 인접 선이 부분 공유선(is_stagger_joined_row). 1열 표는 제외.
@@ -534,13 +543,25 @@ impl<'a> TableGrid<'a> {
     /// `line` = 구간 [line, line+1), `off` = 구간의 from 쪽 끝에서의 거리, `size` = 구간 크기(실효).
     /// 마지막 구간을 넘는 거리는 마지막 구간에 얹는다(off ≥ size 가능 — 호출자가 합류·클램프로 처리).
     pub fn locate(&self, axis: Axis, from: u16, to: u16, dist: i32) -> Located {
-        let steps: Vec<u16> = if to > from { (from..to).collect() } else { (to..from).rev().collect() };
+        let steps: Vec<u16> = if to > from {
+            (from..to).collect()
+        } else {
+            (to..from).rev().collect()
+        };
         let mut acc = 0i32;
-        let mut hit = Located { line: from, off: dist, size: 0 };
+        let mut hit = Located {
+            line: from,
+            off: dist,
+            size: 0,
+        };
         for (i, &k) in steps.iter().enumerate() {
             let size = self.line_pos(axis, k + 1, true) - self.line_pos(axis, k, true);
             if dist < acc + size || i + 1 == steps.len() {
-                hit = Located { line: k, off: dist - acc, size };
+                hit = Located {
+                    line: k,
+                    off: dist - acc,
+                    size,
+                };
                 break;
             }
             acc += size;
@@ -554,8 +575,13 @@ impl<'a> TableGrid<'a> {
             Axis::Cols => &self.col_widths,
             Axis::Rows => &self.row_heights_stored,
         };
-        let (a, b) = ((from as usize).min(sizes.len()), (to as usize).min(sizes.len()));
-        sizes[a..b.max(a)].iter().fold(0u32, |acc, &s| acc.saturating_add(s))
+        let (a, b) = (
+            (from as usize).min(sizes.len()),
+            (to as usize).min(sizes.len()),
+        );
+        sizes[a..b.max(a)]
+            .iter()
+            .fold(0u32, |acc, &s| acc.saturating_add(s))
     }
 
     /// 셀 사각형 (x, y, w, h) HU — 전역 x선, y 는 effective_y 로 층 선택. 격자 밖 셀은 None.

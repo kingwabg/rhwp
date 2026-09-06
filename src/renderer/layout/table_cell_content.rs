@@ -8,11 +8,11 @@ use super::super::{hwpunit_to_px, ShapeStyle, TextStyle};
 use super::border_rendering::{
     collect_cell_borders, render_edge_borders, render_transparent_borders,
 };
+use super::table_layout::{px_lines, row_col_x_px};
 use super::text_measurement::{
     is_cjk_char, is_vertical_rotate_char, resolved_to_text_style, vertical_substitute_char,
 };
 use super::utils::{extract_shape_transform, find_bin_data};
-use super::table_layout::{px_lines, row_col_x_px};
 use super::{CellContext, CellPathEntry, LayoutEngine};
 use crate::model::bin_data::BinDataContent;
 use crate::model::control::Control;

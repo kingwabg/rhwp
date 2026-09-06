@@ -117,7 +117,11 @@ pub fn write_table<W: Write>(
 
     // label: tr 뒤(OWPML 자식 순서 마지막). 파서가 table.hwpx_label 로 보존한 속성을 그대로 되살린다.
     if !table.hwpx_label.is_empty() {
-        let attrs: Vec<(&str, &str)> = table.hwpx_label.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let attrs: Vec<(&str, &str)> = table
+            .hwpx_label
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         empty_tag(w, "hp:label", &attrs)?;
     }
     end_tag(w, "hp:tbl")?;

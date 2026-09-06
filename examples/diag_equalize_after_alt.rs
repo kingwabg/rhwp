@@ -6,10 +6,19 @@ fn main() {
     doc.create_blank_document().unwrap();
     let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(
         r#"{"sectionIdx":0,"paraIdx":0,"charOffset":0,"rowCount":3,"colCount":3,"treatAsChar":false}"#).unwrap()).unwrap();
-    let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as usize, c["controlIdx"].as_u64().unwrap() as usize);
+    let (pi, ci) = (
+        c["paraIdx"].as_u64().unwrap() as usize,
+        c["controlIdx"].as_u64().unwrap() as usize,
+    );
     let show = |doc: &HwpDocument, tag: &str| {
-        let Control::Table(t) = &doc.document().sections[0].paragraphs[pi].controls[ci] else { panic!() };
-        println!("{tag}: stored={:?} eff={:?}", t.cells.iter().map(|c| c.height).collect::<Vec<_>>(), t.effective_row_heights());
+        let Control::Table(t) = &doc.document().sections[0].paragraphs[pi].controls[ci] else {
+            panic!()
+        };
+        println!(
+            "{tag}: stored={:?} eff={:?}",
+            t.cells.iter().map(|c| c.height).collect::<Vec<_>>(),
+            t.effective_row_heights()
+        );
     };
     show(&doc, "load");
     // 스튜디오 Alt+↓×3 (행 0 +849, 행 1 −849 보상) 을 셀별 델타로

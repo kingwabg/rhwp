@@ -10,13 +10,18 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in rd.flatten() {
         let p = e.path();
         if p.is_dir() {
             collect(&p, out);
         } else if matches!(
-            p.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()).as_deref(),
+            p.extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .as_deref(),
             Some("hwp") | Some("hwpx")
         ) {
             out.push(p);
@@ -31,7 +36,12 @@ fn fingerprint(path: &Path) -> String {
     };
     let doc = match HwpDocument::from_bytes(&bytes) {
         Ok(d) => d,
-        Err(e) => return format!("FAIL:parse:{}", format!("{e:?}").split_whitespace().next().unwrap_or("?")),
+        Err(e) => {
+            return format!(
+                "FAIL:parse:{}",
+                format!("{e:?}").split_whitespace().next().unwrap_or("?")
+            )
+        }
     };
     let mut h = DefaultHasher::new();
     let n = doc.page_count();

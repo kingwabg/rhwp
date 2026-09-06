@@ -67,8 +67,8 @@ fn has_initial_tac_shape_host(paragraphs: &[Paragraph]) -> bool {
 use super::super::composer::effective_text_for_metrics;
 use super::super::{hwpunit_to_px, ShapeStyle};
 use super::border_rendering::{
-    collect_cell_borders, create_border_line_nodes, render_cell_diagonal,
-    render_edge_borders, render_transparent_borders,
+    collect_cell_borders, create_border_line_nodes, render_cell_diagonal, render_edge_borders,
+    render_transparent_borders,
 };
 use super::text_measurement::{estimate_text_width, resolved_to_text_style};
 use super::utils::find_bin_data;
@@ -7337,13 +7337,16 @@ pub(crate) fn row_col_x_px(
         return vec![base; rc];
     }
     let target = if table.common.width > 0 {
-        hwpunit_to_px(table.common.width as i32, dpi) + cell_spacing_px * cc.saturating_sub(1) as f64
+        hwpunit_to_px(table.common.width as i32, dpi)
+            + cell_spacing_px * cc.saturating_sub(1) as f64
     } else {
         base.last().copied().unwrap_or(0.0)
     };
     (0..rc)
         .map(|r| {
-            let sizes: Vec<f64> = (0..cc).map(|c| cell_w[r * cc + c].unwrap_or(col_widths[c])).collect();
+            let sizes: Vec<f64> = (0..cc)
+                .map(|c| cell_w[r * cc + c].unwrap_or(col_widths[c]))
+                .collect();
             let x = px_lines(&sizes, cell_spacing_px);
             if (x[cc] - target).abs() > 0.5 {
                 base.clone()

@@ -100,7 +100,8 @@ impl LayoutEngine {
             let blocks = crate::model::table_grid::TableGrid::lines_only(table).row_blocks();
             (
                 (!start_cut.is_empty()).then(|| rowspan_block_range(&blocks, start_row)),
-                (!end_cut.is_empty()).then(|| rowspan_block_range(&blocks, end_row.saturating_sub(1))),
+                (!end_cut.is_empty())
+                    .then(|| rowspan_block_range(&blocks, end_row.saturating_sub(1))),
             )
         } else {
             (None, None)

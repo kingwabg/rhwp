@@ -12,21 +12,53 @@ fn main() {
     doc.create_blank_document().unwrap();
     let c: serde_json::Value = serde_json::from_str(&doc.create_table_ex(
         r#"{"sectionIdx":0,"paraIdx":0,"charOffset":0,"rowCount":3,"colCount":3,"treatAsChar":false}"#).unwrap()).unwrap();
-    let (pi, ci) = (c["paraIdx"].as_u64().unwrap() as usize, c["controlIdx"].as_u64().unwrap() as usize);
+    let (pi, ci) = (
+        c["paraIdx"].as_u64().unwrap() as usize,
+        c["controlIdx"].as_u64().unwrap() as usize,
+    );
     let show = |doc: &HwpDocument, tag: &str| {
-        let Control::Table(t) = &doc.document().sections[0].paragraphs[pi].controls[ci] else { panic!() };
-        println!("{tag}: heights={:?} eff={:?} widths={:?} common={}x{} inv={}",
-            t.cells.iter().map(|c| c.height).collect::<Vec<_>>(), t.effective_row_heights(),
-            t.get_column_widths(), t.common.width, t.common.height,
-            t.check_invariants().err().unwrap_or_else(|| "ok".into()));
+        let Control::Table(t) = &doc.document().sections[0].paragraphs[pi].controls[ci] else {
+            panic!()
+        };
+        println!(
+            "{tag}: heights={:?} eff={:?} widths={:?} common={}x{} inv={}",
+            t.cells.iter().map(|c| c.height).collect::<Vec<_>>(),
+            t.effective_row_heights(),
+            t.get_column_widths(),
+            t.common.width,
+            t.common.height,
+            t.check_invariants().err().unwrap_or_else(|| "ok".into())
+        );
     };
     show(&doc, "load");
-    doc.resize_table_cells(0, pi as u32, ci as u32, r#"[{"cellIdx":0,"heightDelta":216}]"#).unwrap();
+    doc.resize_table_cells(
+        0,
+        pi as u32,
+        ci as u32,
+        r#"[{"cellIdx":0,"heightDelta":216}]"#,
+    )
+    .unwrap();
     show(&doc, "(a) cell0 +216 (display 1284 → want 1500)");
-    doc.set_cell_properties(0, pi as u32, ci as u32, 3, r#"{"height":300}"#).unwrap();
+    doc.set_cell_properties(0, pi as u32, ci as u32, 3, r#"{"height":300}"#)
+        .unwrap();
     show(&doc, "(b0) cell3 stored 300 (displayed 1284)");
-    doc.resize_table_cells(0, pi as u32, ci as u32, r#"[{"cellIdx":3,"heightDelta":216}]"#).unwrap();
-    show(&doc, "(b) cell3 +216 (stored 300 → 516: 실높이 셀 비승격, 알려진 한계)");
-    doc.resize_table_cells(0, pi as u32, ci as u32, r#"[{"cellIdx":6,"widthDelta":1000}]"#).unwrap();
+    doc.resize_table_cells(
+        0,
+        pi as u32,
+        ci as u32,
+        r#"[{"cellIdx":3,"heightDelta":216}]"#,
+    )
+    .unwrap();
+    show(
+        &doc,
+        "(b) cell3 +216 (stored 300 → 516: 실높이 셀 비승격, 알려진 한계)",
+    );
+    doc.resize_table_cells(
+        0,
+        pi as u32,
+        ci as u32,
+        r#"[{"cellIdx":6,"widthDelta":1000}]"#,
+    )
+    .unwrap();
     show(&doc, "(c) cell6 width +1000");
 }

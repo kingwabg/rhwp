@@ -8,23 +8,48 @@ fn main() {
     let a: Vec<String> = std::env::args().collect();
     let bytes = std::fs::read(&a[1]).expect("read");
     let doc = HwpDocument::from_bytes(&bytes).expect("parse");
-    let (s, p, c): (usize, usize, usize) = (a[2].parse().unwrap(), a[3].parse().unwrap(), a[4].parse().unwrap());
+    let (s, p, c): (usize, usize, usize) = (
+        a[2].parse().unwrap(),
+        a[3].parse().unwrap(),
+        a[4].parse().unwrap(),
+    );
     let para = &doc.document().sections[s].paragraphs[p];
-    let Control::Table(t) = &para.controls[c] else { panic!("not a table") };
+    let Control::Table(t) = &para.controls[c] else {
+        panic!("not a table")
+    };
     println!(
         "rows={} cols={} cells={} common={}x{} row_sizes={:?}",
-        t.row_count, t.col_count, t.cells.len(), t.common.width, t.common.height, t.row_sizes
+        t.row_count,
+        t.col_count,
+        t.cells.len(),
+        t.common.width,
+        t.common.height,
+        t.row_sizes
     );
     println!("col_widths={:?}", t.get_column_widths());
     println!("row_heights={:?}", t.get_row_heights());
     for (i, cell) in t.cells.iter().enumerate() {
-        let txt: String = cell.paragraphs.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join("|");
+        let txt: String = cell
+            .paragraphs
+            .iter()
+            .map(|p| p.text.as_str())
+            .collect::<Vec<_>>()
+            .join("|");
         println!(
             "#{i:3} ({:2},{:2}) span {}x{} size {}x{} {:?}",
-            cell.row, cell.col, cell.row_span, cell.col_span, cell.width, cell.height,
+            cell.row,
+            cell.col,
+            cell.row_span,
+            cell.col_span,
+            cell.width,
+            cell.height,
             txt.chars().take(20).collect::<String>()
         );
     }
-    if let Err(e) = t.check_invariants() { println!("INVARIANT: {e}"); }
-    for l in t.lint_invariants() { println!("LINT: {l}"); }
+    if let Err(e) = t.check_invariants() {
+        println!("INVARIANT: {e}");
+    }
+    for l in t.lint_invariants() {
+        println!("LINT: {l}");
+    }
 }

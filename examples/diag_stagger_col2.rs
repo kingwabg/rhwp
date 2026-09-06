@@ -40,8 +40,21 @@ fn cells_vec(t: &rhwp::model::table::Table) -> String {
         .cells
         .iter()
         .map(|c| {
-            let text: String = c.paragraphs.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join("|");
-            serde_json::json!([c.row, c.col, c.row_span, c.col_span, c.width, c.height, text.chars().take(8).collect::<String>()])
+            let text: String = c
+                .paragraphs
+                .iter()
+                .map(|p| p.text.as_str())
+                .collect::<Vec<_>>()
+                .join("|");
+            serde_json::json!([
+                c.row,
+                c.col,
+                c.row_span,
+                c.col_span,
+                c.width,
+                c.height,
+                text.chars().take(8).collect::<String>()
+            ])
         })
         .collect();
     serde_json::Value::Array(v).to_string()
