@@ -31,7 +31,7 @@ fn table_of(doc: &HwpDocument) -> &rhwp::model::table::Table {
     panic!("표 없음");
 }
 
-/// [11-b 비교용] 셀 벡터 [(row,col,row_span,col_span,width,height,본문 앞 8자)] — 기본/--legacy 실행을 케이스별로 diff.
+/// [11-b 비교용] 셀 벡터 [(row,col,row_span,col_span,width,height,본문 앞 8자)] — 실행 결과를 케이스별로 diff.
 fn cells_vec(t: &rhwp::model::table::Table) -> String {
     let v: Vec<serde_json::Value> = t
         .cells
@@ -42,12 +42,6 @@ fn cells_vec(t: &rhwp::model::table::Table) -> String {
         })
         .collect();
     serde_json::Value::Array(v).to_string()
-}
-
-fn legacy_switch() {
-    if std::env::args().any(|a| a == "--legacy") {
-        rhwp::model::table::Table::set_stagger_legacy(true);
-    }
 }
 
 fn idx_at(doc: &HwpDocument, row: u16, col: u16) -> usize {
@@ -97,7 +91,6 @@ fn out(id: &str, label: &str, r: Result<String, rhwp::error::HwpError>, doc: &Hw
 }
 
 fn main() {
-    legacy_switch();
     // 1. 바깥 아래 테두리
     {
         let (mut d, pi, ci) = make();
