@@ -66,6 +66,9 @@ pub struct Table {
     pub raw_table_record_attr: u32,
     /// HWPTAG_TABLE 레코드의 border_fill_id 이후 추가 바이트 (라운드트립 보존용)
     pub raw_table_record_extra: Vec<u8>,
+    /// OWPML `hp:tbl/hp:label`(라벨 문서 인쇄 설정: topmargin·boxwidth·labelcols… ) 속성 목록 —
+    /// 렌더 무관, HWPX 왕복 보존용. 비어 있으면 요소 없음(HWP5 에는 대응 레코드 없음).
+    pub hwpx_label: Vec<(String, String)>,
     /// 구조/내용 변경 시 true → 재측정 필요 (Default: false)
     #[doc(hidden)]
     pub dirty: bool,

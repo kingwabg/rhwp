@@ -666,6 +666,7 @@ impl DocumentCore {
             raw_ctrl_data,
             raw_table_record_attr: 0x00000006, // 한컴 기본값 (bit1=셀분리금지, bit2=repeat_header)
             raw_table_record_extra: vec![0u8; 2],
+            hwpx_label: Vec::new(),
             dirty: true,
         };
         table.rebuild_grid();
@@ -1123,6 +1124,7 @@ impl DocumentCore {
             raw_ctrl_data,
             raw_table_record_attr: 0x04000006,
             raw_table_record_extra: vec![0u8; 2],
+            hwpx_label: Vec::new(),
             dirty: true,
         };
         table.rebuild_grid();

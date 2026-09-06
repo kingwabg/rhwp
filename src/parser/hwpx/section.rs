@@ -1762,6 +1762,19 @@ fn parse_table(
                             }
                         }
                     }
+                    // hp:label(라벨 인쇄 설정): 속성을 그대로 보존해 HWPX 왕복에 되살린다(렌더 무관).
+                    b"label" => {
+                        table.hwpx_label = ce
+                            .attributes()
+                            .flatten()
+                            .map(|a| {
+                                (
+                                    String::from_utf8_lossy(a.key.as_ref()).into_owned(),
+                                    String::from_utf8_lossy(&a.value).into_owned(),
+                                )
+                            })
+                            .collect();
+                    }
                     b"cellzone" => {
                         let mut zone = crate::model::table::TableZone::default();
                         for attr in ce.attributes().flatten() {

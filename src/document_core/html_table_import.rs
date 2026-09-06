@@ -785,6 +785,7 @@ impl DocumentCore {
             raw_ctrl_data,
             raw_table_record_attr: tbl_rec_attr,
             raw_table_record_extra: vec![0u8; 2], // 표준 추가 2바이트
+            hwpx_label: Vec::new(),
             dirty: true,
         };
         table.rebuild_grid();
