@@ -207,11 +207,11 @@ impl<'a> TableGrid<'a> {
     pub(crate) fn axes(t: &'a Table) -> Self {
         let mut g = Self::lines_only(t);
         g.col_widths = g.solve_axis(Axis::Cols, &[]);
-        // 행 축은 옛 모델 솔버 의미를 유지한다 — 렌더러가 행 1단계 입력으로 get_row_heights 를 써 왔으므로
-        // 여기서 산법을 바꾸면 화면이 바뀐다(8-b 실측: A2 위반 26표, hwpspec 표 −95px·387쪽 문서 385쪽).
-        // 두 산법은 모순 제약(병합 셀 ≠ 걸친 합)에서만 다르고 어느 쪽이 한컴과 같은지 오라클이 없다.
-        // 통일(렌더러식으로)은 그 26표 캡처 판정 뒤 별도 커밋으로.
-        g.row_heights_stored = g.solve_axis_legacy(Axis::Rows);
+        // [2026-09-06 통일] 행 축도 열과 같은 솔버. 8-b 에서는 옛 모델 솔버(셀 순서·total>known 만 대입)를
+        // 남겼는데, 두 산법이 갈리는 모순 제약 표(병합 셀 ≠ 걸친 합, 말뭉치 26표)를 한컴 실물과 대조한 결과
+        // 옛 산법이 틀렸다 — hwpspec.hwp 4.2.10.7 감추기 표에서 옛 산법은 병합 셀의 잔여 높이를 "구분|값|설명"
+        // 머리 행에 몰아 3cm 빈 띠를 만들었고(표 259.7px), 한컴은 한 줄 높이(통일안 165.1px)로 그린다.
+        g.row_heights_stored = g.solve_axis(Axis::Rows, &[]);
         for (axis, sizes, default) in [
             (Axis::Cols, &mut g.col_widths, 1800u32),
             (Axis::Rows, &mut g.row_heights_stored, 400u32),
@@ -368,46 +368,6 @@ impl<'a> TableGrid<'a> {
         (sizes, constraints)
     }
 
-    /// 옛 모델 솔버(`Table::solve_span_gaps`, 2026-08-04)의 HU판 — 셀 순서대로, (start,span) dedup 없이,
-    /// 미지수 1개이고 total > known 일 때만 대입, 진전 없을 때까지 반복. 미결정은 0.
-    /// 렌더러식 `solve_axis` 와는 모순 제약 표에서만 다르다(첫 등장 셀 vs max, 음수 잔여 skip vs 0 대입).
-    pub fn solve_axis_legacy(&self, axis: Axis) -> Vec<HwpUnit> {
-        let count = self.count(axis);
-        let mut sizes = vec![0u32; count];
-        for c in &self.table.cells {
-            let (start, span, total) = match axis {
-                Axis::Cols => (c.col as usize, c.col_span as usize, c.width),
-                Axis::Rows => (c.row as usize, c.row_span as usize, c.height),
-            };
-            if span == 1 && start < count {
-                sizes[start] = sizes[start].max(total);
-            }
-        }
-        loop {
-            let mut progressed = false;
-            for c in &self.table.cells {
-                let (start, span, total) = match axis {
-                    Axis::Cols => (c.col as usize, c.col_span as usize, c.width),
-                    Axis::Rows => (c.row as usize, c.row_span as usize, c.height),
-                };
-                if span < 2 || start + span > count {
-                    continue;
-                }
-                let mut unknown = (start..start + span).filter(|&i| sizes[i] == 0);
-                if let (Some(u), None) = (unknown.next(), unknown.next()) {
-                    let known: u32 = sizes[start..start + span].iter().sum();
-                    if total > known {
-                        sizes[u] = total - known;
-                        progressed = true;
-                    }
-                }
-            }
-            if !progressed {
-                break;
-            }
-        }
-        sizes
-    }
 
     /// build_row_col_x 경로 (a) 의 한 행: span1 셀 폭 타일링 + 스팬 내부선 비례 보간 + 잔여 규칙.
     fn tile_row(&self, r: usize, target: i64) -> Option<Vec<HwpUnit>> {
