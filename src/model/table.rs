@@ -1254,6 +1254,17 @@ impl Table {
             400
         };
 
+        // 새 행이 복사할 칸 모양 = 기준 행(row_idx)을 점유하되 삽입 지점을 걸치지 않는 셀의 (col, col_span, width).
+        // 걸치는 셀은 아래에서 row_span 확장. 한컴은 마지막 셀 Tab·줄 삽입 모두 기준 행의 칸 모양을 그대로
+        // 복사한다 — 격자 열마다 셀을 만들면 어긋낸 표(격자가 갈라진 표)에서 실오라기 칸이 생긴다 (2026-09-06).
+        let shape: Vec<(u16, u16, HwpUnit)> = self
+            .cells
+            .iter()
+            .filter(|c| c.row <= row_idx && row_idx < c.row + c.row_span)
+            .filter(|c| !(c.row < target_row && c.row + c.row_span > target_row))
+            .map(|c| (c.col, c.col_span, c.width))
+            .collect();
+
         // 병합 셀 확장 + 기존 셀 시프트 (커버리지 맵 생성용으로 먼저 처리)
         // 삽입 지점을 걸치는 병합 셀 추적
         let mut covered_cols = vec![false; self.col_count as usize];
@@ -1273,41 +1284,56 @@ impl Table {
             }
         }
 
-        // 새 셀 생성: 병합 셀에 의해 커버되지 않는 열에만
-        // 삽입 지점 아래 행의 셀을 템플릿으로 우선 사용 (헤더 행 대신 데이터 행)
-        // target_row 아래(+1)의 셀이 원래 데이터 행이므로 먼저 시도, 없으면 위(-1), 그래도 없으면 아무 셀
+        // 새 셀 목록: 기준 행 칸 모양 복사 → 그래도 비는 열(S1 위반 표)만 격자 열 단위로 채움
+        let mut new_cells: Vec<(u16, u16, HwpUnit)> = Vec::new();
+        for &(col, span, width) in &shape {
+            let end = (col + span).min(self.col_count);
+            if (col..end).any(|c| covered_cols[c as usize]) {
+                continue;
+            }
+            for c in col..end {
+                covered_cols[c as usize] = true;
+            }
+            new_cells.push((col, span, width));
+        }
         for c in 0..self.col_count {
             if !covered_cols[c as usize] {
-                let width = col_widths[c as usize];
-                let template = self
-                    .cells
-                    .iter()
-                    .find(|cell| cell.col == c && cell.col_span == 1 && cell.row == target_row + 1)
-                    .or_else(|| {
-                        if target_row > 0 {
-                            self.cells.iter().find(|cell| {
-                                cell.col == c && cell.col_span == 1 && cell.row == target_row - 1
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .or_else(|| {
-                        self.cells
-                            .iter()
-                            .find(|cell| cell.col == c && cell.col_span == 1)
-                    })
-                    // 열 c 가 전부 병합 셀이면 위 탐색이 모두 실패한다. 서식 0 짜리 셀을
-                    // 만드느니 표의 아무 셀이나 템플릿으로 쓴다 (주석의 "아무 셀").
-                    .or_else(|| self.cells.first());
-                let new_cell = if let Some(tpl) = template {
-                    Cell::new_from_template(c, target_row, width, new_cell_height, tpl)
-                } else {
-                    // 셀이 하나도 없는 표 — 상속원이 존재하지 않는 유일한 경우
-                    Cell::new_empty(c, target_row, width, new_cell_height, self.border_fill_id)
-                };
-                self.cells.push(new_cell);
+                new_cells.push((c, 1, col_widths[c as usize]));
             }
+        }
+
+        // 서식 템플릿: 삽입 지점 아래 행의 셀을 우선 사용 (헤더 행 대신 데이터 행)
+        // target_row 아래(+1)의 셀이 원래 데이터 행이므로 먼저 시도, 없으면 위(-1), 그래도 없으면 아무 셀
+        for (c, span, width) in new_cells {
+            let template = self
+                .cells
+                .iter()
+                .find(|cell| cell.col == c && cell.col_span == 1 && cell.row == target_row + 1)
+                .or_else(|| {
+                    if target_row > 0 {
+                        self.cells.iter().find(|cell| {
+                            cell.col == c && cell.col_span == 1 && cell.row == target_row - 1
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    self.cells
+                        .iter()
+                        .find(|cell| cell.col == c && cell.col_span == 1)
+                })
+                // 열 c 가 전부 병합 셀이면 위 탐색이 모두 실패한다. 서식 0 짜리 셀을
+                // 만드느니 표의 아무 셀이나 템플릿으로 쓴다 (주석의 "아무 셀").
+                .or_else(|| self.cells.first());
+            let mut new_cell = if let Some(tpl) = template {
+                Cell::new_from_template(c, target_row, width, new_cell_height, tpl)
+            } else {
+                // 셀이 하나도 없는 표 — 상속원이 존재하지 않는 유일한 경우
+                Cell::new_empty(c, target_row, width, new_cell_height, self.border_fill_id)
+            };
+            new_cell.col_span = span;
+            self.cells.push(new_cell);
         }
 
         // row_count 갱신 및 row_sizes 재계산 (행별 셀 개수)
