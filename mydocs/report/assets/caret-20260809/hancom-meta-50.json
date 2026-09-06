@@ -1,0 +1,117 @@
+[
+ {
+  "label": "50pt-1-empty",
+  "caretPx": null,
+  "cropOrigin": {
+   "x": 270,
+   "y": 280
+  },
+  "glyphPx": {
+   "x": 413,
+   "y": 375,
+   "w": 2,
+   "h": 68
+  }
+ },
+ {
+  "label": "50pt-2-typed",
+  "caretPx": {
+   "x": 613,
+   "y": 375,
+   "w": 2,
+   "h": 68,
+   "px": 136
+  },
+  "cropOrigin": {
+   "x": 463,
+   "y": 275
+  },
+  "glyphPx": {
+   "x": 463,
+   "y": 374,
+   "w": 148,
+   "h": 64
+  }
+ },
+ {
+  "label": "50pt-4-after-space",
+  "caretPx": null,
+  "cropOrigin": {
+   "x": 463,
+   "y": 275
+  },
+  "glyphPx": {
+   "x": 463,
+   "y": 374,
+   "w": 186,
+   "h": 69
+  }
+ },
+ {
+  "label": "50pt-5-more-typed",
+  "caretPx": null,
+  "cropOrigin": {
+   "x": 463,
+   "y": 275
+  },
+  "glyphPx": {
+   "x": 463,
+   "y": 374,
+   "w": 315,
+   "h": 64
+  }
+ },
+ {
+  "label": "50pt-6-arrow-left",
+  "caretPx": {
+   "x": 713,
+   "y": 375,
+   "w": 2,
+   "h": 68,
+   "px": 136
+  },
+  "cropOrigin": {
+   "x": 563,
+   "y": 275
+  },
+  "glyphPx": {
+   "x": 563,
+   "y": 374,
+   "w": 215,
+   "h": 64
+  }
+ },
+ {
+  "label": "50pt-7-home",
+  "caretPx": {
+   "x": 413,
+   "y": 375,
+   "w": 2,
+   "h": 68,
+   "px": 136
+  },
+  "cropOrigin": {
+   "x": 263,
+   "y": 275
+  },
+  "glyphPx": {
+   "x": 419,
+   "y": 374,
+   "w": 192,
+   "h": 64
+  }
+ },
+ {
+  "label": "50pt-8-drag-select",
+  "cropOrigin": {
+   "x": 263,
+   "y": 275
+  },
+  "selectionPx": {
+   "x": 414,
+   "y": 376,
+   "w": 199,
+   "h": 106
+  }
+ }
+]

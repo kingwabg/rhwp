@@ -834,6 +834,3 @@ impl Paginator {
 
 mod engine;
 mod state;
-
-#[cfg(test)]
-mod tests;

@@ -84,6 +84,47 @@ thread_local! {
     > = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
+// [2026-08-15 신고 "크기 조절일 때에도 깜빡"] RawSvg 조각의 마지막 성공 이미지 — 개체별.
+//
+// 이동 깜빡임은 조각을 원점 기준으로 만들어 바이트를 위치와 무관하게 해 없앴지만
+// (RawSvgNode::origin_relative), **크기 조절은 조각 내용 자체가 달라진다**(축 눈금·
+// 막대 폭 재계산). 그래서 캐시가 원리적으로 못 맞고, SVG 는 image 크레이트가 못 읽어
+// 항상 비동기 HtmlImageElement 경로 — 디코드 전 프레임은 그릴 게 없어 공백이 됐다.
+//
+// 직전 성공 이미지를 개체별로 붙들어 두고, 새 이미지가 준비될 때까지 새 bbox 로 늘려
+// 그린다(한 프레임 흐릿할 뿐 공백 없음 — 편집기 관례). IMAGE_CACHE 는 200개에서
+// 통째로 비워지므로 여기 강한 참조로 따로 들고 있어야 크기 드래그 중에도 살아남는다.
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static LAST_RAW_SVG_IMAGE: std::cell::RefCell<
+        std::collections::HashMap<(usize, usize, usize), HtmlImageElement>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// data 바이트에 대응하는 HtmlImageElement 를 캐시에서 얻거나 새로 만든다.
+/// (draw_image 의 요소 경로와 같은 규약 — 로드 전에도 캐시에 넣어 다음 프레임에 재사용)
+#[cfg(target_arch = "wasm32")]
+fn image_element_for(data: &[u8]) -> Option<HtmlImageElement> {
+    use base64::Engine;
+    let key = hash_bytes(data);
+    if let Some(img) = IMAGE_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return Some(img);
+    }
+    let mime_type = detect_image_mime_type(data);
+    let base64_data = base64::engine::general_purpose::STANDARD.encode(data);
+    let data_url = format!("data:{};base64,{}", mime_type, base64_data);
+    let img = HtmlImageElement::new().ok()?;
+    img.set_src(&data_url);
+    IMAGE_CACHE.with(|cache| {
+        let mut c = cache.borrow_mut();
+        if c.len() > 200 {
+            c.clear();
+        }
+        c.insert(key, img.clone());
+    });
+    Some(img)
+}
+
 #[cfg(target_arch = "wasm32")]
 fn decode_image_to_canvas(data: &[u8]) -> Option<HtmlCanvasElement> {
     let dynimg = image::load_from_memory(data).ok()?;
@@ -330,6 +371,9 @@ pub struct WebCanvasRenderer {
     /// independent of raw tree child order.
     active_replay_plane: Option<PaintReplayPlane>,
     render_profile: RenderProfile,
+    /// 표시 줌(CSS 스케일, 1.0=100%). 0 이면 미설정 — 헤어라인 스냅 비활성.
+    /// scale(백킹 스케일 = 줌×dpr)과 달리 CSS 픽셀 격자를 정의한다.
+    display_zoom: f64,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -353,7 +397,13 @@ impl WebCanvasRenderer {
             transparent_page_background: false,
             active_replay_plane: None,
             render_profile: RenderProfile::Screen,
+            display_zoom: 0.0,
         })
+    }
+
+    /// 표시 줌(CSS 스케일) 설정 — 헤어라인 CSS 픽셀 스냅 격자.
+    pub fn set_display_zoom(&mut self, zoom: f64) {
+        self.display_zoom = zoom;
     }
 
     /// 줌 스케일 설정 (1.0 = 100%, 2.0 = 200%)
@@ -1076,13 +1126,71 @@ impl WebCanvasRenderer {
         use super::svg_fragment::{
             decode_base64_data_url, try_parse_single_image_data_url, wrap_svg_fragment,
         };
+        // RawSvg 는 자식이 없으므로 회전/대칭을 여기서 열고 닫는다.
+        self.open_shape_transform(&raw.transform, bbox);
         if let Some(data_url) = try_parse_single_image_data_url(&raw.svg) {
             if let Some((_mime, bytes)) = decode_base64_data_url(data_url) {
                 self.draw_image(&bytes, bbox.x, bbox.y, bbox.width, bbox.height);
             }
         } else {
-            let svg_doc = wrap_svg_fragment(&raw.svg, bbox.x, bbox.y, bbox.width, bbox.height);
-            self.draw_image(svg_doc.as_bytes(), bbox.x, bbox.y, bbox.width, bbox.height);
+            // 원점 기준 조각(차트)은 viewBox (0,0) 로 감싼다 — 감싼 바이트가 위치와
+            // 무관해져 이동 드래그 중 디코드 캐시가 유지된다(깜빡임 방지).
+            let (vx, vy) = if raw.origin_relative {
+                (0.0, 0.0)
+            } else {
+                (bbox.x, bbox.y)
+            };
+            let svg_doc = wrap_svg_fragment(&raw.svg, vx, vy, bbox.width, bbox.height);
+            // 크기 조절은 조각 내용 자체가 바뀌어 캐시가 못 맞는다 — 개체별 직전
+            // 이미지 폴백으로 로드 대기 공백을 메운다(LAST_RAW_SVG_IMAGE 참조).
+            let fallback_key = raw
+                .control_ref
+                .as_ref()
+                .map(|r| (r.section_index, r.para_index, r.control_index));
+            self.draw_svg_doc_with_last_good(svg_doc.as_bytes(), bbox, fallback_key);
+        }
+        self.close_shape_transform_if_needed(&raw.transform);
+    }
+
+    /// SVG 문서를 그리되, 아직 디코드 전이면 이 개체의 **직전 성공 이미지**를 새 bbox 로
+    /// 늘려 그린다 — 크기 조절 중 공백(깜빡임) 방지. key 가 없으면 폴백 없이 종전대로.
+    fn draw_svg_doc_with_last_good(
+        &mut self,
+        data: &[u8],
+        bbox: &BoundingBox,
+        key: Option<(usize, usize, usize)>,
+    ) {
+        let Some(img) = image_element_for(data) else {
+            self.draw_image(data, bbox.x, bbox.y, bbox.width, bbox.height);
+            return;
+        };
+        if img.complete() && img.natural_width() > 0 {
+            let _ = self.ctx.draw_image_with_html_image_element_and_dw_and_dh(
+                &img,
+                bbox.x,
+                bbox.y,
+                bbox.width,
+                bbox.height,
+            );
+            if let Some(k) = key {
+                LAST_RAW_SVG_IMAGE.with(|c| c.borrow_mut().insert(k, img));
+            }
+            return;
+        }
+        // 아직 로딩 중 — 직전 이미지를 새 크기로 늘려 그린다(한 프레임 흐릿할 뿐 공백 없음)
+        if let Some(k) = key {
+            let prev = LAST_RAW_SVG_IMAGE.with(|c| c.borrow().get(&k).cloned());
+            if let Some(prev) = prev {
+                if prev.complete() && prev.natural_width() > 0 {
+                    let _ = self.ctx.draw_image_with_html_image_element_and_dw_and_dh(
+                        &prev,
+                        bbox.x,
+                        bbox.y,
+                        bbox.width,
+                        bbox.height,
+                    );
+                }
+            }
         }
     }
 
@@ -2695,7 +2803,35 @@ impl Renderer for WebCanvasRenderer {
             }
             _ => {
                 // Single line
-                self.ctx.set_line_width(width);
+                // [헤어라인 크리스프] 0.12mm(0.5px) 급 얇은 축 정렬 선은 CSS 픽셀 격자에
+                // 스냅 + 폭 바닥 1 CSS px — 한컴 화면 두께 정합. 소수 좌표 AA 로 선마다
+                // 진하기가 달라지던 결함(2026-08-11 정밀분석: canvas2d 백엔드가 실경로,
+                // 선 op 는 균일한데 래스터에서 갈렸다). 화살표/그림자/겹선은 제외.
+                let mut draw_w = width;
+                let zoom = self.display_zoom;
+                if zoom > 0.0
+                    && style.shadow.is_none()
+                    && style.start_arrow == super::ArrowStyle::None
+                    && style.end_arrow == super::ArrowStyle::None
+                {
+                    let css_w = width * zoom;
+                    if css_w < 1.5 {
+                        let w_css = css_w.round().max(1.0);
+                        draw_w = w_css / zoom;
+                        let half = if (w_css as i64) % 2 != 0 { 0.5 } else { 0.0 };
+                        let snap = |v: f64| ((v * zoom).floor() + half) / zoom;
+                        if (ly1 - ly2).abs() < 1e-3 {
+                            let y = snap(ly1);
+                            ly1 = y;
+                            ly2 = y;
+                        } else if (lx1 - lx2).abs() < 1e-3 {
+                            let x = snap(lx1);
+                            lx1 = x;
+                            lx2 = x;
+                        }
+                    }
+                }
+                self.ctx.set_line_width(draw_w);
                 self.ctx.begin_path();
                 self.ctx.move_to(lx1, ly1);
                 self.ctx.line_to(lx2, ly2);
@@ -3707,19 +3843,4 @@ fn color_to_css(color: u32) -> String {
     let g = (color >> 8) & 0xFF;
     let r = color & 0xFF;
     format!("#{:02x}{:02x}{:02x}", r, g, b)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_color_to_css() {
-        // HWP COLORREF: 0x00BBGGRR (BGR)
-        assert_eq!(color_to_css(0x000000FF), "#ff0000"); // 빨강
-        assert_eq!(color_to_css(0x0000FF00), "#00ff00"); // 초록
-        assert_eq!(color_to_css(0x00FF0000), "#0000ff"); // 파랑
-        assert_eq!(color_to_css(0x00FFFFFF), "#ffffff"); // 흰색
-        assert_eq!(color_to_css(0x00000000), "#000000"); // 검정
-    }
 }

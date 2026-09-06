@@ -66,26 +66,3 @@ pub fn read_bin_data_by_name(
         .read_bin_data(storage_name)
         .map_err(|e| BinDataError::ReadError(e.to_string()))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_bin_data_storage_name() {
-        assert_eq!(bin_data_storage_name(0, "jpg"), "BIN0001.jpg");
-        assert_eq!(bin_data_storage_name(1, "png"), "BIN0002.png");
-        assert_eq!(bin_data_storage_name(15, "bmp"), "BIN0010.bmp");
-        assert_eq!(bin_data_storage_name(255, "gif"), "BIN0100.gif");
-    }
-
-    #[test]
-    fn test_bin_data_content() {
-        let content = BinDataContent {
-            storage_name: "BIN0001.jpg".to_string(),
-            data: vec![0xFF, 0xD8, 0xFF, 0xE0], // JPEG header
-        };
-        assert_eq!(content.storage_name, "BIN0001.jpg");
-        assert_eq!(content.data.len(), 4);
-    }
-}

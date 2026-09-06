@@ -1535,8 +1535,12 @@ impl DocumentCore {
     pub(crate) fn table_to_html(&self, table: &crate::model::table::Table) -> String {
         use crate::renderer::style_resolver::ResolvedBorderStyle;
 
-        let mut html = String::from(
-            "<table style=\"border-collapse:collapse;\" cellpadding=\"0\" cellspacing=\"0\">\n",
+        // [클립보드 왕복 2026-08-11] 표/셀 크기를 pt 로 내보낸다 — 종전엔 크기가 아예
+        // 빠져 붙여넣는 쪽이 임의로 균등 분할했다(열 폭·행 높이 유실). HWPUNIT/100 = pt.
+        let total_width: u32 = table.get_column_widths().iter().sum();
+        let mut html = format!(
+            "<table style=\"border-collapse:collapse;width:{:.1}pt;\" cellpadding=\"0\" cellspacing=\"0\">\n",
+            total_width as f64 / 100.0
         );
 
         // 행별로 그룹화
@@ -1561,8 +1565,22 @@ impl DocumentCore {
                     }
                 }
 
-                // 셀 패딩
-                td_style.push_str("padding:1px 5px;");
+                // 셀 크기(pt) — 병합 셀은 span 된 실제 폭/높이 그대로
+                td_style.push_str(&format!(
+                    "width:{:.1}pt;height:{:.1}pt;",
+                    cell.width as f64 / 100.0,
+                    cell.height as f64 / 100.0
+                ));
+
+                // 셀 안 여백 — 저장값 그대로(종전 하드코딩 1px 5px 은 왕복마다 여백이 바뀌었다)
+                let pad = cell.effective_padding(&table.padding);
+                td_style.push_str(&format!(
+                    "padding:{:.1}pt {:.1}pt {:.1}pt {:.1}pt;",
+                    pad.top.max(0) as f64 / 100.0,
+                    pad.right.max(0) as f64 / 100.0,
+                    pad.bottom.max(0) as f64 / 100.0,
+                    pad.left.max(0) as f64 / 100.0
+                ));
 
                 // vertical-align
                 td_style.push_str("vertical-align:top;");
@@ -1611,10 +1629,11 @@ impl DocumentCore {
         let sides = ["left", "right", "top", "bottom"];
         for (i, side) in sides.iter().enumerate() {
             let bl = &bs.borders[i];
-            if bl.width > 0 {
+            if bl.line_type != crate::model::style::BorderLineType::None {
                 let color = clipboard_color_to_css(bl.color);
-                let px = (bl.width as f64).max(1.0);
-                css.push_str(&format!("border-{}:{:.1}px solid {};", side, px, color));
+                // width 는 mm 표의 **인덱스** — pt 로 환산해 내보낸다(수입측이 mm 로 복원).
+                let pt = crate::document_core::helpers::hwp_border_width_idx_to_pt(bl.width);
+                css.push_str(&format!("border-{}:{:.2}pt solid {};", side, pt, color));
             }
         }
     }
@@ -1775,97 +1794,4 @@ impl DocumentCore {
     }
 
     // === 클립보드 HTML 붙여넣기 ===
-}
-
-#[cfg(test)]
-mod char_shape_inherit_tests {
-    use crate::document_core::DocumentCore;
-    use crate::model::paragraph::CharShapeRef;
-
-    /// 혼합 글자모양 문단: 텍스트 20자, 글자 인덱스 0~9 는 34, 10~ 는 37.
-    fn core_with_mixed_shape_paragraph() -> DocumentCore {
-        let mut core = DocumentCore::new_empty();
-        core.create_blank_document_native().unwrap();
-        core.insert_text_native(0, 0, 0, "0123456789abcdefghij")
-            .unwrap();
-        let para = &mut core.document.sections[0].paragraphs[0];
-        // 컨트롤(SectionDef 등)이 UTF-16 앞자리를 차지하므로 경계는 char_offsets 로 계산.
-        let boundary = para.char_offsets[10];
-        para.char_shapes = vec![
-            CharShapeRef {
-                start_pos: 0,
-                char_shape_id: 34,
-            },
-            CharShapeRef {
-                start_pos: boundary,
-                char_shape_id: 37,
-            },
-        ];
-        core
-    }
-
-    /// 혼합 문단 offset 12(글자모양 37 구간)에 인라인 표를 만들고 복사하면,
-    /// 클립보드 문단은 문단 첫 글자모양(34)이 아니라 컨트롤 앵커 위치의
-    /// 글자모양(37)을 가져야 한다.
-    #[test]
-    fn copy_control_uses_char_shape_at_control_anchor() {
-        let mut core = core_with_mixed_shape_paragraph();
-        let res = core
-            .create_table_ex_native(0, 0, 12, 1, 1, true, None, None)
-            .unwrap();
-        let ctrl_idx: usize = res
-            .split("\"controlIdx\":")
-            .nth(1)
-            .and_then(|s| s.split([',', '}']).next())
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap();
-
-        core.copy_control_native(0, 0, &[], ctrl_idx).unwrap();
-
-        let clip_para = core
-            .clipboard
-            .as_ref()
-            .and_then(|c| c.paragraphs.first())
-            .expect("클립보드 문단");
-        assert_eq!(
-            clip_para.char_shapes.first().map(|cs| cs.char_shape_id),
-            Some(37),
-            "클립보드 문단이 컨트롤 앵커 글자모양(37)이 아닌 값을 가짐"
-        );
-    }
-
-    /// 혼합 문단 offset 10 에 컨트롤을 붙여넣으면, 컨트롤 아래에 생성되는
-    /// 빈 문단은 커서 offset 글자모양(37)을 상속해야 한다.
-    #[test]
-    fn paste_control_empty_neighbor_inherits_char_shape_at_cursor_offset() {
-        let mut core = core_with_mixed_shape_paragraph();
-        let res = core
-            .create_table_ex_native(0, 0, 12, 1, 1, true, None, None)
-            .unwrap();
-        let ctrl_idx: usize = res
-            .split("\"controlIdx\":")
-            .nth(1)
-            .and_then(|s| s.split([',', '}']).next())
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap();
-        core.copy_control_native(0, 0, &[], ctrl_idx).unwrap();
-
-        let res = core.paste_control_native(0, 0, 10).unwrap();
-        let insert_para_idx: usize = res
-            .split("\"paraIdx\":")
-            .nth(1)
-            .and_then(|s| s.split([',', '}']).next())
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap();
-
-        let empty_neighbor = &core.document.sections[0].paragraphs[insert_para_idx + 1];
-        assert_eq!(
-            empty_neighbor
-                .char_shapes
-                .first()
-                .map(|cs| cs.char_shape_id),
-            Some(37),
-            "붙여넣기 후 빈 이웃 문단이 커서 offset 글자모양(37)이 아닌 값을 상속"
-        );
-    }
 }

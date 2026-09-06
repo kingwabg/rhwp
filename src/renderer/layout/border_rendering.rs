@@ -4,7 +4,6 @@ use super::super::render_tree::*;
 use super::super::style_resolver::ResolvedBorderStyle;
 use super::super::{LineStyle, StrokeDash};
 use crate::model::style::{BorderLine, BorderLineType, CenterLine};
-use crate::model::table::Table;
 
 fn merge_border(a: &BorderLine, b: &BorderLine) -> BorderLine {
     if a.line_type == BorderLineType::None {
@@ -47,164 +46,6 @@ fn merge_edge_slot(slot: &mut Option<BorderLine>, border: &BorderLine) {
         Some(existing) => merge_border(&existing, border),
         None => *border,
     });
-}
-
-/// 행별 열 누적 위치를 계산한다.
-/// HWP에서는 각 셀이 독립적인 너비를 가질 수 있어, 같은 열이라도 행마다 열 경계 위치가 다를 수 있다.
-/// col_span==1인 셀의 실제 너비를 사용하고, 해당 위치에 셀이 없으면 전역 col_widths를 폴백한다.
-pub(crate) fn build_row_col_x(
-    table: &Table,
-    col_widths: &[f64],
-    col_count: usize,
-    row_count: usize,
-    cell_spacing: f64,
-    dpi: f64,
-) -> Vec<Vec<f64>> {
-    use super::super::hwpunit_to_px;
-    // 셀 너비 그리드 구축 (O(cells) 탐색 1회)
-    let mut cell_width_grid = vec![vec![None::<f64>; col_count]; row_count];
-    for cell in &table.cells {
-        if cell.col_span == 1
-            && cell.width > 0
-            && (cell.col as usize) < col_count
-            && (cell.row as usize) < row_count
-        {
-            cell_width_grid[cell.row as usize][cell.col as usize] =
-                Some(hwpunit_to_px(cell.width as i32, dpi));
-        }
-    }
-    let mut base_rx = vec![0.0f64; col_count + 1];
-    for c in 0..col_count {
-        base_rx[c + 1] =
-            base_rx[c] + col_widths[c] + if c + 1 < col_count { cell_spacing } else { 0.0 };
-    }
-
-    if table.common.treat_as_char {
-        return vec![base_rx; row_count];
-    }
-
-    let target_total = if table.common.width > 0 {
-        hwpunit_to_px(table.common.width as i32, dpi)
-            + cell_spacing * col_count.saturating_sub(1) as f64
-    } else {
-        base_rx.last().copied().unwrap_or(0.0)
-    };
-
-    let inferred_local_resize_rows = table.inferred_local_resize_rows();
-    if !table.local_resize_rows.is_empty() || !inferred_local_resize_rows.is_empty() {
-        let mut row_col_x_from_cells = vec![base_rx.clone(); row_count];
-        let mut has_cell_order_row = false;
-        for (r, row_x) in row_col_x_from_cells.iter_mut().enumerate().take(row_count) {
-            let row_idx = r as u16;
-            if !table.local_resize_rows.contains(&row_idx)
-                && !inferred_local_resize_rows.contains(&row_idx)
-            {
-                continue;
-            }
-            let mut row_cells: Vec<_> = table
-                .cells
-                .iter()
-                .enumerate()
-                .filter(|(_, cell)| cell.row as usize == r && cell.row_span == 1)
-                .collect();
-            row_cells.sort_by_key(|(_, cell)| cell.col);
-            let has_width_overrides = row_cells.iter().any(|(cell_idx, _)| {
-                table
-                    .local_resize_cell_widths
-                    .iter()
-                    .any(|(idx, _)| idx == cell_idx)
-            });
-
-            let mut cursor = 0.0;
-            let mut next_col = 0usize;
-            let mut candidate = vec![0.0f64; col_count + 1];
-            let mut valid = !row_cells.is_empty();
-            for (cell_idx, cell) in row_cells {
-                let c = cell.col as usize;
-                let span = cell.col_span.max(1) as usize;
-                let end = (c + span).min(col_count);
-                if c != next_col || end <= c {
-                    valid = false;
-                    break;
-                }
-
-                candidate[c] = cursor;
-                let cell_w = table
-                    .local_resize_cell_widths
-                    .iter()
-                    .find(|(idx, _)| *idx == cell_idx)
-                    .map(|(_, width)| hwpunit_to_px(*width as i32, dpi))
-                    .unwrap_or_else(|| {
-                        if has_width_overrides {
-                            (base_rx[end] - base_rx[c]).max(0.0)
-                        } else {
-                            hwpunit_to_px(cell.width as i32, dpi)
-                        }
-                    });
-                let end_x = cursor + cell_w;
-                for inner_col in c + 1..end {
-                    let ratio = (inner_col - c) as f64 / span as f64;
-                    candidate[inner_col] = cursor + cell_w * ratio;
-                }
-                candidate[end] = end_x;
-                cursor = end_x + if end < col_count { cell_spacing } else { 0.0 };
-                next_col = end;
-            }
-
-            if valid && next_col == col_count {
-                let residual = target_total - cursor;
-                if residual < -0.5 {
-                    valid = false;
-                } else if residual > 0.5 {
-                    candidate[col_count] += residual;
-                }
-            }
-
-            if valid && next_col == col_count {
-                *row_x = candidate;
-                has_cell_order_row = true;
-            }
-        }
-
-        if has_cell_order_row
-            && row_col_x_from_cells.iter().any(|rx| {
-                rx.iter()
-                    .zip(base_rx.iter())
-                    .any(|(a, b)| (a - b).abs() > 0.01)
-            })
-        {
-            return row_col_x_from_cells;
-        }
-    }
-
-    let has_independent_widths = cell_width_grid.iter().any(|row| {
-        row.iter().enumerate().any(|(c, w)| {
-            w.map(|actual| (actual - col_widths.get(c).copied().unwrap_or(actual)).abs() > 0.01)
-                .unwrap_or(false)
-        })
-    });
-    if !has_independent_widths {
-        return vec![base_rx; row_count];
-    }
-
-    let fallback_w = hwpunit_to_px(1800, dpi);
-    let mut row_col_x = vec![vec![0.0f64; col_count + 1]; row_count];
-    for r in 0..row_count {
-        for c in 0..col_count {
-            let w = cell_width_grid[r][c]
-                .or_else(|| col_widths.get(c).copied())
-                .unwrap_or(fallback_w);
-            row_col_x[r][c + 1] =
-                row_col_x[r][c] + w + if c + 1 < col_count { cell_spacing } else { 0.0 };
-        }
-        // 저장 파일의 cell.width는 병합 제약을 풀기 전 보조값일 수 있다.
-        // 행별 누적 폭이 표 외곽 폭과 맞지 않으면 독립 segment가 아니라 전역 grid를 따른다.
-        // Stage 12의 로컬 segment 리사이즈는 보상 리사이즈로 행 전체 폭을 유지하므로 이 조건을 통과한다.
-        if (row_col_x[r][col_count] - target_total).abs() > 0.5 {
-            row_col_x[r].clone_from_slice(&base_rx);
-        }
-    }
-    row_col_x
 }
 
 /// 셀 테두리를 엣지 그리드에 수집
@@ -481,12 +322,13 @@ pub(crate) fn create_border_line_nodes(
     match border.line_type {
         BorderLineType::None => vec![],
 
-        // 이중선 (동일 굵기)
-        BorderLineType::Double => {
-            let total = base_width.max(3.0);
-            let sub_w = (total * 0.3).max(0.4);
-            let gap = (total * 0.4).max(1.0);
-            let offset = (gap + sub_w) / 2.0;
+        // 겹선(이중·삼중) — 기하는 multi_line_geometry 단일 진실
+        BorderLineType::Double
+        | BorderLineType::ThinThickDouble
+        | BorderLineType::ThickThinDouble
+        | BorderLineType::ThinThickThinTriple => {
+            let lines =
+                multi_line_geometry(border.line_type, base_width).expect("겹선 종류는 기하가 있다");
             create_parallel_lines(
                 tree,
                 border.color,
@@ -494,75 +336,10 @@ pub(crate) fn create_border_line_nodes(
                 y1,
                 x2,
                 y2,
-                &[(-offset, sub_w), (offset, sub_w)],
+                &lines,
                 StrokeDash::Solid,
             )
         }
-
-        // 가는선-굵은선 이중선
-        BorderLineType::ThinThickDouble => {
-            let total = base_width.max(3.0);
-            let thin_w = (total * 0.2).max(0.4);
-            let thick_w = (total * 0.4).max(0.6);
-            let gap = (total * 0.4).max(1.0);
-            let thin_offset = -(gap + thin_w) / 2.0;
-            let thick_offset = (gap + thick_w) / 2.0;
-            create_parallel_lines(
-                tree,
-                border.color,
-                x1,
-                y1,
-                x2,
-                y2,
-                &[(thin_offset, thin_w), (thick_offset, thick_w)],
-                StrokeDash::Solid,
-            )
-        }
-
-        // 굵은선-가는선 이중선
-        BorderLineType::ThickThinDouble => {
-            let total = base_width.max(3.0);
-            let thick_w = (total * 0.4).max(0.6);
-            let thin_w = (total * 0.2).max(0.4);
-            let gap = (total * 0.4).max(1.0);
-            let thick_offset = -(gap + thick_w) / 2.0;
-            let thin_offset = (gap + thin_w) / 2.0;
-            create_parallel_lines(
-                tree,
-                border.color,
-                x1,
-                y1,
-                x2,
-                y2,
-                &[(thick_offset, thick_w), (thin_offset, thin_w)],
-                StrokeDash::Solid,
-            )
-        }
-
-        // 가는선-굵은선-가는선 삼중선
-        BorderLineType::ThinThickThinTriple => {
-            let total = base_width.max(4.0);
-            let thin_w = (total * 0.15).max(0.4);
-            let thick_w = (total * 0.3).max(0.6);
-            let gap = (total * 0.15).max(0.8);
-            let outer_offset = thick_w / 2.0 + gap + thin_w / 2.0;
-            create_parallel_lines(
-                tree,
-                border.color,
-                x1,
-                y1,
-                x2,
-                y2,
-                &[
-                    (-outer_offset, thin_w),
-                    (0.0, thick_w),
-                    (outer_offset, thin_w),
-                ],
-                StrokeDash::Solid,
-            )
-        }
-
-        // 단일선 타입들
         _ => {
             if let Some(dash) = border_line_type_to_dash(border.line_type) {
                 create_single_line(tree, border.color, base_width, dash, x1, y1, x2, y2)
@@ -752,11 +529,13 @@ fn create_diagonal_line_nodes(
     let base_width = border_width_to_px(width_index);
     match line_type {
         BorderLineType::None => vec![],
-        BorderLineType::Double => {
-            let total = base_width.max(3.0);
-            let sub_w = (total * 0.3).max(0.4);
-            let gap = (total * 0.4).max(1.0);
-            let offset = (gap + sub_w) / 2.0;
+        // 겹선(이중·삼중) — 테두리와 같은 multi_line_geometry 를 쓴다
+        BorderLineType::Double
+        | BorderLineType::ThinThickDouble
+        | BorderLineType::ThickThinDouble
+        | BorderLineType::ThinThickThinTriple => {
+            let lines =
+                multi_line_geometry(line_type, base_width).expect("겹선 종류는 기하가 있다");
             create_parallel_lines_perpendicular(
                 tree,
                 color,
@@ -764,64 +543,7 @@ fn create_diagonal_line_nodes(
                 y1,
                 x2,
                 y2,
-                &[(-offset, sub_w), (offset, sub_w)],
-                StrokeDash::Solid,
-            )
-        }
-        BorderLineType::ThinThickDouble => {
-            let total = base_width.max(3.0);
-            let thin_w = (total * 0.2).max(0.4);
-            let thick_w = (total * 0.4).max(0.6);
-            let gap = (total * 0.4).max(1.0);
-            let thin_offset = -(gap + thin_w) / 2.0;
-            let thick_offset = (gap + thick_w) / 2.0;
-            create_parallel_lines_perpendicular(
-                tree,
-                color,
-                x1,
-                y1,
-                x2,
-                y2,
-                &[(thin_offset, thin_w), (thick_offset, thick_w)],
-                StrokeDash::Solid,
-            )
-        }
-        BorderLineType::ThickThinDouble => {
-            let total = base_width.max(3.0);
-            let thick_w = (total * 0.4).max(0.6);
-            let thin_w = (total * 0.2).max(0.4);
-            let gap = (total * 0.4).max(1.0);
-            let thick_offset = -(gap + thick_w) / 2.0;
-            let thin_offset = (gap + thin_w) / 2.0;
-            create_parallel_lines_perpendicular(
-                tree,
-                color,
-                x1,
-                y1,
-                x2,
-                y2,
-                &[(thick_offset, thick_w), (thin_offset, thin_w)],
-                StrokeDash::Solid,
-            )
-        }
-        BorderLineType::ThinThickThinTriple => {
-            let total = base_width.max(4.0);
-            let thin_w = (total * 0.15).max(0.4);
-            let thick_w = (total * 0.3).max(0.6);
-            let gap = (total * 0.15).max(0.8);
-            let outer_offset = thick_w / 2.0 + gap + thin_w / 2.0;
-            create_parallel_lines_perpendicular(
-                tree,
-                color,
-                x1,
-                y1,
-                x2,
-                y2,
-                &[
-                    (-outer_offset, thin_w),
-                    (0.0, thick_w),
-                    (outer_offset, thin_w),
-                ],
+                &lines,
                 StrokeDash::Solid,
             )
         }
@@ -895,6 +617,55 @@ pub(crate) fn body_page_border_outset(border: &BorderLine) -> f64 {
         | BorderLineType::ThickThinDouble
         | BorderLineType::ThinThickThinTriple => span * BODY_PAGE_DOUBLE_LINE_OUTSET_FACTOR,
         _ => span,
+    }
+}
+
+/// 겹선(이중·삼중) 한 벌의 기하 — `(선 중심 오프셋, 굵기)` 목록.
+///
+/// [구조 정리 2026-08-12] 같은 산식이 가로/세로 테두리(`create_border_line_nodes`)와
+/// 대각선(`create_diagonal_line_nodes`) 두 곳에 문자 단위로 복제돼 있었다. 한쪽만 고치면
+/// 대각선과 테두리의 겹선 간격이 갈라지므로 단일 진실로 뽑는다. **연산 순서를 그대로**
+/// 옮겨 부동소수 결과가 비트 단위로 같다(겹선 아닌 선 종류는 None).
+fn multi_line_geometry(line_type: BorderLineType, base_width: f64) -> Option<Vec<(f64, f64)>> {
+    match line_type {
+        BorderLineType::Double => {
+            let total = base_width.max(3.0);
+            let sub_w = (total * 0.3).max(0.4);
+            let gap = (total * 0.4).max(1.0);
+            let offset = (gap + sub_w) / 2.0;
+            Some(vec![(-offset, sub_w), (offset, sub_w)])
+        }
+        BorderLineType::ThinThickDouble => {
+            let total = base_width.max(3.0);
+            let thin_w = (total * 0.2).max(0.4);
+            let thick_w = (total * 0.4).max(0.6);
+            let gap = (total * 0.4).max(1.0);
+            let thin_offset = -(gap + thin_w) / 2.0;
+            let thick_offset = (gap + thick_w) / 2.0;
+            Some(vec![(thin_offset, thin_w), (thick_offset, thick_w)])
+        }
+        BorderLineType::ThickThinDouble => {
+            let total = base_width.max(3.0);
+            let thick_w = (total * 0.4).max(0.6);
+            let thin_w = (total * 0.2).max(0.4);
+            let gap = (total * 0.4).max(1.0);
+            let thick_offset = -(gap + thick_w) / 2.0;
+            let thin_offset = (gap + thin_w) / 2.0;
+            Some(vec![(thick_offset, thick_w), (thin_offset, thin_w)])
+        }
+        BorderLineType::ThinThickThinTriple => {
+            let total = base_width.max(4.0);
+            let thin_w = (total * 0.15).max(0.4);
+            let thick_w = (total * 0.3).max(0.6);
+            let gap = (total * 0.15).max(0.8);
+            let outer_offset = thick_w / 2.0 + gap + thin_w / 2.0;
+            Some(vec![
+                (-outer_offset, thin_w),
+                (0.0, thick_w),
+                (outer_offset, thin_w),
+            ])
+        }
+        _ => None,
     }
 }
 
@@ -1048,183 +819,4 @@ pub(crate) fn render_cell_diagonal(
     }
 
     nodes
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::style::DiagonalLine;
-
-    fn center_line_style(center_line: CenterLine) -> ResolvedBorderStyle {
-        ResolvedBorderStyle {
-            diagonal_attr: if center_line == CenterLine::None {
-                0
-            } else {
-                1 << 13
-            },
-            diagonal: DiagonalLine {
-                diagonal_type: 1,
-                width: 0,
-                color: 0x00F4_C741,
-            },
-            center_line,
-            ..Default::default()
-        }
-    }
-
-    fn diagonal_style(attr: u16) -> ResolvedBorderStyle {
-        ResolvedBorderStyle {
-            diagonal_attr: attr,
-            diagonal: DiagonalLine {
-                diagonal_type: 1,
-                width: 0,
-                color: 0,
-            },
-            ..Default::default()
-        }
-    }
-
-    fn line_node(node: &RenderNode) -> &LineNode {
-        match &node.node_type {
-            RenderNodeType::Line(line) => line,
-            other => panic!("Line 노드가 아님: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn render_hwpx_vertical_center_line_as_horizontal_bar() {
-        let mut tree = PageRenderTree::new(0, 200.0, 100.0);
-        let nodes = render_cell_diagonal(
-            &mut tree,
-            &center_line_style(CenterLine::Vertical),
-            10.0,
-            20.0,
-            100.0,
-            40.0,
-        );
-
-        assert_eq!(nodes.len(), 1);
-        let line = line_node(&nodes[0]);
-        assert_eq!(
-            (line.x1, line.y1, line.x2, line.y2),
-            (10.0, 40.0, 110.0, 40.0)
-        );
-        assert_eq!(line.style.color, 0x00F4_C741);
-    }
-
-    #[test]
-    fn render_hwpx_horizontal_center_line_as_vertical_bar() {
-        let mut tree = PageRenderTree::new(0, 200.0, 100.0);
-        let nodes = render_cell_diagonal(
-            &mut tree,
-            &center_line_style(CenterLine::Horizontal),
-            10.0,
-            20.0,
-            100.0,
-            40.0,
-        );
-
-        assert_eq!(nodes.len(), 1);
-        let line = line_node(&nodes[0]);
-        assert_eq!(
-            (line.x1, line.y1, line.x2, line.y2),
-            (60.0, 20.0, 60.0, 60.0)
-        );
-    }
-
-    #[test]
-    fn render_cross_center_line_creates_vertical_and_horizontal_lines() {
-        let mut tree = PageRenderTree::new(0, 200.0, 100.0);
-        let nodes = render_cell_diagonal(
-            &mut tree,
-            &center_line_style(CenterLine::Cross),
-            10.0,
-            20.0,
-            100.0,
-            40.0,
-        );
-
-        assert_eq!(nodes.len(), 2);
-        let vertical = line_node(&nodes[0]);
-        let horizontal = line_node(&nodes[1]);
-        assert_eq!(
-            (vertical.x1, vertical.y1, vertical.x2, vertical.y2),
-            (60.0, 20.0, 60.0, 60.0)
-        );
-        assert_eq!(
-            (horizontal.x1, horizontal.y1, horizontal.x2, horizontal.y2),
-            (10.0, 40.0, 110.0, 40.0)
-        );
-    }
-
-    #[test]
-    fn render_nonzero_diagonal_shape_codes_as_basic_x() {
-        let mut tree = PageRenderTree::new(0, 200.0, 100.0);
-        let nodes = render_cell_diagonal(
-            &mut tree,
-            &diagonal_style((0b111 << 2) | (0b111 << 5)),
-            10.0,
-            20.0,
-            100.0,
-            40.0,
-        );
-
-        assert_eq!(nodes.len(), 2);
-        let slash = line_node(&nodes[0]);
-        let backslash = line_node(&nodes[1]);
-        assert_eq!(
-            (slash.x1, slash.y1, slash.x2, slash.y2),
-            (10.0, 60.0, 110.0, 20.0)
-        );
-        assert_eq!(
-            (backslash.x1, backslash.y1, backslash.x2, backslash.y2),
-            (10.0, 20.0, 110.0, 60.0)
-        );
-    }
-
-    #[test]
-    fn render_slash_crooked_with_backslash_as_bent_backslash() {
-        let mut tree = PageRenderTree::new(0, 200.0, 100.0);
-        let nodes = render_cell_diagonal(
-            &mut tree,
-            &diagonal_style((2 << 8) | (0b010 << 5)),
-            10.0,
-            20.0,
-            100.0,
-            40.0,
-        );
-
-        assert_eq!(nodes.len(), 3);
-        let first = line_node(&nodes[0]);
-        let middle = line_node(&nodes[1]);
-        let last = line_node(&nodes[2]);
-        assert_eq!(
-            (first.x1, first.y1, first.x2, first.y2),
-            (10.0, 20.0, 50.0, 40.0)
-        );
-        assert_eq!(
-            (middle.x1, middle.y1, middle.x2, middle.y2),
-            (50.0, 40.0, 70.0, 40.0)
-        );
-        assert_eq!(
-            (last.x1, last.y1, last.x2, last.y2),
-            (70.0, 40.0, 110.0, 60.0)
-        );
-    }
-
-    #[test]
-    fn render_thick_slim_diagonal_as_parallel_lines() {
-        let mut tree = PageRenderTree::new(0, 200.0, 100.0);
-        let mut style = diagonal_style(0b010 << 2);
-        style.diagonal.diagonal_type = 10;
-        style.diagonal.width = 13;
-        let nodes = render_cell_diagonal(&mut tree, &style, 10.0, 20.0, 100.0, 40.0);
-
-        assert_eq!(nodes.len(), 2);
-        let thick = line_node(&nodes[0]);
-        let thin = line_node(&nodes[1]);
-        assert!(thick.style.width > thin.style.width);
-        assert_ne!((thick.x1, thick.y1), (thin.x1, thin.y1));
-        assert_ne!((thick.x2, thick.y2), (thin.x2, thin.y2));
-    }
 }

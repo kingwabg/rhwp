@@ -327,7 +327,6 @@ export class InputHandler {
     singleCellTarget?: { cellIdx: number; side: 'start' | 'end' } | null;
     shiftResize?: boolean;
   } | null = null;
-  private tableLocalResizeSegments = new Set<string>();
 
   // 표 이동 드래그 상태
   private isMoveDragging = false;
@@ -708,7 +707,6 @@ export class InputHandler {
 
   /** 문서 스냅샷 전환 뒤 표 resize 런타임 캐시를 비운다. */
   private clearTableResizeRuntimeCache(): void {
-    this.tableLocalResizeSegments.clear();
     this.cachedTableRef = null;
     this.cachedCellBboxes = null;
     this.tableResizeRenderer?.clear();

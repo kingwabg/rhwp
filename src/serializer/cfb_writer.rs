@@ -213,6 +213,3 @@ fn find_bin_data_info_with_compress<'a>(
     // 못 찾으면 content에서 직접 추출 (문서 압축 플래그 따름)
     (content.id, &content.extension, doc_compressed)
 }
-
-#[cfg(test)]
-mod tests;

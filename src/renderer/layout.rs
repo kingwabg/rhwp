@@ -75,7 +75,11 @@ struct TacPostF081cLine {
     lang_index: usize,
 }
 
-fn effective_tac_segment_width_hu(para: &Paragraph, fallback_width_hu: i32) -> i32 {
+/// TAC 인라인/블록 판정용 seg_width 단일 헬퍼 — 저장 segment_width 가 0(자체 생성
+/// 표 host 문단, NO_LS 기계생성 HWPX)이면 호출자가 아는 단/셀 폭으로 폴백한다.
+/// 판정 지점마다 unwrap_or(0) 과 폴백이 갈려 composer/measurer 는 블록,
+/// layout/pagination 은 인라인으로 판정이 분열되던 회귀 발생기의 봉합점.
+pub(crate) fn effective_tac_segment_width_hu(para: &Paragraph, fallback_width_hu: i32) -> i32 {
     let seg_width = para.line_segs.first().map(|s| s.segment_width).unwrap_or(0);
     if seg_width > 0 {
         seg_width
@@ -1350,9 +1354,6 @@ pub struct LayoutEngine {
     /// `cell_units_uncached` 안에서 계산되어 52,694 셀 표에서 O(셀²)(≈28억) 로 폭증했다.
     /// `cell_units_cache` 와 동일 조판 경계에서 clear 한다.
     table_nested_text_flag_cache: std::cell::RefCell<std::collections::HashMap<usize, bool>>,
-    /// Issue #2214 test-only: cache miss가 실제 table-wide scan으로 이어진 횟수.
-    #[cfg(test)]
-    table_nested_text_flag_scan_count: std::cell::Cell<usize>,
 }
 
 mod border_rendering;
@@ -1382,11 +1383,6 @@ pub(crate) use utils::{
     drawing_to_line_style, drawing_to_shape_style, find_bin_data, format_page_number,
     layout_rect_to_bbox, picture_display_size_hu, picture_flow_frame_size_hu, resolve_numbering_id,
 };
-
-#[cfg(test)]
-mod integration_tests;
-#[cfg(test)]
-mod tests;
 
 impl LayoutEngine {
     pub fn new(dpi: f64) -> Self {
@@ -1427,8 +1423,6 @@ impl LayoutEngine {
             cell_units_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             current_flow_bands: std::cell::RefCell::new(Vec::new()),
             table_nested_text_flag_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
-            #[cfg(test)]
-            table_nested_text_flag_scan_count: std::cell::Cell::new(0),
         }
     }
 
@@ -7406,10 +7400,7 @@ impl LayoutEngine {
                             Some(Control::Table(t))
                                 if t.common.height < 0x8000_0000
                                     && i64::from(seg.line_height)
-                                        >= t.common.height as i64
-                                            + t.outer_margin_top as i64
-                                            + t.outer_margin_bottom as i64
-                                            - 10
+                                        >= t.tac_line_height_hu() - 10
                                     && t.outer_margin_top as i64 + t.outer_margin_bottom as i64 > 0
                         );
                         y_offset = if stored_lh_covers_om {

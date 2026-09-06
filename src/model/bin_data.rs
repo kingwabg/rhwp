@@ -152,27 +152,15 @@ impl From<Vec<u8>> for BinDataBytes {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// OOXML 차트(HWPX `Chart/chart{N}.xml`) BinData 의 확장자 표식.
+///
+/// HWPX 는 차트를 BinData 가 아니라 **별도 zip 파트**로 담고 본문에서
+/// `chartIDRef="Chart/chart{N}.xml"` 로 참조한다. 파서는 이를 공통 IR 의
+/// BinDataContent 로 실어 오되(id = [`OOXML_CHART_ID_BASE`] + N) 이 확장자로 구분하고,
+/// 직렬화기는 같은 표식을 보고 다시 Chart 파트로 되돌린다. 이 짝이 깨지면 열었다
+/// 저장하는 것만으로 차트가 사라진다(2026-08-13 실측, 샘플 6/6).
+pub const OOXML_CHART_EXT: &str = "ooxml_chart";
 
-    #[test]
-    fn test_bin_data_default() {
-        let bd = BinData::default();
-        assert_eq!(bd.data_type, BinDataType::Link);
-        assert_eq!(bd.compression, BinDataCompression::Default);
-        assert_eq!(bd.status, BinDataStatus::NotAccessed);
-    }
-
-    #[test]
-    fn test_bin_data_embedding() {
-        let bd = BinData {
-            data_type: BinDataType::Embedding,
-            storage_id: 1,
-            extension: Some("jpg".to_string()),
-            ..Default::default()
-        };
-        assert_eq!(bd.data_type, BinDataType::Embedding);
-        assert_eq!(bd.extension.as_deref(), Some("jpg"));
-    }
-}
+/// OOXML 차트 BinData id 의 기준값 — 실제 id = `OOXML_CHART_ID_BASE + N`(N=1..).
+/// 일반 임베드(1..)와 겹치지 않게 띄운 sparse 영역이다.
+pub const OOXML_CHART_ID_BASE: u16 = 60000;

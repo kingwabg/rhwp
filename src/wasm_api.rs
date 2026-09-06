@@ -97,8 +97,27 @@ fn normalize_canvas_scale(
 }
 
 #[cfg(target_arch = "wasm32")]
-fn scaled_canvas_extent(page_extent: f64, scale: f64) -> u32 {
-    (page_extent * scale).max(1.0).min(MAX_CANVAS_DIMENSION) as u32
+fn scaled_canvas_extent(page_extent: f64, scale: f64, display_zoom: f64) -> u32 {
+    // 짝수 스냅의 목적은 "CSS 표시 크기(백킹/dpr)가 정수"다(홀수 백킹 1587 →
+    // CSS 793.5px 소수 → 중앙정렬과 결합해 전면 서브픽셀 블러). dpr≈1이면
+    // 백킹==CSS 라 정수 절단으로 충분한데, 무조건 짝수 스냅이 1px 를 더 깎아
+    // canvaskit 경로(CSS 우선 스냅과 등가)와 페이지 폭이 1px 갈렸고, 레디니스
+    // 게이트가 크기 불일치(792 vs 793)로 전멸했다(2026-08-15부터 CI Render Diff
+    // 적색). dpr≥1.5(레티나)에서만 짝수 스냅한다. 표시 줌 미설정(0)이면 종전
+    // 동작(항상 짝수) 유지.
+    let e = (page_extent * scale).max(2.0).min(MAX_CANVAS_DIMENSION) as u32;
+    // 표시 줌 미설정(0) = 초기 렌더·비스튜디오 호출 — scale 자체를 dpr 로 간주한다
+    // (줌≈1 가정: headless 초기 scale=1 → 스냅 불필요, 레티나 scale=2 → 스냅 유지).
+    let dpr = if display_zoom > 0.0 {
+        scale / display_zoom
+    } else {
+        scale
+    };
+    if dpr >= 1.5 {
+        e & !1
+    } else {
+        e
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -176,6 +195,8 @@ fn collect_external_image_references(document: &Document) -> Vec<ExternalImageRe
 #[wasm_bindgen]
 pub struct HwpDocument {
     core: DocumentCore,
+    /// 표시 줌(CSS 스케일, 1.0=100%) — canvas2d 헤어라인 스냅 격자. 0=미설정.
+    display_zoom: std::cell::Cell<f64>,
 }
 
 impl std::ops::Deref for HwpDocument {
@@ -196,7 +217,10 @@ impl std::ops::DerefMut for HwpDocument {
 /// 테스트 및 CLI 환경에서 `HwpDocument::from_bytes()` 등을 직접 호출할 수 있도록 한다.
 impl HwpDocument {
     pub fn from_bytes(data: &[u8]) -> Result<HwpDocument, HwpError> {
-        DocumentCore::from_bytes(data).map(|core| HwpDocument { core })
+        DocumentCore::from_bytes(data).map(|core| HwpDocument {
+            core,
+            display_zoom: std::cell::Cell::new(0.0),
+        })
     }
 
     pub fn find_initial_column_def(paragraphs: &[Paragraph]) -> ColumnDef {
@@ -342,8 +366,18 @@ impl HwpDocument {
     #[wasm_bindgen(constructor)]
     pub fn new(data: &[u8]) -> Result<HwpDocument, JsValue> {
         DocumentCore::from_bytes(data)
-            .map(|core| HwpDocument { core })
+            .map(|core| HwpDocument {
+                core,
+                display_zoom: std::cell::Cell::new(0.0),
+            })
             .map_err(|e| e.into())
+    }
+
+    /// 표시 줌(CSS 스케일) 설정 — canvas2d 렌더의 헤어라인 CSS 픽셀 스냅 격자.
+    /// 스튜디오가 줌 변경 시 호출한다. 0 이면 스냅 비활성(기존 동작).
+    #[wasm_bindgen(js_name = setDisplayZoom)]
+    pub fn set_display_zoom(&self, zoom: f64) {
+        self.display_zoom.set(zoom.max(0.0));
     }
 
     /// 빈 문서 생성 (테스트/미리보기용)
@@ -361,7 +395,10 @@ impl HwpDocument {
         let mut document = Document::default();
         document.sections.push(section);
         core.set_document(document);
-        HwpDocument { core }
+        HwpDocument {
+            core,
+            display_zoom: std::cell::Cell::new(0.0),
+        }
     }
 
     /// 내장 템플릿에서 빈 문서를 생성한다.
@@ -491,13 +528,22 @@ impl HwpDocument {
             .map_err(JsValue::from_str)?;
 
         // 캔버스 크기 = 페이지 크기 × scale
-        canvas.set_width(scaled_canvas_extent(tree.page_width, scale));
-        canvas.set_height(scaled_canvas_extent(tree.page_height, scale));
+        canvas.set_width(scaled_canvas_extent(
+            tree.page_width,
+            scale,
+            self.display_zoom.get(),
+        ));
+        canvas.set_height(scaled_canvas_extent(
+            tree.page_height,
+            scale,
+            self.display_zoom.get(),
+        ));
 
         let mut renderer = WebCanvasRenderer::new(canvas)?;
         renderer.show_paragraph_marks = self.show_paragraph_marks;
         renderer.show_control_codes = self.show_control_codes;
         renderer.set_scale(scale);
+        renderer.set_display_zoom(self.display_zoom.get());
         renderer.render_page(&tree).map_err(JsValue::from)?;
         Ok(())
     }
@@ -567,13 +613,22 @@ impl HwpDocument {
         let scale = normalize_canvas_scale(tree.page_width, tree.page_height, scale)
             .map_err(JsValue::from_str)?;
 
-        canvas.set_width(scaled_canvas_extent(tree.page_width, scale));
-        canvas.set_height(scaled_canvas_extent(tree.page_height, scale));
+        canvas.set_width(scaled_canvas_extent(
+            tree.page_width,
+            scale,
+            self.display_zoom.get(),
+        ));
+        canvas.set_height(scaled_canvas_extent(
+            tree.page_height,
+            scale,
+            self.display_zoom.get(),
+        ));
 
         let mut renderer = WebCanvasRenderer::new(canvas)?;
         renderer.show_paragraph_marks = self.show_paragraph_marks;
         renderer.show_control_codes = self.show_control_codes;
         renderer.set_scale(scale);
+        renderer.set_display_zoom(self.display_zoom.get());
         renderer.set_layer_filter(filter);
         renderer.render_page(&tree).map_err(JsValue::from)?;
         Ok(())
@@ -598,13 +653,22 @@ impl HwpDocument {
             .map_err(JsValue::from_str)?;
 
         // 캔버스 크기 = 페이지 크기 × scale
-        canvas.set_width(scaled_canvas_extent(tree.root.bbox.width, scale));
-        canvas.set_height(scaled_canvas_extent(tree.root.bbox.height, scale));
+        canvas.set_width(scaled_canvas_extent(
+            tree.root.bbox.width,
+            scale,
+            self.display_zoom.get(),
+        ));
+        canvas.set_height(scaled_canvas_extent(
+            tree.root.bbox.height,
+            scale,
+            self.display_zoom.get(),
+        ));
 
         let mut renderer = WebCanvasRenderer::new(canvas)?;
         renderer.show_paragraph_marks = self.show_paragraph_marks;
         renderer.show_control_codes = self.show_control_codes;
         renderer.set_scale(scale);
+        renderer.set_display_zoom(self.display_zoom.get());
         renderer.render_tree(&tree);
         Ok(())
     }
@@ -852,9 +916,7 @@ impl HwpDocument {
         // 걸려 컨트롤이 오른쪽으로 밀린다(표 뒤 타이핑이 표 앞에 꽂히는 실측 결함).
         // 후행 컨트롤(text_offset==text_len)은 insert_text_at 의 하이브리드 확장
         // 오프셋(text_len + 소비한 후행 컨트롤 수)이 "컨트롤 뒤"를 정확히 표현한다.
-        // ponytail: 텍스트 중간의 컨트롤 뒤 삽입은 여전히 컨트롤 앞으로 감 —
-        // 스트림 좌표 삽입 코어 도입 시 승격.
-        let insert_offset = if at_ctrl {
+        let (insert_offset, after_controls) = if at_ctrl {
             let text_len = self.document.sections[sec].paragraphs[pi]
                 .text
                 .chars()
@@ -864,14 +926,20 @@ impl HwpDocument {
                     &self.document.sections[sec].paragraphs[pi],
                     text_len,
                 );
-                text_len + (logical_offset as usize).saturating_sub(logical_at_text_end)
+                (
+                    text_len + (logical_offset as usize).saturating_sub(logical_at_text_end),
+                    false,
+                )
             } else {
-                text_offset
+                // 텍스트 중간의 컨트롤 뒤 삽입 — 컨트롤 앞 규약을 우회해 뒤에 넣는다.
+                // 종전엔 컨트롤 앞으로 들어가 표 뒤 IME preedit 이 표 앞에 꽂혔고,
+                // 이어지는 논리 삭제와 어긋나 자모가 잔류했다("ㄴ니", 2026-08-10).
+                (text_offset, true)
             }
         } else {
-            text_offset
+            (text_offset, false)
         };
-        let result = self.insert_text_native(sec, pi, insert_offset, text)?;
+        let result = self.insert_text_native_side(sec, pi, insert_offset, text, after_controls)?;
         // 삽입 후 논리적 오프셋 반환
         let new_text_offset = text_offset + text.chars().count();
         let new_logical = crate::document_core::helpers::text_to_logical_offset(
@@ -985,6 +1053,35 @@ impl HwpDocument {
         Ok(-1)
     }
 
+    /// 컨트롤 인덱스 → 논리 오프셋 (getInlineControlIndexAtLogical 의 역방향).
+    /// 인라인(글자취급) 컨트롤이 아니거나 범위 밖이면 -1. studio 가 표 개체
+    /// 선택 해제 시 캐럿을 "개체 바로 뒤"(반환값+1)에 놓는 용도 — 종전에는
+    /// 다음 문단으로 점프해 TAC 표의 문단 내 위치가 유실됐다.
+    #[wasm_bindgen(js_name = getControlLogicalPosition)]
+    pub fn get_control_logical_position(
+        &self,
+        section_idx: u32,
+        para_idx: u32,
+        control_idx: u32,
+    ) -> Result<i32, JsValue> {
+        let sec = section_idx as usize;
+        let pi = para_idx as usize;
+        if sec >= self.document.sections.len() || pi >= self.document.sections[sec].paragraphs.len()
+        {
+            return Err(JsValue::from_str("인덱스 범위 초과"));
+        }
+        let para = &self.document.sections[sec].paragraphs[pi];
+        let ci = control_idx as usize;
+        let Some(ctrl) = para.controls.get(ci) else {
+            return Ok(-1);
+        };
+        if !crate::document_core::helpers::is_logical_inline_control(ctrl) {
+            return Ok(-1);
+        }
+        let positions = crate::document_core::helpers::find_logical_control_positions(para);
+        Ok(positions.get(ci).map(|&p| p as i32).unwrap_or(-1))
+    }
+
     /// 문단에서 텍스트를 삭제한다.
     ///
     /// 삭제 후 구역을 재구성하고 재페이지네이션한다.
@@ -1004,6 +1101,33 @@ impl HwpDocument {
             count as usize,
         )
         .map_err(|e| e.into())
+    }
+
+    /// 논리적 오프셋(인라인 컨트롤 = 1칸)으로 텍스트를 삭제한다 — insertTextLogical 의 짝.
+    ///
+    /// 커서 좌표(논리)를 그대로 넘기는 호출자용. TAC 표가 있는 문단에서 deleteText(텍스트
+    /// 좌표)에 논리 오프셋을 넘기면 삭제가 한 칸 밀려 IME 조합 preedit 교체가 실패했다
+    /// (2026-08-10 실측: 표 뒤 "니" 조합 시 첫 자모 "ㄴ"이 잔류해 "ㄴ니"로 이중 입력).
+    #[wasm_bindgen(js_name = deleteTextLogical)]
+    pub fn delete_text_logical(
+        &mut self,
+        section_idx: u32,
+        para_idx: u32,
+        logical_offset: u32,
+        count: u32,
+    ) -> Result<String, JsValue> {
+        let sec = section_idx as usize;
+        let pi = para_idx as usize;
+        if sec >= self.document.sections.len() || pi >= self.document.sections[sec].paragraphs.len()
+        {
+            return Err(JsValue::from_str("인덱스 범위 초과"));
+        }
+        let (text_offset, _at_ctrl) = crate::document_core::helpers::logical_to_text_offset(
+            &self.document.sections[sec].paragraphs[pi],
+            logical_offset as usize,
+        );
+        self.delete_text_native(sec, pi, text_offset, count as usize)
+            .map_err(|e| e.into())
     }
 
     /// 표 셀 내부 문단에 텍스트를 삽입한다.
@@ -1521,6 +1645,111 @@ impl HwpDocument {
             end_col as u16,
         )
         .map_err(|e| e.into())
+    }
+
+    /// 셀별 행 축소 한계(HU) 배열 — 콘텐츠 글줄 범위 + 상하 패딩. 인덱스 = cellIdx.
+    ///
+    /// 한컴 규약: 행은 글줄 밑으로 줄어들지 않는다. 스튜디오 리사이즈(드래그·키보드)의
+    /// 축소 클램프가 이 값을 최소로 써야 셀 격자와 표 상자(측정 바닥)가 어긋나지 않는다
+    /// (2026-08-12 유령 공간 수리).
+    /// [격자 12-b 2026-09-03] 표 논리 격자 — 스튜디오가 px bbox 에서 격자를 역추정하지 않게 한다.
+    /// {colX, rowColX, rowYStored, rowYEff, colLines[{owners,crossers}], rowLines, cellGrid, rowCount, colCount, minCell}
+    /// 좌표는 HU 누적선(len = 개수+1). owners = 그 선을 경계로 쓰는 셀의 앵커 줄(x선이면 행, y선이면 열).
+    #[wasm_bindgen(js_name = getTableGrid)]
+    pub fn get_table_grid(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+    ) -> Result<String, JsValue> {
+        let para = self
+            .document
+            .sections
+            .get(section_idx as usize)
+            .ok_or_else(|| JsValue::from_str("구역 인덱스 범위 초과"))?
+            .paragraphs
+            .get(parent_para_idx as usize)
+            .ok_or_else(|| JsValue::from_str("문단 인덱스 범위 초과"))?;
+        let table = match para.controls.get(control_idx as usize) {
+            Some(crate::model::control::Control::Table(t)) => t,
+            _ => return Err(JsValue::from_str("지정된 컨트롤이 표가 아닙니다")),
+        };
+        let g = table.grid();
+        let lines = |v: &[crate::model::table_grid::LineInfo]| -> Vec<serde_json::Value> {
+            v.iter()
+                .map(|l| serde_json::json!({ "owners": l.owners, "crossers": l.crossers }))
+                .collect()
+        };
+        let out = serde_json::json!({
+            "colX": g.col_x,
+            "rowColX": g.row_col_x,
+            "rowYStored": g.row_y_stored,
+            "rowYEff": g.row_y_eff,
+            "colLines": lines(&g.col_lines),
+            "rowLines": lines(&g.row_lines),
+            "cellGrid": table.cell_grid,
+            "rowCount": g.row_count,
+            "colCount": g.col_count,
+            "minCell": crate::model::table::Table::MIN_CELL,
+        });
+        Ok(out.to_string())
+    }
+
+    /// [격자 12-b 2026-09-03] 셀의 오른쪽("right")/아래("bottom") 경계 이동 허용 델타 창(HU) {min,max} —
+    /// 엔진 바닥(MIN_CELL·조각 행 바닥)이 정본. 스튜디오의 선클램프 상수(1276/1417/200·75px)를 대체한다.
+    #[wasm_bindgen(js_name = getBoundaryMoveRange)]
+    pub fn get_boundary_move_range(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+        cell_idx: u32,
+        edge: &str,
+    ) -> Result<String, JsValue> {
+        let edge_right = match edge {
+            "right" => true,
+            "bottom" => false,
+            _ => return Err(JsValue::from_str("edge 는 right 또는 bottom")),
+        };
+        let para = self
+            .document
+            .sections
+            .get(section_idx as usize)
+            .ok_or_else(|| JsValue::from_str("구역 인덱스 범위 초과"))?
+            .paragraphs
+            .get(parent_para_idx as usize)
+            .ok_or_else(|| JsValue::from_str("문단 인덱스 범위 초과"))?;
+        let table = match para.controls.get(control_idx as usize) {
+            Some(crate::model::control::Control::Table(t)) => t,
+            _ => return Err(JsValue::from_str("지정된 컨트롤이 표가 아닙니다")),
+        };
+        let (min, max) = table
+            .boundary_move_range(cell_idx as usize, edge_right)
+            .map_err(|e| JsValue::from_str(&e))?;
+        Ok(serde_json::json!({ "min": min, "max": max }).to_string())
+    }
+
+    #[wasm_bindgen(js_name = getCellContentFloors)]
+    pub fn get_cell_content_floors(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+    ) -> Result<String, JsValue> {
+        let para = self
+            .document
+            .sections
+            .get(section_idx as usize)
+            .ok_or_else(|| JsValue::from_str("구역 인덱스 범위 초과"))?
+            .paragraphs
+            .get(parent_para_idx as usize)
+            .ok_or_else(|| JsValue::from_str("문단 인덱스 범위 초과"))?;
+        let table = match para.controls.get(control_idx as usize) {
+            Some(crate::model::control::Control::Table(t)) => t,
+            _ => return Err(JsValue::from_str("지정된 컨트롤이 표가 아닙니다")),
+        };
+        serde_json::to_string(&table.cell_content_floors_hu())
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// [경계선 재설계 2026-08-04] 한 칸 경계 어긋내기(Shift+드래그) — 격자 재구성 정본.
@@ -3091,6 +3320,64 @@ impl HwpDocument {
     /// 클릭/드래그한 위치 (paper-relative HU). studio 의 finishImagePlacement 가 drag 좌표를
     /// 변환하여 전달. JS 측에서 `undefined` 전달 시 (또는 음수) wasm 이 셀 좌상단을 default 사용
     /// — 기존 동작 호환.
+    /// 차트를 삽입한다. spec 은 JSON:
+    /// `{"type":"column|bar|line|pie","title":"…","categories":[…],"series":[{"name":"…","values":[…]}]}`
+    /// width/height 는 HWPUNIT(0 이면 기본 크기).
+    #[wasm_bindgen(js_name = insertChart)]
+    pub fn insert_chart(
+        &mut self,
+        section_idx: u32,
+        para_idx: u32,
+        spec_json: &str,
+        width: u32,
+        height: u32,
+        treat_as_char: bool,
+    ) -> Result<String, JsValue> {
+        self.insert_chart_native(
+            section_idx as usize,
+            para_idx as usize,
+            spec_json,
+            width,
+            height,
+            treat_as_char,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 차트 개체의 데이터를 JSON 으로 읽는다(편집 대화상자 채우기).
+    #[wasm_bindgen(js_name = getChartSpec)]
+    pub fn get_chart_spec(
+        &self,
+        section_idx: u32,
+        para_idx: u32,
+        control_idx: u32,
+    ) -> Result<String, JsValue> {
+        self.get_chart_spec_native(
+            section_idx as usize,
+            para_idx as usize,
+            control_idx as usize,
+        )
+        .map_err(|e| e.into())
+    }
+
+    /// 차트 개체의 데이터를 교체한다 — 기존 XML 을 패치하므로 서식이 보존된다.
+    #[wasm_bindgen(js_name = setChartSpec)]
+    pub fn set_chart_spec(
+        &mut self,
+        section_idx: u32,
+        para_idx: u32,
+        control_idx: u32,
+        spec_json: &str,
+    ) -> Result<String, JsValue> {
+        self.set_chart_spec_native(
+            section_idx as usize,
+            para_idx as usize,
+            control_idx as usize,
+            spec_json,
+        )
+        .map_err(|e| e.into())
+    }
+
     #[wasm_bindgen(js_name = insertPicture)]
     #[allow(clippy::too_many_arguments)]
     pub fn insert_picture(
@@ -7664,6 +7951,3 @@ fn base64_encode(data: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(data)
 }
-
-#[cfg(test)]
-mod tests;

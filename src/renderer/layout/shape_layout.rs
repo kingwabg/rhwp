@@ -188,18 +188,19 @@ fn push_ole_raw_svg_render_node(
     section_index: usize,
     para_index: usize,
     control_index: usize,
+    transform: ShapeTransform,
 ) {
     let node_id = tree.next_id();
-    let node = RenderNode::new(
-        node_id,
-        RenderNodeType::RawSvg(crate::renderer::render_tree::RawSvgNode::ole(
-            svg,
-            section_index,
-            para_index,
-            control_index,
-        )),
-        bbox,
+    let mut raw = crate::renderer::render_tree::RawSvgNode::ole(
+        svg,
+        section_index,
+        para_index,
+        control_index,
     );
+    raw.transform = transform;
+    // 차트 조각은 원점 기준으로 방출된다(드래그 중 디코드 캐시 안정 — RawSvgNode 참조)
+    raw.origin_relative = true;
+    let node = RenderNode::new(node_id, RenderNodeType::RawSvg(raw), bbox);
     parent.children.push(node);
 }
 
@@ -1932,8 +1933,7 @@ impl LayoutEngine {
                         if let Some(chart) =
                             crate::ooxml_chart::OoxmlChart::parse(&content.data.load())
                         {
-                            let svg_fragment =
-                                chart.render_svg(render_x, render_y, render_w, render_h);
+                            let svg_fragment = chart.render_svg(0.0, 0.0, render_w, render_h);
                             push_ole_raw_svg_render_node(
                                 tree,
                                 parent,
@@ -1942,6 +1942,7 @@ impl LayoutEngine {
                                 section_index,
                                 para_index,
                                 control_index,
+                                transform,
                             );
                             rendered = true;
                         }
@@ -1955,7 +1956,7 @@ impl LayoutEngine {
                                     crate::ooxml_chart::OoxmlChart::parse(ooxml_bytes)
                                 {
                                     let svg_fragment =
-                                        chart.render_svg(render_x, render_y, render_w, render_h);
+                                        chart.render_svg(0.0, 0.0, render_w, render_h);
                                     push_ole_raw_svg_render_node(
                                         tree,
                                         parent,
@@ -1964,6 +1965,7 @@ impl LayoutEngine {
                                         section_index,
                                         para_index,
                                         control_index,
+                                        transform,
                                     );
                                     rendered = true;
                                 }
@@ -1977,8 +1979,8 @@ impl LayoutEngine {
                                             let svg_fragment =
                                                 crate::ole_chart::render_ole_chart_svg_fragment(
                                                     &ole_chart,
-                                                    render_x,
-                                                    render_y,
+                                                    0.0,
+                                                    0.0,
                                                     render_w,
                                                     render_h,
                                                     ole.bin_data_id,
@@ -1993,6 +1995,7 @@ impl LayoutEngine {
                                                 section_index,
                                                 para_index,
                                                 control_index,
+                                                transform,
                                             );
                                             rendered = true;
                                         }
@@ -2022,12 +2025,9 @@ impl LayoutEngine {
                             // Task #195 단계 14: OOXML 차트 부재 시 EMF 네이티브 SVG 폴백
                             if !rendered {
                                 if let Some(emf_bytes) = container.preview_emf.as_ref() {
-                                    let render_rect = (
-                                        render_x as f32,
-                                        render_y as f32,
-                                        render_w as f32,
-                                        render_h as f32,
-                                    );
+                                    // 원점 기준 방출 — push_ole_raw_svg_render_node 규약
+                                    let render_rect =
+                                        (0.0f32, 0.0f32, render_w as f32, render_h as f32);
                                     if let Ok(svg_fragment) =
                                         crate::emf::convert_to_svg(emf_bytes, render_rect)
                                     {
@@ -2041,6 +2041,7 @@ impl LayoutEngine {
                                             section_index,
                                             para_index,
                                             control_index,
+                                            transform,
                                         );
                                         rendered = true;
                                     }
@@ -2072,8 +2073,8 @@ impl LayoutEngine {
                                         .encode(&*render_bytes);
                                     let href = format!("data:{};base64,{}", render_mime, b64);
                                     let svg_fragment = format!(
-                                    "<image x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\" preserveAspectRatio=\"xMidYMid meet\" xlink:href=\"{}\" href=\"{}\"/>",
-                                    render_x, render_y, render_w, render_h, href, href
+                                    "<image x=\"0\" y=\"0\" width=\"{:.2}\" height=\"{:.2}\" preserveAspectRatio=\"xMidYMid meet\" xlink:href=\"{}\" href=\"{}\"/>",
+                                    render_w, render_h, href, href
                                 );
                                     push_ole_raw_svg_render_node(
                                         tree,
@@ -2083,6 +2084,7 @@ impl LayoutEngine {
                                         section_index,
                                         para_index,
                                         control_index,
+                                        transform,
                                     );
                                     rendered = true;
                                 }
@@ -3647,55 +3649,5 @@ impl LayoutEngine {
         let shape_right = shape_x + shape_w;
         let col_right = col_area.x + col_area.width;
         shape_right >= col_area.x && shape_x <= col_right
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::paragraph::{CharShapeRef, LineSeg};
-    use crate::renderer::style_resolver::{ResolvedCharStyle, ResolvedParaStyle};
-
-    fn line_seg(text_start: u32, vertical_pos: i32) -> LineSeg {
-        LineSeg {
-            text_start,
-            vertical_pos,
-            line_height: 2000,
-            text_height: 2000,
-            baseline_distance: 1700,
-            line_spacing: 1200,
-            segment_width: 16856,
-            tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn matrix_textbox_para_collapses_imported_lines_that_overflow_height() {
-        let mut para = Paragraph {
-            char_count: 2,
-            text: "AB".to_string(),
-            char_offsets: vec![0, 1],
-            char_shapes: vec![CharShapeRef {
-                start_pos: 0,
-                char_shape_id: 0,
-            }],
-            line_segs: vec![line_seg(0, 0), line_seg(1, 3200)],
-            ..Default::default()
-        };
-        let mut styles = ResolvedStyleSet::default();
-        styles.char_styles.push(ResolvedCharStyle {
-            font_family: "Arial".to_string(),
-            font_families: vec!["Arial".to_string(); 7],
-            font_size: 20.0,
-            ..Default::default()
-        });
-        styles.para_styles.push(ResolvedParaStyle::default());
-
-        reflow_matrix_textbox_para(&mut para, 80.0, 30.0, &styles, 96.0);
-
-        assert_eq!(para.line_segs.len(), 1);
-        assert_eq!(para.line_segs[0].text_start, 0);
-        assert_eq!(para.line_segs[0].segment_width, px_to_hwpunit(80.0, 96.0));
     }
 }

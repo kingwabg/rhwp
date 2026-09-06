@@ -1086,13 +1086,23 @@ impl DocumentCore {
                     // 이 run이 목표 줄의 char_range에 겹치는지 확인
                     if cs < char_range.1 && cs + cc > char_range.0 {
                         let positions = compute_char_positions(&tr.text, &tr.style);
+                        // 캐럿 y/h 는 run bbox(줄 상자)가 아니라 글자 규격 — TAC 개체가
+                        // 있는 줄에서 run bbox 는 개체 높이라, Home/줄이동 캐럿이 줄
+                        // 전체로 커졌다(한컴 실측: 캐럿은 항상 글자 높이).
+                        let font_size = tr.style.font_size;
+                        let ascent = font_size * 0.8;
+                        let (caret_y, caret_h) = if tr.baseline > 0.0 && font_size > 0.0 {
+                            (node.bbox.y + tr.baseline - ascent, font_size)
+                        } else {
+                            (node.bbox.y, node.bbox.height)
+                        };
                         result.push(RunMatch {
                             char_start: cs,
                             char_count: cc,
                             char_positions: positions,
                             bbox_x: node.bbox.x,
-                            bbox_y: node.bbox.y,
-                            bbox_h: node.bbox.height,
+                            bbox_y: caret_y,
+                            bbox_h: caret_h,
                         });
                     }
                 }
@@ -1618,8 +1628,16 @@ impl DocumentCore {
             if sec + 1 < self.document.sections.len() {
                 return self.enter_paragraph(sec + 1, 0, delta, preferred_x);
             }
-            // 문서 끝 — 표 마지막 위치 유지
-            Ok((sec, 0, 0, None))
+            // 문서 끝 — 호스트 문단의 끝(TAC 표 뒤)으로. 종전엔 (para 0, offset 0)
+            // 하드코딩이라 마지막 셀에서 ↓ 가 커서를 **표 앞**으로 보냈고, 이어 친
+            // 글자/공백이 표 앞에 삽입돼 표가 밀렸다(2026-08-10 사용자 신고:
+            // "표에 딱 붙은 캐럿이 표를 이동시켜"). 한컴은 아래 탈출 = 표 뒤다.
+            let end = section
+                .paragraphs
+                .get(ppi)
+                .map(crate::document_core::helpers::logical_paragraph_length)
+                .unwrap_or(0);
+            Ok((sec, ppi, end, None))
         } else {
             // 위로 나가면 **표 앞 문단**으로. 종전엔 표를 품은 문단(ppi) 자신에 섰는데,
             // 아래로 나갈 때는 ppi+1 로 건너뛰므로 위아래가 짝이 안 맞았다 — 표 위에서
@@ -2060,17 +2078,76 @@ impl DocumentCore {
             para: usize,
             line_idx: usize,
         ) -> Option<(f64, f64)> {
+            find_body_line_bbox(node, sec, para, line_idx).map(|(x, _, w, _)| (x, x + w))
+        }
+
+        /// 줄 상자 전체 bbox (x, y, w, h) — 선택 밴드의 세로 규격 산출용.
+        fn find_body_line_bbox(
+            node: &RenderNode,
+            sec: usize,
+            para: usize,
+            line_idx: usize,
+        ) -> Option<(f64, f64, f64, f64)> {
             if let RenderNodeType::TextLine(ref line) = node.node_type {
                 if line.section_index == Some(sec)
                     && line.para_index == Some(para)
                     && line.line_index.map(|idx| idx as usize) == Some(line_idx)
                 {
-                    return Some((node.bbox.x, node.bbox.x + node.bbox.width));
+                    return Some((node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height));
                 }
+            }
+            // 표 안(셀)의 TextLine 은 본문 줄 상자가 아니다 — 내려가지 않는다.
+            // (셀 TextLine 이 같은 sec/para/line_index 로 잡혀 선택 밴드가 셀 글자
+            //  높이로 쪼그라들던 결함, 2026-08-10 실측)
+            if matches!(node.node_type, RenderNodeType::Table(_)) {
+                return None;
             }
             node.children
                 .iter()
-                .find_map(|child| find_body_line_box(child, sec, para, line_idx))
+                .find_map(|child| find_body_line_bbox(child, sec, para, line_idx))
+        }
+
+        /// TextLine 노드가 없는 문단(인라인 표 전용 레이아웃 등)의 줄 상자를,
+        /// 기준 세로 구간과 겹치는 본문 노드들의 **합집합**으로 구한다.
+        fn union_line_span(
+            node: &RenderNode,
+            sec: usize,
+            para: usize,
+            ref_y0: f64,
+            ref_y1: f64,
+            acc: &mut Option<(f64, f64)>,
+        ) {
+            let (nsec, npara, in_cell) = match &node.node_type {
+                RenderNodeType::TextRun(t) => {
+                    (t.section_index, t.para_index, t.cell_context.is_some())
+                }
+                RenderNodeType::Table(t) => (t.section_index, t.para_index, false),
+                RenderNodeType::Image(i) => {
+                    (i.section_index, i.para_index, i.cell_context.is_some())
+                }
+                RenderNodeType::Equation(e) => {
+                    (e.section_index, e.para_index, e.cell_index.is_some())
+                }
+                _ => (None, None, false),
+            };
+            if !in_cell && nsec == Some(sec) && npara == Some(para) {
+                let y0 = node.bbox.y;
+                let y1 = node.bbox.y + node.bbox.height;
+                // 기준 줄과 세로로 겹치는 노드만 (여러 줄 문단에서 다른 줄 배제)
+                if y1 > ref_y0 && y0 < ref_y1 {
+                    *acc = Some(match *acc {
+                        Some((a0, a1)) => (a0.min(y0), a1.max(y1)),
+                        None => (y0, y1),
+                    });
+                }
+            }
+            // 표 안(셀)은 본문 줄 상자가 아니므로 내려가지 않는다
+            if matches!(node.node_type, RenderNodeType::Table(_)) {
+                return;
+            }
+            for child in &node.children {
+                union_line_span(child, sec, para, ref_y0, ref_y1, acc);
+            }
         }
 
         // ── 페이지별 렌더 트리 캐시 (최대 2페이지) ──
@@ -2275,12 +2352,57 @@ impl DocumentCore {
                         (0.0, 0.0)
                     };
 
+                    // 선택 밴드 세로 규격 — 한컴 실측(2026-08-10): 밴드는 **줄간격을 포함한
+                    // 줄 전체 높이**를 덮는다(12pt/160% 기준 잉크의 1.66배). 종전엔 캐럿
+                    // 규격(글자 상자, 1.06배)을 그대로 써서 밴드가 글자에만 딱 붙었고,
+                    // 줄 사이 간격이 선택에서 빠져 보였다(사용자 신고).
+                    //   밴드 top = 줄 상자 top, 높이 = 줄 상자 높이 + 줄간격(아래로).
+                    let band = if cell_ctx.is_none() {
+                        let extra = para
+                            .line_segs
+                            .get(line_idx)
+                            .map(|ls| {
+                                crate::renderer::hwpunit_to_px(ls.line_spacing as i32, self.dpi)
+                            })
+                            .unwrap_or(0.0)
+                            .max(0.0);
+                        // ① TextLine 노드가 있으면 그 상자, ② 없으면(인라인 표 문단 등)
+                        //    같은 줄 본문 노드들의 합집합으로 줄 상자를 구한다.
+                        let line_box = tree_cache
+                            .iter()
+                            .find_map(|(_, tree)| {
+                                find_body_line_bbox(&tree.root, section_idx, para_idx, line_idx)
+                            })
+                            .map(|(_, ly, _, lh_box)| (ly, lh_box))
+                            .or_else(|| {
+                                let mut acc = None;
+                                for (_, tree) in tree_cache.iter() {
+                                    union_line_span(
+                                        &tree.root,
+                                        section_idx,
+                                        para_idx,
+                                        lh.y,
+                                        lh.y + lh.h,
+                                        &mut acc,
+                                    );
+                                    if acc.is_some() {
+                                        break;
+                                    }
+                                }
+                                acc.map(|(y0, y1)| (y0, y1 - y0))
+                            });
+                        line_box.map(|(ly, lh_box)| (ly, lh_box + extra))
+                    } else {
+                        None
+                    };
+                    let (band_y, band_h) = band.unwrap_or((lh.y, lh.h));
+
                     // y/h는 항상 left_hit 기준 (right_hit가 다음 줄에 있을 수 있음)
                     let (page_idx, rect_x, rect_y, rect_h) = if !partial_start && cell_ctx.is_none()
                     {
-                        (lh.page, area_left, lh.y, lh.h)
+                        (lh.page, area_left, band_y, band_h)
                     } else {
-                        (lh.page, lh.x, lh.y, lh.h)
+                        (lh.page, lh.x, band_y, band_h)
                     };
 
                     let width = if selection_continues {

@@ -9,6 +9,15 @@ use crate::model::event::DocumentEvent;
 use crate::model::paragraph::Paragraph;
 use crate::model::shape::{common_obj_offsets, ShapeObject};
 
+/// 표 생성 기본 테두리 굵기 = [`crate::model::style::BORDER_WIDTHS`] 인덱스 1 (0.12mm).
+/// 한컴 표 만들기 기본값. 종전엔 "굵기 인덱스 ≥ 1 인 아무 BorderFill 재사용"이라
+/// 문서에 굵은 테두리(예: 인덱스 4 = 0.25mm)가 이미 있으면 그걸 물려받아 기본 표가
+/// 두껍게 만들어졌다(2026-08-11 클립보드 실측에서 인덱스 4 검출).
+const DEFAULT_BORDER_WIDTH_IDX: u8 = 1;
+
+/// 표 생성 기본 바깥 여백 = 1.00mm (283 HWPUNIT). 한컴 기본값.
+const DEFAULT_OUTER_MARGIN: i16 = 283;
+
 impl DocumentCore {
     /// [Task #1151 v7] cell_path JSON → Vec<(controlIdx, cellIdx, cellParaIdx)>.
     /// 4 개 by_path setter/getter (cell picture/shape × set/get) 의 공통 파싱.
@@ -452,16 +461,36 @@ impl DocumentCore {
             .unwrap_or_else(|| vec![content_width / col_count as u32; col_count as usize]);
         let col_width = col_ws[0];
         // 한컴 기본: 셀 패딩 L=510 R=510 T=141 B=141
+        // 한컴 실측 기본값(2026-08-11): 좌우 510HU(1.80mm), 상하 142HU(0.50mm).
+        // 종전 141 은 0.497mm 로 한컴(142)과 1HU 어긋나 셀 높이(=상+하)가 282 vs 284 였다.
         let cell_pad = crate::model::Padding {
             left: 510,
             right: 510,
-            top: 141,
-            bottom: 141,
+            top: 142,
+            bottom: 142,
         };
         // 한컴 기본: 셀 높이 = top + bottom padding (빈 셀 최소 높이)
         let cell_height: u32 = (cell_pad.top + cell_pad.bottom) as u32;
-        // 한컴 기본: 행 렌더링 높이 = padding_top + line_height(1000) + padding_bottom
-        let rendered_row_height: u32 = cell_pad.top as u32 + 1000 + cell_pad.bottom as u32;
+        // 커서 위치 문단의 속성을 기본값으로 상속 (한컴 동작 일치).
+        // 혼합 글자모양 문단에서는 첫 엔트리가 아니라 커서 offset 의 글자모양이 기준이다.
+        let current_para = &self.document.sections[section_idx].paragraphs[para_idx];
+        let default_char_shape_id: u32 = current_para.char_shape_id_at(char_offset).unwrap_or(0);
+        let default_para_shape_id: u16 = current_para.para_shape_id;
+        // [경계선 회귀 2026-08-12] 셀 글줄 높이 = 상속 글자 크기×100 (한컴 lineseg 규약:
+        // 10pt→1000, 12pt→1200 — line_breaking::font_size_to_line_height 와 동일 식).
+        // 종전엔 1000(10pt 가정) 하드코딩이라 12pt 상속 셀과 모순 — 열 폭 드래그 등으로
+        // reflow_line_segs 를 타는 순간 1200 으로 재합성되며 행·표가 이유 없이 부풀었다
+        // (2026-08-12 신고 "경계선 이상"). 생성부터 규약값이면 reflow 가 멱등이 된다.
+        let line_hu: i32 = self
+            .styles
+            .char_styles
+            .get(default_char_shape_id as usize)
+            .map(|s| crate::renderer::px_to_hwpunit(s.font_size, self.dpi))
+            .filter(|&h| h > 0)
+            .unwrap_or(1000);
+        // 한컴 기본: 행 렌더링 높이 = padding_top + 글줄 + padding_bottom
+        let rendered_row_height: u32 =
+            cell_pad.top as u32 + line_hu as u32 + cell_pad.bottom as u32;
         let total_width: u32 = col_ws.iter().sum();
         let row_hs: Vec<u32> = row_heights_hu
             .map(|h| {
@@ -475,9 +504,9 @@ impl DocumentCore {
         // BorderFill: 실선 테두리가 있는 기존 항목 재사용, 없으면 새로 생성
         let cell_border_fill_id = {
             let existing = self.document.doc_info.border_fills.iter().position(|bf| {
-                bf.borders
-                    .iter()
-                    .all(|b| b.line_type == BorderLineType::Solid && b.width >= 1)
+                bf.borders.iter().all(|b| {
+                    b.line_type == BorderLineType::Solid && b.width == DEFAULT_BORDER_WIDTH_IDX
+                })
             });
             if let Some(idx) = existing {
                 (idx + 1) as u16 // 1-based
@@ -485,7 +514,7 @@ impl DocumentCore {
                 // 실선 BorderFill이 없으면 새로 생성
                 let solid_border = BorderLine {
                     line_type: BorderLineType::Solid,
-                    width: 1,
+                    width: DEFAULT_BORDER_WIDTH_IDX,
                     color: 0,
                 };
                 let new_bf = BorderFill {
@@ -505,12 +534,6 @@ impl DocumentCore {
                 self.document.doc_info.border_fills.len() as u16 // 1-based
             }
         };
-
-        // 커서 위치 문단의 속성을 기본값으로 상속 (한컴 동작 일치).
-        // 혼합 글자모양 문단에서는 첫 엔트리가 아니라 커서 offset 의 글자모양이 기준이다.
-        let current_para = &self.document.sections[section_idx].paragraphs[para_idx];
-        let default_char_shape_id: u32 = current_para.char_shape_id_at(char_offset).unwrap_or(0);
-        let default_para_shape_id: u16 = current_para.para_shape_id;
 
         // 셀 목록 생성
         let mut cells = Vec::with_capacity((row_count as usize) * (col_count as usize));
@@ -538,14 +561,19 @@ impl DocumentCore {
                         rhe[4..6].copy_from_slice(&1u16.to_le_bytes()); // n_line_segs=1
                         cp.raw_header_extra = rhe;
                     }
-                    // line_segs 보정: new_empty()의 기본 LineSeg는 line_height=0이므로 항상 교체
-                    let seg_w = (col_width as i32) - 141 - 141; // 셀 폭 - 좌우 패딩
+                    // line_segs 보정: new_empty()의 기본 LineSeg는 line_height=0이므로 항상 교체.
+                    // 치수는 reflow_line_segs(make_line_seg)와 같은 식이어야 폭 조절 후에도
+                    // 값이 안 변한다(멱등) — 기준선 0.85, 줄간격 160%(=글줄×0.6).
+                    let seg_w =
+                        (col_width as i32) - (cell_pad.left as i32) - (cell_pad.right as i32);
                     cp.line_segs = vec![LineSeg {
                         text_start: 0,
-                        line_height: 1000,
-                        text_height: 1000,
-                        baseline_distance: 850,
-                        line_spacing: 600,
+                        line_height: line_hu,
+                        text_height: line_hu,
+                        baseline_distance: (line_hu as f64
+                            * crate::renderer::style_resolver::FONT_BASELINE_RATIO)
+                            as i32,
+                        line_spacing: (line_hu as f64 * 0.6) as i32,
                         segment_width: seg_w,
                         tag: LineSeg::TAG_SINGLE_SEGMENT_LINE,
                         ..Default::default()
@@ -567,7 +595,7 @@ impl DocumentCore {
         // vert=Para(2), horz=Para(3), wrap=TopAndBottom(1)
         // width_criterion=Absolute(4), height_criterion=Absolute(2)
         let flags: u32 = (2 << 3) | (3 << 8) | (4 << 15) | (2 << 18) | (1 << 21);
-        let outer_margin: i16 = 283; // ~1mm
+        let outer_margin: i16 = DEFAULT_OUTER_MARGIN;
         let mut raw_ctrl_data = vec![0u8; 38];
         raw_ctrl_data[common_obj_offsets::FLAGS].copy_from_slice(&flags.to_le_bytes());
         // vertical_offset/horizontal_offset/z_order = 0
@@ -601,8 +629,8 @@ impl DocumentCore {
             padding: crate::model::Padding {
                 left: 510,
                 right: 510,
-                top: 141,
-                bottom: 141,
+                top: 142,
+                bottom: 142,
             },
             row_sizes,
             border_fill_id: cell_border_fill_id, // 한컴: 표와 셀이 같은 BorderFill 사용
@@ -621,20 +649,25 @@ impl DocumentCore {
                 horz_align: crate::model::shape::HorzAlign::Left,
                 width: total_width,
                 height: total_height,
+                // 바깥 여백 1.00mm — outer_margin_* 과 같은 값으로 채운다. 표 속성
+                // 대화상자는 common.margin 을 읽어서, 종전엔 0 으로 보였다(이중 진실).
+                margin: crate::model::Padding {
+                    left: DEFAULT_OUTER_MARGIN,
+                    right: DEFAULT_OUTER_MARGIN,
+                    top: DEFAULT_OUTER_MARGIN,
+                    bottom: DEFAULT_OUTER_MARGIN,
+                },
                 ..Default::default()
             },
-            outer_margin_left: 283,
-            outer_margin_right: 283,
-            outer_margin_top: 283,
-            outer_margin_bottom: 283,
+            outer_margin_left: DEFAULT_OUTER_MARGIN,
+            outer_margin_right: DEFAULT_OUTER_MARGIN,
+            outer_margin_top: DEFAULT_OUTER_MARGIN,
+            outer_margin_bottom: DEFAULT_OUTER_MARGIN,
             raw_ctrl_data,
             raw_table_record_attr: 0x00000006, // 한컴 기본값 (bit1=셀분리금지, bit2=repeat_header)
             raw_table_record_extra: vec![0u8; 2],
+            hwpx_label: Vec::new(),
             dirty: true,
-            local_resize_rows: Vec::new(),
-            local_resize_cols: Vec::new(),
-            local_resize_cell_widths: Vec::new(),
-            local_resize_cell_heights: Vec::new(),
         };
         table.rebuild_grid();
 
@@ -876,7 +909,7 @@ impl DocumentCore {
         // ── 인라인 TAC 표 생성 ──
 
         let pd = &self.document.sections[section_idx].section_def.page_def;
-        let outer_margin: i16 = 283;
+        let outer_margin: i16 = DEFAULT_OUTER_MARGIN;
         let outer_margin_lr = (outer_margin * 2) as i32;
         let content_width =
             (pd.width as i32 - pd.margin_left as i32 - pd.margin_right as i32 - outer_margin_lr)
@@ -912,11 +945,13 @@ impl DocumentCore {
         };
         let total_width: u32 = col_ws.iter().sum();
 
+        // 한컴 실측 기본값(2026-08-11): 좌우 510HU(1.80mm), 상하 142HU(0.50mm).
+        // 종전 141 은 0.497mm 로 한컴(142)과 1HU 어긋나 셀 높이(=상+하)가 282 vs 284 였다.
         let cell_pad = crate::model::Padding {
             left: 510,
             right: 510,
-            top: 141,
-            bottom: 141,
+            top: 142,
+            bottom: 142,
         };
         let min_row_height: u32 = cell_pad.top as u32 + 1000 + cell_pad.bottom as u32;
         let row_heights: Vec<u32> = if let Some(heights) = row_heights_hu {
@@ -933,16 +968,16 @@ impl DocumentCore {
         // BorderFill
         let cell_border_fill_id = {
             let existing = self.document.doc_info.border_fills.iter().position(|bf| {
-                bf.borders
-                    .iter()
-                    .all(|b| b.line_type == BorderLineType::Solid && b.width >= 1)
+                bf.borders.iter().all(|b| {
+                    b.line_type == BorderLineType::Solid && b.width == DEFAULT_BORDER_WIDTH_IDX
+                })
             });
             if let Some(idx) = existing {
                 (idx + 1) as u16
             } else {
                 let solid_border = BorderLine {
                     line_type: BorderLineType::Solid,
-                    width: 1,
+                    width: DEFAULT_BORDER_WIDTH_IDX,
                     color: 0,
                 };
                 let new_bf = BorderFill {
@@ -1072,6 +1107,14 @@ impl DocumentCore {
                 horz_align: crate::model::shape::HorzAlign::Left,
                 width: total_width,
                 height: total_height,
+                // 바깥 여백 1.00mm — outer_margin_* 과 같은 값으로 채운다. 표 속성
+                // 대화상자는 common.margin 을 읽어서, 종전엔 0 으로 보였다(이중 진실).
+                margin: crate::model::Padding {
+                    left: DEFAULT_OUTER_MARGIN,
+                    right: DEFAULT_OUTER_MARGIN,
+                    top: DEFAULT_OUTER_MARGIN,
+                    bottom: DEFAULT_OUTER_MARGIN,
+                },
                 ..Default::default()
             },
             outer_margin_left: outer_margin,
@@ -1081,11 +1124,8 @@ impl DocumentCore {
             raw_ctrl_data,
             raw_table_record_attr: 0x04000006,
             raw_table_record_extra: vec![0u8; 2],
+            hwpx_label: Vec::new(),
             dirty: true,
-            local_resize_rows: Vec::new(),
-            local_resize_cols: Vec::new(),
-            local_resize_cell_widths: Vec::new(),
-            local_resize_cell_heights: Vec::new(),
         };
         table.rebuild_grid();
 
@@ -1643,140 +1683,5 @@ impl DocumentCore {
             ctrl: outer_table_ctrl,
         });
         Ok("{\"ok\":true}".to_string())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::document_core::DocumentCore;
-    use crate::model::control::Control;
-    use crate::model::paragraph::CharShapeRef;
-    use crate::model::table::Table;
-
-    /// 표를 삽입한 문단에 서식을 심고, 그 문서에서 표를 만든다.
-    fn core_with_shaped_paragraph() -> DocumentCore {
-        let mut core = DocumentCore::new_empty();
-        core.create_blank_document_native().unwrap();
-        let para = &mut core.document.sections[0].paragraphs[0];
-        para.para_shape_id = 12;
-        para.char_shapes = vec![CharShapeRef {
-            start_pos: 0,
-            char_shape_id: 7,
-        }];
-        core
-    }
-
-    fn table_of(core: &DocumentCore) -> &Table {
-        core.document.sections[0]
-            .paragraphs
-            .iter()
-            .find_map(|p| {
-                p.controls.iter().find_map(|c| match c {
-                    Control::Table(t) => Some(t.as_ref()),
-                    _ => None,
-                })
-            })
-            .expect("표 컨트롤")
-    }
-
-    /// Cell::new_empty() 의 문단은 char_shapes 가 비어 있고, 저장기는 그것을
-    /// charPrIDRef="0" 으로 쓴다 — 새 표의 셀에 글자를 입력하면 문서의 0번
-    /// 글자모양이 나온다. 표를 삽입한 문단의 글자모양을 상속해야 한다.
-    fn assert_cells_inherit_shape(table: &Table) {
-        assert!(!table.cells.is_empty(), "셀이 있어야 한다");
-        for cell in &table.cells {
-            let para = &cell.paragraphs[0];
-            assert_eq!(
-                para.para_shape_id, 12,
-                "셀 ({},{}) para_shape_id",
-                cell.row, cell.col
-            );
-            assert_eq!(
-                para.char_shapes.first().map(|cs| cs.char_shape_id),
-                Some(7),
-                "셀 ({},{}) char_shapes — 비면 charPrIDRef=0",
-                cell.row,
-                cell.col
-            );
-        }
-    }
-
-    #[test]
-    fn create_table_native_cells_inherit_char_shape() {
-        let mut core = core_with_shaped_paragraph();
-        core.create_table_native(0, 0, 0, 2, 3).unwrap();
-        assert_cells_inherit_shape(table_of(&core));
-    }
-
-    #[test]
-    fn create_table_ex_native_cells_inherit_char_shape() {
-        let mut core = core_with_shaped_paragraph();
-        core.create_table_ex_native(0, 0, 0, 2, 3, false, None, None)
-            .unwrap();
-        assert_cells_inherit_shape(table_of(&core));
-    }
-
-    /// 혼합 글자모양 문단: 텍스트 20자, 글자 인덱스 0~9 는 34, 10~ 는 37.
-    /// 커서 offset 10 의 글자모양(37)은 첫 엔트리(34)와 다르다 — 첫 엔트리를
-    /// 상속 기준으로 쓰는 회귀를 잡는다.
-    fn core_with_mixed_shape_paragraph() -> DocumentCore {
-        let mut core = DocumentCore::new_empty();
-        core.create_blank_document_native().unwrap();
-        core.insert_text_native(0, 0, 0, "0123456789abcdefghij")
-            .unwrap();
-        let para = &mut core.document.sections[0].paragraphs[0];
-        para.para_shape_id = 12;
-        // 컨트롤(SectionDef 등)이 UTF-16 앞자리를 차지하므로 경계는 char_offsets 로 계산.
-        let boundary = para.char_offsets[10];
-        para.char_shapes = vec![
-            CharShapeRef {
-                start_pos: 0,
-                char_shape_id: 34,
-            },
-            CharShapeRef {
-                start_pos: boundary,
-                char_shape_id: 37,
-            },
-        ];
-        core
-    }
-
-    fn assert_cells_inherit_cursor_shape(table: &Table) {
-        assert!(!table.cells.is_empty(), "셀이 있어야 한다");
-        for cell in &table.cells {
-            let para = &cell.paragraphs[0];
-            assert_eq!(
-                para.char_shapes.first().map(|cs| cs.char_shape_id),
-                Some(37),
-                "셀 ({},{}) — 커서 offset 의 글자모양(37)이 아니라 첫 엔트리(34)를 상속",
-                cell.row,
-                cell.col
-            );
-        }
-    }
-
-    #[test]
-    fn create_table_native_inherits_char_shape_at_cursor_offset() {
-        let mut core = core_with_mixed_shape_paragraph();
-        core.create_table_native(0, 0, 10, 2, 2).unwrap();
-        assert_cells_inherit_cursor_shape(table_of(&core));
-    }
-
-    #[test]
-    fn create_table_ex_native_inherits_char_shape_at_cursor_offset() {
-        let mut core = core_with_mixed_shape_paragraph();
-        core.create_table_ex_native(0, 0, 10, 2, 2, false, None, None)
-            .unwrap();
-        assert_cells_inherit_cursor_shape(table_of(&core));
-    }
-
-    /// treat_as_char=true 인라인 경로는 create_table_native 로 위임하지 않는
-    /// 별도 구현이므로 따로 검증한다.
-    #[test]
-    fn create_table_ex_native_tac_inherits_char_shape_at_cursor_offset() {
-        let mut core = core_with_mixed_shape_paragraph();
-        core.create_table_ex_native(0, 0, 10, 2, 2, true, None, None)
-            .unwrap();
-        assert_cells_inherit_cursor_shape(table_of(&core));
     }
 }

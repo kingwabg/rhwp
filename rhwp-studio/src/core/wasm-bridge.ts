@@ -52,9 +52,6 @@ export interface TableCellResizeUpdate {
   cellIdx: number;
   widthDelta?: number;
   heightDelta?: number;
-  localResize?: boolean;
-  renderWidth?: number;
-  renderHeight?: number;
 }
 
 export interface TableTransposeResult {
@@ -1034,6 +1031,15 @@ export class WasmBridge {
   ): { ok: boolean } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.resizeTableCells(sec, parentPara, controlIdx, JSON.stringify(updates)));
+  }
+
+  /** 한 칸 어긋내기 — 엔진 격자 재구성(분할+병합). 거부 시 throw(엔진 가드 메시지). */
+  offsetCellBoundary(
+    sec: number, parentPara: number, controlIdx: number,
+    cellIdx: number, edge: 'bottom' | 'right', deltaHwp: number,
+  ): { ok: boolean } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse(this.doc.offsetCellBoundary(sec, parentPara, controlIdx, cellIdx, edge, deltaHwp));
   }
 
   moveTableOffset(sec: number, parentPara: number, controlIdx: number, deltaH: number, deltaV: number): { ok: boolean; ppi: number; ci: number } {

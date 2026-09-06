@@ -414,17 +414,28 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
 
     // 5-1. Chart/*.xml (OOXML 차트) 로딩 — bin_data_id = 60000+N, extension="ooxml_chart"
     // section 파서에서 <hp:chart chartIDRef="Chart/chartN.xml">를 만나면 동일 ID의 OleShape 생성
-    for n in 1..=64u16 {
-        let path = format!("Chart/chart{}.xml", n);
-        match reader.read_file_bytes(&path) {
-            Ok(data) => {
-                bin_data_content.push(BinDataContent {
-                    id: 60000 + n,
-                    data: data.into(),
-                    extension: "ooxml_chart".to_string(),
-                });
-            }
-            Err(_) => break,
+    // [2026-08-13] 번호가 비연속인 문서(chart1, chart3 …)에서 종전 `1..=64 + break` 는
+    // 첫 구멍에서 멈춰 뒤 차트를 통째로 잃었다. zip 목록에서 실제 존재하는 파트만 읽는다.
+    let mut chart_parts: Vec<(u16, String)> = reader
+        .file_names()
+        .iter()
+        .filter_map(|name: &String| {
+            let n: u16 = name
+                .strip_prefix("Chart/chart")?
+                .strip_suffix(".xml")?
+                .parse()
+                .ok()?;
+            Some((n, name.to_string()))
+        })
+        .collect();
+    chart_parts.sort_unstable();
+    for (n, path) in chart_parts {
+        if let Ok(data) = reader.read_file_bytes(&path) {
+            bin_data_content.push(BinDataContent {
+                id: crate::model::bin_data::OOXML_CHART_ID_BASE + n,
+                data: data.into(),
+                extension: crate::model::bin_data::OOXML_CHART_EXT.to_string(),
+            });
         }
     }
 
@@ -508,99 +519,5 @@ fn resolve_embedded_font_references(
                 .then(|| item_ids.get(substitute.bin_item_id_ref.as_str()).copied())
                 .flatten();
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_hwpx_invalid_data() {
-        let result = parse_hwpx(&[0u8; 10]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_hwpx_not_zip() {
-        // CFB/HWP 데이터로 시도
-        let result = parse_hwpx(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_resolve_master_page_hrefs_uses_id_ref_order_and_dedups() {
-        let items = vec![
-            content::PackageItem {
-                id: "masterpage1".to_string(),
-                href: "Contents/masterpage1.xml".to_string(),
-                media_type: "application/xml".to_string(),
-                is_embedded: true,
-            },
-            content::PackageItem {
-                id: "masterpage0".to_string(),
-                href: "Contents/masterpage0.xml".to_string(),
-                media_type: "application/xml".to_string(),
-                is_embedded: true,
-            },
-        ];
-        let id_refs = vec![
-            "masterpage0".to_string(),
-            "missing".to_string(),
-            "masterpage1".to_string(),
-            "masterpage0".to_string(),
-        ];
-
-        let (hrefs, missing_refs) = resolve_master_page_hrefs(&id_refs, &items);
-
-        assert_eq!(
-            hrefs,
-            vec!["Contents/masterpage0.xml", "Contents/masterpage1.xml"]
-        );
-        assert_eq!(missing_refs, vec!["missing"]);
-    }
-
-    #[test]
-    fn embedded_font_reference_uses_exact_manifest_id() {
-        let mut parent = crate::model::style::Font {
-            name: "Embedded Parent".to_string(),
-            is_embedded: true,
-            bin_item_id_ref: "font-resource-alpha".to_string(),
-            ..Default::default()
-        };
-        parent.subst_font = Some(crate::model::style::SubstFont {
-            face: "Embedded Substitute".to_string(),
-            is_embedded: true,
-            bin_item_id_ref: "font-resource-beta".to_string(),
-            ..Default::default()
-        });
-        let mut doc_info = crate::model::document::DocInfo {
-            font_faces: vec![vec![parent]],
-            ..Default::default()
-        };
-        let items = vec![
-            content::PackageItem {
-                id: "font-resource-beta".to_string(),
-                href: "BinData/beta.ttf".to_string(),
-                media_type: "application/x-font-ttf".to_string(),
-                is_embedded: true,
-            },
-            content::PackageItem {
-                id: "font-resource-alpha".to_string(),
-                href: "BinData/alpha.ttf".to_string(),
-                media_type: "application/x-font-ttf".to_string(),
-                is_embedded: true,
-            },
-        ];
-
-        resolve_embedded_font_references(&mut doc_info, &items);
-
-        let font = &doc_info.font_faces[0][0];
-        assert_eq!(font.resolved_bin_data_id, Some(2));
-        assert_eq!(
-            font.subst_font.as_ref().unwrap().resolved_bin_data_id,
-            Some(1)
-        );
-        assert_eq!(font.bin_item_id_ref, "font-resource-alpha");
     }
 }

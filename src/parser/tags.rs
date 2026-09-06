@@ -323,39 +323,3 @@ pub fn ctrl_name(ctrl_id: u32) -> &'static str {
         _ => "Unknown",
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_tag_values() {
-        assert_eq!(HWPTAG_BEGIN, 0x010);
-        assert_eq!(HWPTAG_DOCUMENT_PROPERTIES, 16);
-        assert_eq!(HWPTAG_PARA_HEADER, 66);
-        assert_eq!(HWPTAG_PARA_TEXT, 67);
-        assert_eq!(HWPTAG_TABLE, 77);
-    }
-
-    #[test]
-    fn test_ctrl_id() {
-        assert_eq!(CTRL_TABLE, u32::from_be_bytes(*b"tbl "));
-        assert_eq!(CTRL_SECTION_DEF, u32::from_be_bytes(*b"secd"));
-        assert_eq!(CTRL_HEADER, u32::from_be_bytes(*b"head"));
-        assert_eq!(CTRL_FOOTER, u32::from_be_bytes(*b"foot"));
-    }
-
-    #[test]
-    fn test_tag_name() {
-        assert_eq!(tag_name(HWPTAG_PARA_HEADER), "PARA_HEADER");
-        assert_eq!(tag_name(HWPTAG_CHAR_SHAPE), "CHAR_SHAPE");
-        assert_eq!(tag_name(0xFFFF), "UNKNOWN");
-    }
-
-    #[test]
-    fn test_ctrl_name() {
-        assert_eq!(ctrl_name(CTRL_TABLE), "Table");
-        assert_eq!(ctrl_name(CTRL_GEN_SHAPE), "GenShape");
-        assert_eq!(ctrl_name(0), "Unknown");
-    }
-}

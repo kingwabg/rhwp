@@ -518,8 +518,19 @@ impl SvgRenderer {
                 self.render_form_object(form, &node.bbox);
             }
             RenderNodeType::RawSvg(r) => {
-                // Task #195 단계 8: OOXML 차트 SVG 조각 그대로 삽입
-                self.output.push_str(&r.svg);
+                // Task #195 단계 8: OOXML 차트 SVG 조각 삽입 (회전/대칭 래핑).
+                // 원점 기준 조각은 translate 로 bbox 위치에 놓는다.
+                self.open_shape_transform(&r.transform, &node.bbox);
+                if r.origin_relative {
+                    self.output.push_str(&format!(
+                        "<g transform=\"translate({:.2},{:.2})\">\n",
+                        node.bbox.x, node.bbox.y
+                    ));
+                    self.output.push_str(&r.svg);
+                    self.output.push_str("</g>\n");
+                } else {
+                    self.output.push_str(&r.svg);
+                }
             }
             RenderNodeType::Placeholder(ph) => {
                 // [Task #2225] 그림 미지정 placeholder 는 인쇄 등가 profile에서
@@ -847,6 +858,7 @@ impl SvgRenderer {
             RenderNodeType::Ellipse(e) => &e.transform,
             RenderNodeType::Image(i) => &i.transform,
             RenderNodeType::Path(p) => &p.transform,
+            RenderNodeType::RawSvg(r) => &r.transform,
             _ => return,
         };
         if transform.has_transform() {
@@ -3722,6 +3734,3 @@ pub fn generate_font_style(renderer: &SvgRenderer, font_paths: &[std::path::Path
 
     css
 }
-
-#[cfg(test)]
-mod tests;

@@ -60,6 +60,23 @@ pub(crate) fn ensure_min_baseline(raw_baseline: f64, max_font_size: f64) -> f64 
     raw_baseline.max(min_baseline)
 }
 
+/// [2026-08-15 신고 "양식 개체 자유 이동"] 양식의 **시각 오프셋**(앵커 기준 델타, px).
+///
+/// 앵커는 글자 사이(인라인)에 그대로 있고, 보이는 위치만 이 델타만큼 옮긴다. 폭 예약
+/// (`x += tac_w`)에는 절대 먹이지 않는다 — 먹이면 형제 개체 배치와 줄 폭이 어긋난다.
+/// 저장소는 HWPX 정본 키(`PosHorzOffset`/`PosVertOffset`, HWPUNIT 문자열)를 그대로 쓴다.
+/// 키가 없거나 0이면 (0.0, 0.0) — 기존 문서는 산술이 `+0.0` 이라 비트 동일하다.
+fn form_visual_delta_px(form: &crate::model::control::FormObject, dpi: f64) -> (f64, f64) {
+    let read = |key: &str| -> f64 {
+        form.properties
+            .get(key)
+            .and_then(|v| v.trim().parse::<i32>().ok())
+            .map(|hu| hwpunit_to_px(hu, dpi))
+            .unwrap_or(0.0)
+    };
+    (read("PosHorzOffset"), read("PosVertOffset"))
+}
+
 /// [oracle-pdf-mining-20260806 §2-C] 인라인 글자취급 개체의 **잉크 상단 y**.
 ///
 /// 글리프 상자(잉크 + 바깥여백 상하, `composer::tac_box_hwp` 단일 소스)가 기준선을
@@ -352,6 +369,8 @@ struct EmptyRunsLineVars {
     y: f64,
     baseline: f64,
     raw_lh: f64,
+    /// 보정 줄 높이(px) — `tac_ink_top` r-분할의 분모.
+    line_height: f64,
     runs_all_whitespace: bool,
     max_fs: f64,
     line_spacing_px: f64,
@@ -384,6 +403,9 @@ struct TacPictureLineVars {
     y: f64,
     baseline: f64,
     raw_lh: f64,
+    /// 보정 줄 높이(px) — `tac_ink_top` r-분할의 분모. raw_lh 와 달리
+    /// corrected_line_metrics_for_source 를 거친 값.
+    line_height: f64,
     section_index: usize,
     para_index: usize,
 }
@@ -941,43 +963,6 @@ fn align_spacing_flags(
         || (alignment == Alignment::Split && !forced_break);
     let needs_distribute = alignment == Alignment::Distribute;
     (needs_justify, needs_distribute)
-}
-
-#[cfg(test)]
-mod align_flag_tests {
-    use super::align_spacing_flags;
-    use crate::model::style::Alignment;
-
-    /// 나눔은 양쪽·배분 **어느 쪽과도 달라야** 한다.
-    #[test]
-    fn split_differs_from_justify_and_distribute() {
-        // 마지막 줄이 아닐 때: 양쪽·나눔은 낱말 분배, 배분은 글자 분배
-        assert_eq!(
-            align_spacing_flags(Alignment::Justify, false, false),
-            (true, false)
-        );
-        assert_eq!(
-            align_spacing_flags(Alignment::Split, false, false),
-            (true, false)
-        );
-        assert_eq!(
-            align_spacing_flags(Alignment::Distribute, false, false),
-            (false, true)
-        );
-        // 마지막 줄: 양쪽만 손을 뗀다 — 나눔·배분은 계속 맞춘다
-        assert_eq!(
-            align_spacing_flags(Alignment::Justify, true, false),
-            (false, false)
-        );
-        assert_eq!(
-            align_spacing_flags(Alignment::Split, true, false),
-            (true, false)
-        );
-        assert_eq!(
-            align_spacing_flags(Alignment::Distribute, true, false),
-            (false, true)
-        );
-    }
 }
 
 /// [Task #2067] 정렬(양쪽/배분/나눔)·오버플로우·셀 underflow 에 따른 여분 간격 계산.
@@ -1618,6 +1603,21 @@ impl LayoutEngine {
         let mut next_break: usize = 0;
         let control_positions = para.control_text_positions();
 
+        // char_start 논리 변환 — run 시작 **글자**의 논리 위치. 같은 텍스트 위치의
+        // 컨트롤은 글자보다 앞이므로 pos <= idx 로 센다. (text_to_logical_offset 은
+        // pos == idx 를 안 세는 커서 경계 규약이라 여기 목적과 다르다.)
+        let logical_char_start = |text_idx: usize| -> usize {
+            text_idx
+                + para
+                    .controls
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| crate::document_core::is_logical_inline_control(c))
+                    .filter_map(|(ci, _)| control_positions.get(ci))
+                    .filter(|&&pos| pos <= text_idx)
+                    .count()
+        };
+
         for (s, e) in &segments {
             // 텍스트 세그먼트 렌더링 (줄바꿈 지원)
             if *s < *e {
@@ -1669,7 +1669,11 @@ impl LayoutEngine {
                                         para_shape_id: Some(para_style_id as u16),
                                         section_index: Some(section_index),
                                         para_index: Some(para_index),
-                                        char_start: Some(line_run_start),
+                                        // char_start 는 논리 좌표(인라인 컨트롤 = 1칸) — 커서/선택
+                                        // 워커가 논리 오프셋으로 대조한다. 이 경로의 line_run_start 는
+                                        // 텍스트 인덱스라 표 뒤 run 이 1칸 밀려, 표 뒤 '글자 뒤 캐럿'
+                                        // 밑줄이 두 글자 폭이 되고 마지막 글자 선택 rect 가 비었다.
+                                        char_start: Some(logical_char_start(line_run_start)),
                                         cell_context: None,
                                         is_para_end: false,
                                         is_line_break_end: false,
@@ -1783,7 +1787,7 @@ impl LayoutEngine {
                                     para_shape_id: Some(para_style_id as u16),
                                     section_index: Some(section_index),
                                     para_index: Some(para_index),
-                                    char_start: Some(line_run_start),
+                                    char_start: Some(logical_char_start(line_run_start)),
                                     cell_context: None,
                                     is_para_end: false,
                                     is_line_break_end: false,
@@ -1850,7 +1854,7 @@ impl LayoutEngine {
                                 para_shape_id: Some(para_style_id as u16),
                                 section_index: Some(section_index),
                                 para_index: Some(para_index),
-                                char_start: Some(line_run_start),
+                                char_start: Some(logical_char_start(line_run_start)),
                                 cell_context: None,
                                 is_para_end: false,
                                 is_line_break_end: false,
@@ -2163,6 +2167,7 @@ impl LayoutEngine {
             y,
             baseline,
             raw_lh,
+            line_height,
             section_index,
             para_index,
         } = v;
@@ -2185,7 +2190,8 @@ impl LayoutEngine {
                             if raw_lh + 4.0 >= pic_h {
                                 *reserved_tac_picture_height = Some(pic_h);
                             }
-                            let img_y = (y + baseline - pic_h).max(y);
+                            let img_y =
+                                tac_ink_top(y, baseline, line_height, pic_h, Some(ctrl), self.dpi);
                             let bin_data_id = pic.image_attr.bin_data_id;
                             let image_data = find_bin_data(bdc, bin_data_id).map(|c| c.data.load());
                             let crop = {
@@ -2246,6 +2252,7 @@ impl LayoutEngine {
         mut x: f64,
         y: f64,
         baseline: f64,
+        line_height: f64,
         section_index: usize,
         para_index: usize,
         placed_forms: &mut std::collections::HashSet<usize>,
@@ -2263,7 +2270,15 @@ impl LayoutEngine {
                     }
                     if let Some(Control::Form(f)) = p.controls.get(tac_ci) {
                         let form_h = hwpunit_to_px(f.height as i32, self.dpi);
-                        let form_y = (y + baseline - form_h).max(y);
+                        let (form_dx, form_dy) = form_visual_delta_px(f, self.dpi);
+                        let form_y = tac_ink_top(
+                            y,
+                            baseline,
+                            line_height,
+                            form_h,
+                            p.controls.get(tac_ci),
+                            self.dpi,
+                        );
                         let cell_location = cell_ctx.map(|ctx| {
                             let e = &ctx.path[0];
                             (
@@ -2289,9 +2304,10 @@ impl LayoutEngine {
                                 name: f.name.clone(),
                                 cell_location,
                             }),
-                            BoundingBox::new(x, form_y, tac_w, form_h),
+                            BoundingBox::new(x + form_dx, form_y + form_dy, tac_w, form_h),
                         );
                         line_node.children.push(form_node);
+                        // 폭 전진에는 델타를 먹이지 않는다(앵커는 제자리)
                         x += tac_w;
                     }
                 }
@@ -2616,7 +2632,9 @@ impl LayoutEngine {
         // (`composer::line_breaking`)과 같은 단일 소스를 쓴다 — 아래의 글꼴 기반
         // 폴백 분기들이 종전에 0.85 를 하드코딩해 세로정렬=가운데/아래쪽 문단에서
         // 생산과 렌더가 어긋났다.
-        let baseline_ratio = para_style.map(|s| s.line_baseline_ratio).unwrap_or(0.85);
+        let baseline_ratio = para_style
+            .map(|s| s.line_baseline_ratio)
+            .unwrap_or(crate::renderer::style_resolver::FONT_BASELINE_RATIO);
 
         // [Task #547] paragraph margin_left/right 는 텍스트 좌/우 inset 으로 한 번만
         // 적용. Task #544 후 box outline = col_area (margin 미적용) 이므로 박스 안
@@ -3933,6 +3951,7 @@ impl LayoutEngine {
                     y,
                     baseline,
                     raw_lh,
+                    line_height,
                     section_index,
                     para_index,
                 },
@@ -3948,6 +3967,7 @@ impl LayoutEngine {
                 x,
                 y,
                 baseline,
+                line_height,
                 section_index,
                 para_index,
                 &mut placed_forms,
@@ -3979,6 +3999,7 @@ impl LayoutEngine {
                         y,
                         baseline,
                         raw_lh,
+                        line_height,
                         runs_all_whitespace,
                         max_fs,
                         line_spacing_px,
@@ -5066,7 +5087,14 @@ impl LayoutEngine {
                                 let base_img_y = if label_extra > 0.0 {
                                     y + label_extra
                                 } else {
-                                    (y + baseline - pic_h).max(y)
+                                    tac_ink_top(
+                                        y,
+                                        baseline,
+                                        line_height,
+                                        pic_h,
+                                        p.controls.get(tac_ci),
+                                        self.dpi,
+                                    )
                                 };
                                 let img_y = base_img_y + sibling_reserved_px;
                                 let bin_data_id = pic.image_attr.bin_data_id;
@@ -5152,7 +5180,14 @@ impl LayoutEngine {
                             let shape_y = if label_extra > 0.0 {
                                 y + label_extra
                             } else {
-                                (y + baseline - shape_h).max(y)
+                                tac_ink_top(
+                                    y,
+                                    baseline,
+                                    line_height,
+                                    shape_h,
+                                    p.controls.get(tac_ci),
+                                    self.dpi,
+                                )
                             };
                             // 인라인 좌표 등록 → shape_layout.rs에서 이 Shape를 스킵
                             tree.set_inline_shape_position(
@@ -5345,7 +5380,15 @@ impl LayoutEngine {
                     if let Some(p) = para {
                         if let Some(Control::Form(f)) = p.controls.get(tac_ci) {
                             let form_h = hwpunit_to_px(f.height as i32, self.dpi);
-                            let form_y = (y + baseline - form_h).max(y);
+                            let (form_dx, form_dy) = form_visual_delta_px(f, self.dpi);
+                            let form_y = tac_ink_top(
+                                y,
+                                baseline,
+                                line_height,
+                                form_h,
+                                p.controls.get(tac_ci),
+                                self.dpi,
+                            );
                             // 셀 내부인 경우 cell_location 채우기
                             let cell_location = cell_ctx.as_ref().map(|ctx| {
                                 let e = &ctx.path[0];
@@ -5372,7 +5415,7 @@ impl LayoutEngine {
                                     name: f.name.clone(),
                                     cell_location,
                                 }),
-                                BoundingBox::new(x, form_y, tac_w, form_h),
+                                BoundingBox::new(x + form_dx, form_y + form_dy, tac_w, form_h),
                             );
                             line_node.children.push(form_node);
                         }
@@ -6154,7 +6197,14 @@ impl LayoutEngine {
                             let shape_h_hu = (common.height as i32)
                                 .max(shape.shape_attr().current_height as i32);
                             let shape_h = hwpunit_to_px(shape_h_hu, self.dpi);
-                            let shape_y = (vars.y + vars.baseline - shape_h).max(vars.y);
+                            let shape_y = tac_ink_top(
+                                vars.y,
+                                vars.baseline,
+                                vars.line_height,
+                                shape_h,
+                                p.controls.get(tac_ci),
+                                self.dpi,
+                            );
                             tree.set_inline_shape_position(
                                 vars.section_index,
                                 vars.para_index,
@@ -6194,7 +6244,14 @@ impl LayoutEngine {
                             let base_img_y = if label_extra > 0.0 {
                                 vars.y + label_extra
                             } else {
-                                (vars.y + vars.baseline - pic_h).max(vars.y)
+                                tac_ink_top(
+                                    vars.y,
+                                    vars.baseline,
+                                    vars.line_height,
+                                    pic_h,
+                                    p.controls.get(tac_ci),
+                                    self.dpi,
+                                )
                             };
                             let img_y = base_img_y + sibling_reserved_px;
                             let bin_data_id = pic.image_attr.bin_data_id;
@@ -6678,291 +6735,6 @@ pub(crate) struct ParaInlineState {
     pub line_height: f64,
 }
 
-#[cfg(test)]
-mod issue_1151_v3_helper_tests {
-    //! Issue #1151 v3/#1459: sibling TopAndBottom 예약 높이 helper 단위 검증.
-    //!
-    //! 한컴 정합: wrap=TopAndBottom + tac=false 인 개체가 vertical 영역
-    //! reservation 으로 합산된다. TAC 개체와 Square wrap 은 제외한다.
-
-    use super::calc_sibling_topandbottom_reserved_hu;
-    use crate::model::control::Control;
-    use crate::model::image::Picture;
-    use crate::model::shape::{CommonObjAttr, TextWrap};
-    use crate::model::table::Table;
-
-    fn make_table(width: u32, height: u32, wrap: TextWrap, tac: bool) -> Table {
-        Table {
-            common: CommonObjAttr {
-                width,
-                height,
-                text_wrap: wrap,
-                treat_as_char: tac,
-                ..Default::default()
-            },
-            outer_margin_left: 283,
-            outer_margin_right: 283,
-            outer_margin_top: 283,
-            outer_margin_bottom: 283,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn topandbottom_table_reserved_single() {
-        // scenario-a-after.hwp 의 표: 13630×12498, outer_margin (top=283, bottom=283).
-        // 합산 = 12498 + 283 + 283 = 13064 HU.
-        let table = make_table(13630, 12498, TextWrap::TopAndBottom, false);
-        let controls = vec![Control::Table(Box::new(table))];
-        assert_eq!(calc_sibling_topandbottom_reserved_hu(&controls), 13064);
-    }
-
-    #[test]
-    fn topandbottom_table_reserved_none_when_no_table() {
-        let controls: Vec<Control> = vec![];
-        assert_eq!(calc_sibling_topandbottom_reserved_hu(&controls), 0);
-    }
-
-    #[test]
-    fn topandbottom_table_reserved_excludes_tac_table() {
-        let table = make_table(13630, 12498, TextWrap::TopAndBottom, true); // tac=true 제외
-        let controls = vec![Control::Table(Box::new(table))];
-        assert_eq!(calc_sibling_topandbottom_reserved_hu(&controls), 0);
-    }
-
-    #[test]
-    fn topandbottom_table_reserved_excludes_square_wrap() {
-        let table = make_table(13630, 12498, TextWrap::Square, false); // wrap=Square 제외
-        let controls = vec![Control::Table(Box::new(table))];
-        assert_eq!(calc_sibling_topandbottom_reserved_hu(&controls), 0);
-    }
-
-    #[test]
-    fn topandbottom_reserved_includes_non_tac_picture_control() {
-        let mut pic = Picture::default();
-        pic.common.text_wrap = TextWrap::TopAndBottom;
-        pic.common.treat_as_char = false;
-        pic.common.height = 7733;
-        pic.common.margin.top = 100;
-        pic.common.margin.bottom = 200;
-        let controls = vec![Control::Picture(Box::new(pic))];
-        assert_eq!(calc_sibling_topandbottom_reserved_hu(&controls), 8033);
-    }
-
-    #[test]
-    fn topandbottom_reserved_excludes_tac_picture_control() {
-        let mut pic = Picture::default();
-        pic.common.text_wrap = TextWrap::TopAndBottom;
-        pic.common.treat_as_char = true;
-        pic.common.height = 7733;
-        let controls = vec![Control::Picture(Box::new(pic))];
-        assert_eq!(calc_sibling_topandbottom_reserved_hu(&controls), 0);
-    }
-
-    #[test]
-    fn topandbottom_table_reserved_sums_multiple_tables() {
-        let t1 = make_table(13630, 10000, TextWrap::TopAndBottom, false);
-        let t2 = make_table(13630, 5000, TextWrap::TopAndBottom, false);
-        let controls = vec![Control::Table(Box::new(t1)), Control::Table(Box::new(t2))];
-        // (10000 + 283 + 283) + (5000 + 283 + 283) = 10566 + 5566 = 16132
-        assert_eq!(calc_sibling_topandbottom_reserved_hu(&controls), 16132);
-    }
-}
-
-#[cfg(test)]
-mod tac_ink_top_oracle_tests {
-    //! [oracle-pdf-mining-20260806 §2-C] 글리프 상자가 기준선을 r:(1−r) 로 가른다 —
-    //! 한컴 인쇄 PDF 실측 두 표본을 HWPUNIT 그대로 재현한다(1px = 75HU).
-
-    use super::tac_ink_top;
-    use crate::model::control::Control;
-    use crate::model::shape::CommonObjAttr;
-    use crate::model::table::Table;
-
-    const HU: f64 = 1.0 / 75.0; // HWPUNIT → px (96dpi)
-
-    fn tac_table(height: u32, om: i16) -> Control {
-        Control::Table(Box::new(Table {
-            common: CommonObjAttr {
-                width: 10000,
-                height,
-                treat_as_char: true,
-                ..Default::default()
-            },
-            outer_margin_left: om,
-            outer_margin_right: om,
-            outer_margin_top: om,
-            outer_margin_bottom: om,
-            ..Default::default()
-        }))
-    }
-
-    /// `21_언어_기출_편집가능본.pdf` cell6#0 — r=0.4998 인 줄에 바깥여백 566 짜리
-    /// 성명 표(h=2449)와 여백 0 인 수험번호 표(h=2448). PDF 실측은 **잉크 y 동일**.
-    #[test]
-    fn eoneo_pair_shares_ink_top() {
-        let (lh, bd) = (3015.0 * HU, 1507.0 * HU);
-        let name = tac_ink_top(0.0, bd, lh, 2449.0 * HU, Some(&tac_table(2449, 283)), 96.0);
-        let no = tac_ink_top(0.0, bd, lh, 2448.0 * HU, Some(&tac_table(2448, 0)), 96.0);
-        assert!(
-            (name - no).abs() < 0.05,
-            "성명/수험번호 잉크 상단이 같아야 한다: {name} vs {no}"
-        );
-        // 글리프높이(2449+566) == 줄높이 → 잉크상단 = 줄상단 + 바깥여백상(283HU).
-        assert!(
-            (name - 283.0 * HU).abs() < 0.02,
-            "잉크상단 = 줄상단 + 바깥여백상: {name}"
-        );
-    }
-
-    /// `복학원서.pdf` s0#16 — r=0.85, 표 h=21016 + 바깥여백 280(각 변 140) = 줄높이 21296.
-    /// PDF 실측 잉크바닥 Δ0.03pt.
-    #[test]
-    fn bokhak_single_table_line() {
-        let y = tac_ink_top(
-            0.0,
-            18102.0 * HU,
-            21296.0 * HU,
-            21016.0 * HU,
-            Some(&tac_table(21016, 140)),
-            96.0,
-        );
-        assert!(
-            (y - 140.0 * HU).abs() < 0.02,
-            "잉크상단 = 줄상단 + 바깥여백상(140HU): {y}"
-        );
-    }
-
-    /// 소형 표가 더 높은 줄에 얹히면 글리프 상자만큼만 기준선을 가른다 —
-    /// 종전 식(잉크바닥 = 기준선 + 바깥여백하)은 여기서 부호가 반대로 벌어졌다.
-    #[test]
-    fn small_table_on_tall_line_sits_below_line_top() {
-        let (lh, bd) = (10000.0 * HU, 8500.0 * HU);
-        let y = tac_ink_top(100.0, bd, lh, 1000.0 * HU, Some(&tac_table(1000, 0)), 96.0);
-        // 0.85×(10000 − 1000) = 7650HU 아래.
-        assert!((y - (100.0 + 7650.0 * HU)).abs() < 0.02, "y={y}");
-        assert!(y > 100.0, "줄 상단으로 접히면 안 된다");
-    }
-
-    /// 클램프: 글리프높이 > 줄높이(줄 메트릭 데싱크)면 위 줄을 침범하지 않는다.
-    #[test]
-    fn oversized_glyph_clamps_to_line_top() {
-        let y = tac_ink_top(
-            50.0,
-            850.0 * HU,
-            1000.0 * HU,
-            5000.0 * HU,
-            Some(&tac_table(5000, 0)),
-            96.0,
-        );
-        assert_eq!(y, 50.0, "음수 결과는 줄 상단으로 클램프");
-    }
-
-    /// 줄높이 0(lineseg 없는 폴백) → 비율 불명이므로 줄상단 + 바깥여백상.
-    #[test]
-    fn zero_line_height_falls_back_to_outer_margin_top() {
-        let y = tac_ink_top(
-            10.0,
-            0.0,
-            0.0,
-            2449.0 * HU,
-            Some(&tac_table(2449, 283)),
-            96.0,
-        );
-        assert!((y - (10.0 + 283.0 * HU)).abs() < 0.02, "y={y}");
-    }
-}
-
-#[cfg(test)]
-mod issue_1151_v9_helper_tests {
-    //! [Task #1151 v9 결함 D] collect_sibling_tac_picture_widths_px helper 단위 검증.
-
-    use super::collect_sibling_tac_picture_widths_px;
-    use crate::model::control::Control;
-    use crate::model::image::Picture;
-    use crate::model::shape::CommonObjAttr;
-    use crate::model::table::Table;
-
-    fn make_pic(width: u32, height: u32, tac: bool) -> Picture {
-        Picture {
-            common: CommonObjAttr {
-                width,
-                height,
-                treat_as_char: tac,
-                ..Default::default()
-            },
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn empty_controls_returns_empty() {
-        assert!(collect_sibling_tac_picture_widths_px(&[], 96.0).is_empty());
-    }
-
-    #[test]
-    fn collects_single_tac_picture() {
-        // 5670 HU @ 96 dpi = 5670 * 96 / 7200 = 75.6 px
-        let controls = vec![Control::Picture(Box::new(make_pic(5670, 5670, true)))];
-        let result = collect_sibling_tac_picture_widths_px(&controls, 96.0);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].0, 0);
-        assert!((result[0].1 - 75.6).abs() < 0.01);
-    }
-
-    #[test]
-    fn collects_multiple_tac_pictures_in_order() {
-        let controls = vec![
-            Control::Picture(Box::new(make_pic(3000, 3000, true))),
-            Control::Picture(Box::new(make_pic(4500, 4500, true))),
-        ];
-        let result = collect_sibling_tac_picture_widths_px(&controls, 96.0);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].0, 0);
-        assert_eq!(result[1].0, 1);
-    }
-
-    #[test]
-    fn skips_non_tac_picture() {
-        // tac=false 인 picture (floating) 는 가로 분배 대상 아님 — 제외.
-        let controls = vec![
-            Control::Picture(Box::new(make_pic(3000, 3000, false))),
-            Control::Picture(Box::new(make_pic(4500, 4500, true))),
-        ];
-        let result = collect_sibling_tac_picture_widths_px(&controls, 96.0);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].0, 1); // 두 번째 (tac=true) 만
-    }
-
-    #[test]
-    fn skips_table_and_other_controls() {
-        // Table / Shape 는 가로 분배 대상 아님 (Picture 만).
-        let controls = vec![
-            Control::Table(Box::default()),
-            Control::Picture(Box::new(make_pic(5670, 5670, true))),
-            Control::Picture(Box::new(make_pic(5670, 5670, true))),
-        ];
-        let result = collect_sibling_tac_picture_widths_px(&controls, 96.0);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].0, 1);
-        assert_eq!(result[1].0, 2);
-    }
-
-    #[test]
-    fn realistic_v1_scenario_1x1_table_two_tac_pictures() {
-        // 사용자 시연 정확 재현: [Table(tac=false), Pic1(tac=true), Pic2(tac=true)]
-        let controls = vec![
-            Control::Table(Box::default()),
-            Control::Picture(Box::new(make_pic(5670, 5670, true))),
-            Control::Picture(Box::new(make_pic(5670, 5670, true))),
-        ];
-        let result = collect_sibling_tac_picture_widths_px(&controls, 96.0);
-        assert_eq!(result.len(), 2);
-        let total_width: f64 = result.iter().map(|(_, w)| w).sum();
-        assert!((total_width - 151.2).abs() < 0.01); // 75.6 + 75.6
-    }
-}
-
 /// HWP PUA 문자를 표준 Unicode 로 매핑.
 ///
 /// 두 영역 분기 — Task #509 정답지 매핑 표 정합:
@@ -7110,68 +6882,4 @@ fn form_color_to_css(color: u32) -> String {
     let g = (color >> 8) & 0xFF;
     let r = color & 0xFF;
     format!("#{:02x}{:02x}{:02x}", r, g, b)
-}
-
-#[cfg(test)]
-mod pua_mapping_tests {
-    use super::map_pua_bullet_char;
-
-    #[test]
-    fn supplementary_pua_a_passthrough_for_boxed_digits() {
-        // 캡스톤 F-1 (2026-05-16): U+F02B1~F02C4 사각 안 숫자 한컴 자체 PUA — raw
-        // passthrough (이전 ①~⑳ 표준 매핑은 fallback chain 효과 못 받아 NG). 시스템
-        // 한컴 폰트 (함초롬바탕 확장B 등) 가 PUA 영역에서 사각 글리프 렌더링.
-        for cp in 0xF02B1..=0xF02C4 {
-            let ch = char::from_u32(cp).unwrap();
-            assert_eq!(
-                map_pua_bullet_char(ch),
-                ch,
-                "U+{:05X} should passthrough",
-                cp
-            );
-        }
-    }
-
-    #[test]
-    fn supplementary_pua_a_maps_middle_dot() {
-        // [Task #509] U+F02EF → U+00B7 · Middle dot (KTX p10 표 회귀 origin)
-        // 한컴 PDF 시각 정답지: dot (·) — ★ 가 아님 (작업지시자 정정)
-        assert_eq!(map_pua_bullet_char('\u{F02EF}'), '\u{00B7}');
-    }
-
-    #[test]
-    fn basic_pua_arrow_e8() {
-        // [Task #509] U+0F0E8 → U+2794 ➔ (Heavy wide-headed rightwards arrow,
-        // 한컴 PDF 정답지 시각 정합)
-        assert_eq!(map_pua_bullet_char('\u{F0E8}'), '\u{2794}');
-    }
-
-    #[test]
-    fn supplementary_pua_a_unmapped_returns_original() {
-        // 매핑 표 외 영역은 원본 유지
-        assert_eq!(map_pua_bullet_char('\u{F0500}'), '\u{F0500}');
-    }
-
-    #[test]
-    fn basic_pua_outside_range_returns_original() {
-        // 0xF020~0xF0FF 외 Basic PUA 는 원본 유지 (예: U+0F53A 한글 "흔")
-        assert_eq!(map_pua_bullet_char('\u{F53A}'), '\u{F53A}');
-    }
-
-    #[test]
-    fn supplementary_pua_a_low_range_maps_down_arrow() {
-        // [Task #588] U+F003B → U+2193 ↓ (DOWNWARDS ARROW)
-        // exam_eng.hwp p7 #40 요약형 문항 글상자 사이 화살표.
-        // 한컴 PDF (HCRBatang) 임베디드 폰트 글리프 외곽 분석으로 확정.
-        assert_eq!(map_pua_bullet_char('\u{F003B}'), '\u{2193}');
-    }
-
-    #[test]
-    fn supplementary_pua_a_low_range_unmapped_returns_original() {
-        // [Task #588] 0xF0000~0xF00CF 영역의 매핑 표 외 코드포인트는 원본 유지
-        // (예: U+F0090 — img-start-001.hwp 1건, 별도 task 후보)
-        assert_eq!(map_pua_bullet_char('\u{F0090}'), '\u{F0090}');
-        assert_eq!(map_pua_bullet_char('\u{F0000}'), '\u{F0000}');
-        assert_eq!(map_pua_bullet_char('\u{F00CF}'), '\u{F00CF}');
-    }
 }

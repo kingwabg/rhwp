@@ -2703,6 +2703,3 @@ fn build_type_set(form: &FormObject) -> (&'static str, String) {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -7,9 +7,9 @@ use super::super::render_tree::*;
 use super::super::style_resolver::ResolvedStyleSet;
 use super::super::{hwpunit_to_px, ShapeStyle};
 use super::border_rendering::{
-    build_row_col_x, collect_cell_borders, render_edge_borders, render_transparent_borders,
+    collect_cell_borders, render_edge_borders, render_transparent_borders,
 };
-use super::table_layout::{calc_nested_split_rows, NestedTableSplit};
+use super::table_layout::{calc_nested_split_rows, px_lines, row_col_x_px, NestedTableSplit};
 use super::text_measurement::{estimate_text_width, resolved_to_text_style};
 use super::utils::find_bin_data;
 use super::{CellContext, CellPathEntry, LayoutEngine};
@@ -22,35 +22,14 @@ use crate::model::style::{Alignment, BorderLine};
 // 표 수평 정렬 보조 타입은 table_layout.rs에 통합됨
 
 /// [Task #1025] `row` 를 포함하는 rowspan 블록 범위 `[b_start, b_end)`.
-/// rs>1 셀이 겹치는 행을 전이적으로 확장한다(겹침 없으면 `[row, row+1)`).
-/// 페이지네이터 `mt.row_block_for` / `advance_row_block_cut` 와 동일한 블록 정의.
-fn rowspan_block_range(table: &crate::model::table::Table, row: usize) -> (usize, usize) {
-    let mut b_start = row;
-    let mut b_end = row + 1;
-    loop {
-        let mut changed = false;
-        for c in &table.cells {
-            if c.row_span <= 1 {
-                continue;
-            }
-            let cs = c.row as usize;
-            let ce = cs + c.row_span as usize;
-            if cs < b_end && ce > b_start {
-                if cs < b_start {
-                    b_start = cs;
-                    changed = true;
-                }
-                if ce > b_end {
-                    b_end = ce;
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    (b_start, b_end)
+/// `blocks` 는 `TableGrid::row_blocks()`(관통자 없는 y선이 경계) — 함수 상단 1회 산출.
+/// 페이지네이터 `mt.row_block_for` / `advance_row_block_cut` 와 동일한 블록 정의. 범위 밖 행은 `[row, row+1)`.
+fn rowspan_block_range(blocks: &[(usize, usize)], row: usize) -> (usize, usize) {
+    blocks
+        .iter()
+        .copied()
+        .find(|&(s, e)| s <= row && row < e)
+        .unwrap_or((row, row + 1))
 }
 
 /// [Task #1025] 블록 `[b_start, b_end)` 컷 벡터에서 `cell` 의 인덱스.
@@ -115,6 +94,18 @@ impl LayoutEngine {
         measured_table: Option<&MeasuredTable>,
         clamp_header_negative_para_offset: bool,
     ) {
+        // [Task #1025] page-larger 블록 분할이면 컷이 블록-셀 인덱스 → 블록 범위(rowspan-확장).
+        // 셀 루프 불변 — 격자 1회.
+        let (split_start_block, split_end_block) = if is_block_split {
+            let blocks = crate::model::table_grid::TableGrid::lines_only(table).row_blocks();
+            (
+                (!start_cut.is_empty()).then(|| rowspan_block_range(&blocks, start_row)),
+                (!end_cut.is_empty())
+                    .then(|| rowspan_block_range(&blocks, end_row.saturating_sub(1))),
+            )
+        } else {
+            (None, None)
+        };
         for (cell_idx, cell) in table.cells.iter().enumerate() {
             let cell_row = cell.row as usize;
             let cell_col = cell.col as usize;
@@ -183,18 +174,7 @@ impl LayoutEngine {
             }
 
             // 이 셀이 분할 행에 속하는지 판별 (clip 플래그에 사용)
-            // [Task #1025] page-larger 블록 분할이면 컷이 블록-셀 인덱스 → 블록 범위
-            // (rowspan-확장)와 셀 교차로 판정. 그 외는 기존 per-row 판정.
-            let split_start_block = if is_block_split && !start_cut.is_empty() {
-                Some(rowspan_block_range(table, start_row))
-            } else {
-                None
-            };
-            let split_end_block = if is_block_split && !end_cut.is_empty() {
-                Some(rowspan_block_range(table, end_row.saturating_sub(1)))
-            } else {
-                None
-            };
+            // [Task #1025] 블록 분할이면 블록 범위(함수 상단)와 셀 교차로 판정. 그 외는 기존 per-row 판정.
             let is_split_start_row = if is_block_split {
                 split_start_block.is_some_and(|(s, e)| cell_row < e && cell_end_row > s)
             } else {
@@ -1523,9 +1503,10 @@ impl LayoutEngine {
         let col_count = table.col_count as usize;
         let row_count = table.row_count as usize;
         let cell_spacing = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
+        let grid = table.grid();
 
         // ── 1. 열 폭 계산 + 2. 행 높이 계산 (table_layout 공유 메서드) ──
-        let col_widths = self.resolve_column_widths(table, col_count);
+        let col_widths = self.resolve_column_widths(&grid, table, col_count);
         let mut row_heights = self.resolve_row_heights(
             table,
             col_count,
@@ -1560,15 +1541,14 @@ impl LayoutEngine {
             // [Task #1025] page-larger 블록 분할(is_block_split)이면 컷이 rowspan
             // 블록-셀 인덱스 → 블록 범위(rowspan-확장)로 per-row 컷 매핑. 그 외(일반
             // 분할)는 기존 per-row(row_span==1) 경로 유지(rowspan 행은 atomic).
-            let start_block = if is_block_split && !start_cut.is_empty() {
-                Some(rowspan_block_range(table, start_row))
+            let (start_block, end_block) = if is_block_split {
+                let blocks = crate::model::table_grid::TableGrid::lines_only(table).row_blocks();
+                (
+                    (!start_cut.is_empty()).then(|| rowspan_block_range(&blocks, start_row)),
+                    (!end_cut.is_empty()).then(|| rowspan_block_range(&blocks, split_last_row)),
+                )
             } else {
-                None
-            };
-            let end_block = if is_block_split && !end_cut.is_empty() {
-                Some(rowspan_block_range(table, split_last_row))
-            } else {
-                None
+                (None, None)
             };
             for r in rows_to_set {
                 if r >= row_count {
@@ -1743,21 +1723,10 @@ impl LayoutEngine {
         }
 
         // ── 3. 누적 위치 계산 ──
-        let mut col_x = vec![0.0f64; col_count + 1];
-        for i in 0..col_count {
-            col_x[i + 1] =
-                col_x[i] + col_widths[i] + if i + 1 < col_count { cell_spacing } else { 0.0 };
-        }
+        let col_x = px_lines(&col_widths, cell_spacing);
 
         // 행별 열 위치 계산 (셀별 독립 너비 지원)
-        let row_col_x = build_row_col_x(
-            table,
-            &col_widths,
-            col_count,
-            row_count,
-            cell_spacing,
-            self.dpi,
-        );
+        let row_col_x = row_col_x_px(&grid, table, &col_widths, cell_spacing, self.dpi);
 
         let table_width = row_col_x
             .iter()

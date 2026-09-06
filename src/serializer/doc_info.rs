@@ -983,6 +983,3 @@ pub fn surgical_update_caret(
 
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

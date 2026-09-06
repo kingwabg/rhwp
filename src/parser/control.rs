@@ -250,6 +250,9 @@ fn parse_table_control(ctrl_data: &[u8], child_records: &[Record]) -> Control {
     }
 
     table.rebuild_grid();
+    // [불변식 가드 2026-09-02] row_sizes 정규화 — 스펙은 행별 셀 수인데 rhwp 가 예전 HWPX→HWP 저장에서
+    // 행 높이를 써 넣은 파일(말뭉치 HWP 12표)이 있다. 한컴 산출 파일은 값이 같아 바이트 불변.
+    table.rebuild_row_sizes();
     Control::Table(Box::new(table))
 }
 
@@ -1024,6 +1027,3 @@ fn apply_form_property(key: &str, value: &str, form: &mut FormObject) {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>그림으로 보는 엔진 수리 롤업 — 2026-08-05 → 08-09, 무엇이 바뀌었나</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface: #fcfcfb; --page: #f9f9f7;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,.10);
+  --blue: #2a78d6; --orange: #eb6834; --green: #1baf7a; --yellow: #eda100;
+  --red: #d03b3b; --textbar: #d7d5cd;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface: #1a1a19; --page: #0d0d0d;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,.10);
+    --blue: #3987e5; --orange: #d95926; --green: #199e70; --yellow: #c98500;
+    --red: #e66767; --textbar: #4a4a47;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.75 system-ui, -apple-system, "Segoe UI", "Apple SD Gothic Neo", sans-serif; }
+.wrap { max-width: 920px; margin: 0 auto; padding: 40px 24px 120px; }
+h1 { font-size: 26px; margin: 20px 0 8px; letter-spacing: -.3px; }
+.sub { color: var(--ink-2); margin: 0 0 8px; }
+h2 { font-size: 21px; margin: 60px 0 8px; padding-top: 20px; border-top: 1px solid var(--grid); }
+h2 .no { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--ink); color: var(--page); font-size: 15px; margin-right: 10px; vertical-align: -4px; }
+h3 { font-size: 17px; margin: 28px 0 6px; }
+p { margin: 10px 0; }
+.lead { font-size: 17px; color: var(--ink-2); }
+figure { margin: 22px 0; background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; padding: 20px; }
+figcaption { color: var(--ink-2); font-size: 14px; margin-top: 12px; line-height: 1.6; }
+svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+svg text { font-family: system-ui, "Apple SD Gothic Neo", sans-serif; }
+.talk { background: var(--surface); border: 1px solid var(--ring); border-left: 4px solid var(--blue); border-radius: 10px; padding: 14px 18px; margin: 16px 0; }
+.talk.warn { border-left-color: var(--red); }
+.talk.good { border-left-color: var(--green); }
+.talk b.q { display: block; margin-bottom: 4px; }
+table { border-collapse: collapse; width: 100%; margin: 14px 0; background: var(--surface); font-size: 14.5px; }
+th, td { border: 1px solid var(--grid); padding: 8px 12px; text-align: left; }
+th { background: color-mix(in oklab, var(--surface) 92%, var(--ink)); }
+.ok { color: var(--green); font-weight: 700; }
+.no2 { color: var(--red); font-weight: 700; }
+.half { color: var(--yellow); font-weight: 700; }
+.foot { margin-top: 60px; padding-top: 16px; border-top: 1px solid var(--grid); color: var(--muted); font-size: 13px; }
+a { color: var(--blue); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>그림으로 보는 엔진 수리 롤업</h1>
+<p class="sub">2026-08-05 진단 보고서(갭 대장 §10) 이후 나흘간 무엇이 바뀌었나 — 178커밋, PR #1 (<code>233e32eb4</code>) merge</p>
+<p class="lead">이 문서는 <a href="layout_physics_20260805.html">물리 법칙 보고서</a>가 진단한 갭들이
+어떻게 닫혔는지를 전/후 그림으로 보여준다. 판정 근거는 전부 한컴 저장 코퍼스(656파일 전수)와
+인쇄 PDF 실측이다 — 추측으로 고친 것은 없다.</p>
+
+<h2><span class="no">0</span>점수판</h2>
+<table>
+<tr><th>갭 대장 항목</th><th>결과</th></tr>
+<tr><td>P0 — 어울림·배치 직결 5건</td><td class="ok">5/5 종결</td></tr>
+<tr><td>P1 — 정확성·왕복 5건</td><td class="half">3/5 종결 (Tight/Through 윤곽·Inside/Outside 잔여)</td></tr>
+<tr><td>P2 — 구조 부채</td><td class="no2">보류 (계획대로 — 죽은 코드 178줄 삭제만)</td></tr>
+<tr><td>보고서 밖 추가 수확</td><td class="ok">저장 손상 실버그 가족 발견·종결 (표 + 수식)</td></tr>
+<tr><td>검증</td><td class="ok">테스트 3,461건 전부 통과 · clippy·fmt 클린 · CI 녹색</td></tr>
+</table>
+<div class="talk warn"><b class="q">보고서의 법칙 2개는 오히려 반증됐다</b>
+"end-anchor 표 = 자기 줄"과 "뒤 텍스트 baseline = 표 바닥"(법칙 4)은 코퍼스 전수 조사에서
+틀린 것으로 판명 — 고치는 대신 <b>규칙을 폐기</b>했다. 진단이 곧 정답은 아니었다는 기록.</div>
+
+<h2><span class="no">1</span>기준선(baseline)은 상수가 아니었다 — 0.85 하드코딩 제거</h2>
+<p>렌더러 다섯 지점이 줄 기준선을 <b>무조건 0.85·줄높이</b>로 찍고 있었다. 실제로는
+문단 세로정렬(<code>ParaShape.attr1</code> bit20-21)이 비율을 정한다: 글꼴기준 0.85 ·
+가운데 0.50 · 아래쪽 1.00. 저장 seg 573,835개 실측으로 확정.</p>
+<figure>
+<svg viewBox="0 0 840 240" role="img">
+  <text x="150" y="20" text-anchor="middle" font-size="14" font-weight="700" fill="var(--red)">전 — 전부 0.85 고정</text>
+  <text x="590" y="20" text-anchor="middle" font-size="14" font-weight="700" fill="var(--green)">후 — 문단 세로정렬을 따른다</text>
+  <!-- before: three boxes, baseline all at 0.85 -->
+  <g>
+    <g transform="translate(20,40)">
+      <rect width="80" height="120" fill="none" stroke="var(--axis)"/>
+      <line x1="0" y1="102" x2="80" y2="102" stroke="var(--red)" stroke-width="2" stroke-dasharray="5 3"/>
+      <text x="40" y="96" text-anchor="middle" font-size="20" fill="var(--ink)">글</text>
+      <text x="40" y="145" text-anchor="middle" font-size="12" fill="var(--ink-2)">글꼴기준</text>
+      <text x="40" y="163" text-anchor="middle" font-size="12" fill="var(--red)">0.85</text>
+    </g>
+    <g transform="translate(115,40)">
+      <rect width="80" height="120" fill="none" stroke="var(--axis)"/>
+      <line x1="0" y1="102" x2="80" y2="102" stroke="var(--red)" stroke-width="2" stroke-dasharray="5 3"/>
+      <text x="40" y="96" text-anchor="middle" font-size="20" fill="var(--ink)">글</text>
+      <text x="40" y="145" text-anchor="middle" font-size="12" fill="var(--ink-2)">가운데</text>
+      <text x="40" y="163" text-anchor="middle" font-size="12" fill="var(--red)">0.85 ✗</text>
+    </g>
+    <g transform="translate(210,40)">
+      <rect width="80" height="120" fill="none" stroke="var(--axis)"/>
+      <line x1="0" y1="102" x2="80" y2="102" stroke="var(--red)" stroke-width="2" stroke-dasharray="5 3"/>
+      <text x="40" y="96" text-anchor="middle" font-size="20" fill="var(--ink)">글</text>
+      <text x="40" y="145" text-anchor="middle" font-size="12" fill="var(--ink-2)">아래쪽</text>
+      <text x="40" y="163" text-anchor="middle" font-size="12" fill="var(--red)">0.85 ✗</text>
+    </g>
+  </g>
+  <!-- after -->
+  <g>
+    <g transform="translate(460,40)">
+      <rect width="80" height="120" fill="none" stroke="var(--axis)"/>
+      <line x1="0" y1="102" x2="80" y2="102" stroke="var(--green)" stroke-width="2" stroke-dasharray="5 3"/>
+      <text x="40" y="96" text-anchor="middle" font-size="20" fill="var(--ink)">글</text>
+      <text x="40" y="145" text-anchor="middle" font-size="12" fill="var(--ink-2)">글꼴기준</text>
+      <text x="40" y="163" text-anchor="middle" font-size="12" fill="var(--green)">0.85</text>
+    </g>
+    <g transform="translate(555,40)">
+      <rect width="80" height="120" fill="none" stroke="var(--axis)"/>
+      <line x1="0" y1="60" x2="80" y2="60" stroke="var(--green)" stroke-width="2" stroke-dasharray="5 3"/>
+      <text x="40" y="54" text-anchor="middle" font-size="20" fill="var(--ink)">글</text>
+      <text x="40" y="145" text-anchor="middle" font-size="12" fill="var(--ink-2)">가운데</text>
+      <text x="40" y="163" text-anchor="middle" font-size="12" fill="var(--green)">0.50</text>
+    </g>
+    <g transform="translate(650,40)">
+      <rect width="80" height="120" fill="none" stroke="var(--axis)"/>
+      <line x1="0" y1="120" x2="80" y2="120" stroke="var(--green)" stroke-width="2" stroke-dasharray="5 3"/>
+      <text x="40" y="114" text-anchor="middle" font-size="20" fill="var(--ink)">글</text>
+      <text x="40" y="145" text-anchor="middle" font-size="12" fill="var(--ink-2)">아래쪽</text>
+      <text x="40" y="163" text-anchor="middle" font-size="12" fill="var(--green)">1.00</text>
+    </g>
+  </g>
+  <text x="420" y="225" text-anchor="middle" font-size="12.5" fill="var(--muted)">점선 = 기준선(글자가 앉는 줄). 상자 = 줄높이(lh)</text>
+</svg>
+<figcaption>가운데·아래쪽 정렬 문단에서 글자가 4.4pt까지 이탈하던 원인. r=0.85 문단(전체의 91%)은
+산술을 그대로 둬 <b>비트 단위 불변</b> — 기존 문서는 픽셀 하나 안 움직인다.
+<code>ensure_min_baseline</code>의 0.8 바닥은 한컴 PDF 실측 결과 한컴 미러가 맞아 코드 변경 0으로 종결.</figcaption>
+</figure>
+
+<h2><span class="no">2</span>글자처럼취급(TAC) 개체 — 세로 배치식과 줄바꿈 참여</h2>
+<p>TAC 개체(표·수식·그림)의 글리프 상자는 기준선을 <b>r : (1−r)</b>로 가른다.
+종전에는 "바닥 = 기준선"으로 clamp 해서 큰 개체가 위로 붕 떴다. 또 대형 TAC 표의 폭이
+줄바꿈 계산에 안 들어가 줄 우변을 819px 뚫고 나갔다.</p>
+<figure>
+<svg viewBox="0 0 840 250" role="img">
+  <text x="200" y="20" text-anchor="middle" font-size="14" font-weight="700" fill="var(--red)">전 — 표 바닥을 기준선에 clamp</text>
+  <text x="630" y="20" text-anchor="middle" font-size="14" font-weight="700" fill="var(--green)">후 — 상자가 기준선을 r:(1−r)로 가름</text>
+  <!-- before -->
+  <g transform="translate(40,45)">
+    <line x1="0" y1="130" x2="330" y2="130" stroke="var(--red)" stroke-width="2" stroke-dasharray="5 3"/>
+    <text x="10" y="124" font-size="18" fill="var(--ink)">텍스트</text>
+    <rect x="120" y="30" width="130" height="100" fill="color-mix(in oklab, var(--blue) 14%, transparent)" stroke="var(--blue)" stroke-width="1.5"/>
+    <line x1="130" y1="63" x2="240" y2="63" stroke="var(--blue)" opacity=".5"/>
+    <line x1="130" y1="96" x2="240" y2="96" stroke="var(--blue)" opacity=".5"/>
+    <text x="185" y="20" text-anchor="middle" font-size="12" fill="var(--ink-2)">표</text>
+    <text x="285" y="124" font-size="18" fill="var(--ink)">텍스트</text>
+    <text x="165" y="165" text-anchor="middle" font-size="12.5" fill="var(--red)">바닥이 기준선에 딱 붙음 — 실측과 불일치</text>
+  </g>
+  <!-- after -->
+  <g transform="translate(470,45)">
+    <line x1="0" y1="115" x2="330" y2="115" stroke="var(--green)" stroke-width="2" stroke-dasharray="5 3"/>
+    <text x="10" y="109" font-size="18" fill="var(--ink)">텍스트</text>
+    <rect x="120" y="30" width="130" height="100" fill="color-mix(in oklab, var(--blue) 14%, transparent)" stroke="var(--blue)" stroke-width="1.5"/>
+    <line x1="130" y1="63" x2="240" y2="63" stroke="var(--blue)" opacity=".5"/>
+    <line x1="130" y1="96" x2="240" y2="96" stroke="var(--blue)" opacity=".5"/>
+    <text x="185" y="20" text-anchor="middle" font-size="12" fill="var(--ink-2)">표</text>
+    <text x="285" y="109" font-size="18" fill="var(--ink)">텍스트</text>
+    <!-- r / 1-r markers -->
+    <line x1="262" y1="30" x2="262" y2="115" stroke="var(--axis)"/>
+    <line x1="262" y1="115" x2="262" y2="130" stroke="var(--axis)"/>
+    <text x="272" y="76" font-size="12" fill="var(--ink-2)">r</text>
+    <text x="272" y="128" font-size="12" fill="var(--ink-2)">1−r</text>
+    <text x="165" y="165" text-anchor="middle" font-size="12.5" fill="var(--green)">한컴 저장 lh(32352/15998) 정확 재현</text>
+  </g>
+  <text x="420" y="215" text-anchor="middle" font-size="12.5" fill="var(--muted)">함께 수리: 대형 TAC 개체 폭이 줄바꿈에 참여(BreakToken::Object) — 폭이 줄을 넘으면 자기 줄로 분리</text>
+  <text x="420" y="237" text-anchor="middle" font-size="12.5" fill="var(--muted)">다중 소형 TAC 3개 세로 스택 → 1줄 가로 병치 (원인은 레이아웃이 아니라 attr 오설정 — 엔진 diff 2줄)</text>
+</svg>
+<figcaption>글리프 상자 분할 모델은 §1의 텍스트 기준선과 같은 물리다 — 한컴은 글자와 개체를
+같은 식으로 앉힌다는 것이 이번 채굴의 구조적 결론.</figcaption>
+</figure>
+
+<h2><span class="no">3</span>end-anchor 규칙 반증 — 규칙을 지운 것이 수리였다</h2>
+<p>8-05에 도입한 "end-anchor 표는 자기 줄을 가진다" 생산 규칙을, 8-06 코퍼스 전수(TAC 표
+5,751건)가 반증했다. 폭이 남으면 표는 <b>앞 텍스트 줄에 남는다</b>. seg가 갈라진 15건은
+100% 폭 초과/강제 줄바꿈으로 설명된다.</p>
+<figure>
+<svg viewBox="0 0 840 210" role="img">
+  <text x="200" y="20" text-anchor="middle" font-size="14" font-weight="700" fill="var(--red)">전 — 자기 줄 강제 (우리가 만든 규칙)</text>
+  <text x="630" y="20" text-anchor="middle" font-size="14" font-weight="700" fill="var(--green)">후 — 폭 규칙 하나만 (한컴 실측)</text>
+  <!-- before -->
+  <g transform="translate(40,40)">
+    <rect width="330" height="130" fill="none" stroke="var(--axis)"/>
+    <text x="12" y="32" font-size="15" fill="var(--ink)">텍스트 텍스트</text>
+    <rect x="12" y="48" width="90" height="40" fill="color-mix(in oklab, var(--blue) 14%, transparent)" stroke="var(--blue)"/>
+    <text x="57" y="72" text-anchor="middle" font-size="12" fill="var(--ink-2)">소형 표</text>
+    <text x="12" y="118" font-size="15" fill="var(--ink)">뒤 텍스트…</text>
+    <text x="165" y="155" text-anchor="middle" font-size="12.5" fill="var(--red)">폭이 남는데도 표를 다음 줄로 밀었다 ✗</text>
+  </g>
+  <!-- after -->
+  <g transform="translate(470,40)">
+    <rect width="330" height="130" fill="none" stroke="var(--axis)"/>
+    <text x="12" y="36" font-size="15" fill="var(--ink)">텍스트 텍스트</text>
+    <rect x="128" y="14" width="90" height="34" fill="color-mix(in oklab, var(--blue) 14%, transparent)" stroke="var(--blue)"/>
+    <text x="173" y="35" text-anchor="middle" font-size="12" fill="var(--ink-2)">소형 표</text>
+    <text x="228" y="36" font-size="15" fill="var(--ink)"> 뒤 텍스트</text>
+    <rect x="12" y="62" width="306" height="40" fill="color-mix(in oklab, var(--blue) 14%, transparent)" stroke="var(--blue)"/>
+    <text x="165" y="86" text-anchor="middle" font-size="12" fill="var(--ink-2)">대형 표 (폭 &gt; 줄폭) → 이때만 자기 줄</text>
+    <text x="165" y="155" text-anchor="middle" font-size="12.5" fill="var(--green)">samples/tac-case-001..005로 실증 ✓</text>
+  </g>
+</svg>
+<figcaption>결정적 실험: 같은 문단에서 표 폭만 키우면 — 표가 밀리는 게 아니라 <b>뒤 텍스트가</b> 밀린다.
+우리 규칙과 상하 반대였다. 규칙을 촉발했던 "46px 증상"의 진짜 원인은 표 attr 오설정이었다.</figcaption>
+</figure>
+
+<h2><span class="no">4</span>이중 진실 저장 손상 — 이번 작업의 최대 실버그</h2>
+<p>표·수식은 HWP5 파스 원본 바이트(<code>raw_ctrl_data</code> 미러)를 들고 있고,
+.hwp 직렬화기는 <b>미러를 그대로 기록</b>한다. 편집기는 물리(<code>CommonObjAttr</code>)만
+고쳤다 — 그래서 HWPX 표를 <b>드래그만 해도</b> 저장에서 배치·크기가 붕괴했고,
+수식 배치 편집은 저장에서 조용히 원복됐다.</p>
+<figure>
+<svg viewBox="0 0 840 290" role="img">
+  <text x="200" y="20" text-anchor="middle" font-size="14" font-weight="700" fill="var(--red)">전 — 미러가 낡은 채 저장됨</text>
+  <text x="630" y="20" text-anchor="middle" font-size="14" font-weight="700" fill="var(--green)">후 — setter가 미러를 물리에 맞춘다</text>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="var(--axis)"/>
+    </marker>
+    <marker id="arrg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="var(--green)"/>
+    </marker>
+  </defs>
+  <!-- before -->
+  <g transform="translate(30,45)">
+    <rect x="0" y="55" width="110" height="44" rx="8" fill="none" stroke="var(--ink)"/>
+    <text x="55" y="81" text-anchor="middle" font-size="13" fill="var(--ink)">편집기 setter</text>
+    <rect x="180" y="10" width="150" height="44" rx="8" fill="color-mix(in oklab, var(--green) 12%, transparent)" stroke="var(--green)"/>
+    <text x="255" y="30" text-anchor="middle" font-size="13" fill="var(--ink)">물리 CommonObjAttr</text>
+    <text x="255" y="46" text-anchor="middle" font-size="12" fill="var(--green)">갱신됨 ✓</text>
+    <rect x="180" y="100" width="150" height="44" rx="8" fill="color-mix(in oklab, var(--red) 12%, transparent)" stroke="var(--red)"/>
+    <text x="255" y="120" text-anchor="middle" font-size="13" fill="var(--ink)">미러 raw_ctrl_data</text>
+    <text x="255" y="136" text-anchor="middle" font-size="12" fill="var(--red)">파스 시점 그대로 ✗</text>
+    <line x1="110" y1="70" x2="176" y2="36" stroke="var(--axis)" stroke-width="1.5" marker-end="url(#arr)"/>
+    <rect x="80" y="185" width="130" height="44" rx="8" fill="none" stroke="var(--ink)"/>
+    <text x="145" y="211" text-anchor="middle" font-size="13" fill="var(--ink)">.hwp 직렬화기</text>
+    <line x1="255" y1="144" x2="200" y2="182" stroke="var(--red)" stroke-width="2" marker-end="url(#arr)"/>
+    <text x="285" y="172" font-size="12" fill="var(--red)">미러 우선!</text>
+    <text x="145" y="255" text-anchor="middle" font-size="12.5" fill="var(--red)">저장 파일 = 편집 전 배치 (원복·붕괴)</text>
+  </g>
+  <!-- after -->
+  <g transform="translate(460,45)">
+    <rect x="0" y="55" width="110" height="44" rx="8" fill="none" stroke="var(--ink)"/>
+    <text x="55" y="81" text-anchor="middle" font-size="13" fill="var(--ink)">편집기 setter</text>
+    <rect x="180" y="10" width="150" height="44" rx="8" fill="color-mix(in oklab, var(--green) 12%, transparent)" stroke="var(--green)"/>
+    <text x="255" y="30" text-anchor="middle" font-size="13" fill="var(--ink)">물리 CommonObjAttr</text>
+    <text x="255" y="46" text-anchor="middle" font-size="12" fill="var(--green)">갱신됨 ✓</text>
+    <rect x="180" y="100" width="150" height="44" rx="8" fill="color-mix(in oklab, var(--green) 12%, transparent)" stroke="var(--green)"/>
+    <text x="255" y="120" text-anchor="middle" font-size="13" fill="var(--ink)">미러 raw_ctrl_data</text>
+    <text x="255" y="136" text-anchor="middle" font-size="12" fill="var(--green)">sync로 따라옴 ✓</text>
+    <line x1="110" y1="70" x2="176" y2="36" stroke="var(--axis)" stroke-width="1.5" marker-end="url(#arr)"/>
+    <line x1="255" y1="54" x2="255" y2="96" stroke="var(--green)" stroke-width="2" marker-end="url(#arrg)"/>
+    <text x="268" y="80" font-size="12" fill="var(--green)">sync</text>
+    <rect x="80" y="185" width="130" height="44" rx="8" fill="none" stroke="var(--ink)"/>
+    <text x="145" y="211" text-anchor="middle" font-size="13" fill="var(--ink)">.hwp 직렬화기</text>
+    <line x1="255" y1="144" x2="200" y2="182" stroke="var(--axis)" stroke-width="1.5" marker-end="url(#arr)"/>
+    <text x="145" y="255" text-anchor="middle" font-size="12.5" fill="var(--green)">저장 파일 = 편집한 그대로 ✓</text>
+  </g>
+</svg>
+<figcaption>표(8-06 수리): 미러 역방향 대입 6곳 + 12바이트 토막이 어댑터 합성까지 무력화 —
+wrap·정렬·width/height가 0으로 붕괴. 수식(8-09 수리, <code>fbb69d6af</code>): 같은 기전의 마지막 조각.
+미러 보유 타입은 이 둘뿐임을 감사로 확정 — <b>이 가족은 닫혔다</b>. 부수 수리 5건
+(HWPX 표 바깥여백 무시, allowOverlap 왕복, restrictInPage 거짓 보고 등).</figcaption>
+</figure>
+
+<h2><span class="no">5</span>기준계 전환 rebase — 개체가 더는 점프하지 않는다</h2>
+<p>오프셋은 "기준계 원점에서 잰 거리"다. 종전엔 기준계(종이/쪽/문단)나 정렬을 바꾸면
+숫자를 그대로 둬서 개체가 화면에서 점프했다. 이제 <code>RebaseFrames</code>가 §2 공식을
+역산해 <b>종이 위 위치를 보존</b>하는 새 오프셋을 만든다.</p>
+<figure>
+<svg viewBox="0 0 840 230" role="img">
+  <text x="200" y="20" text-anchor="middle" font-size="14" font-weight="700" fill="var(--red)">전 — 숫자 유지 → 위치 점프</text>
+  <text x="630" y="20" text-anchor="middle" font-size="14" font-weight="700" fill="var(--green)">후 — 위치 유지 → 숫자 역산</text>
+  <!-- before -->
+  <g transform="translate(70,40)">
+    <rect width="260" height="150" fill="none" stroke="var(--axis)"/>
+    <rect x="26" y="26" width="208" height="98" fill="none" stroke="var(--grid)" stroke-dasharray="4 3"/>
+    <circle cx="0" cy="0" r="4" fill="var(--ink)"/>
+    <text x="8" y="-6" font-size="11" fill="var(--ink-2)">종이 원점</text>
+    <circle cx="26" cy="26" r="4" fill="var(--orange)"/>
+    <text x="34" y="22" font-size="11" fill="var(--orange)">쪽 원점 (전환 후)</text>
+    <rect x="150" y="60" width="60" height="40" fill="color-mix(in oklab, var(--blue) 14%, transparent)" stroke="var(--blue)" stroke-dasharray="4 3"/>
+    <rect x="176" y="86" width="60" height="40" fill="color-mix(in oklab, var(--red) 18%, transparent)" stroke="var(--red)"/>
+    <line x1="180" y1="80" x2="200" y2="98" stroke="var(--red)" stroke-width="2" marker-end="url(#arr)"/>
+    <text x="130" y="185" text-anchor="middle" font-size="12.5" fill="var(--red)">같은 오프셋 숫자가 다른 원점에서 재해석 → 점프</text>
+  </g>
+  <!-- after -->
+  <g transform="translate(500,40)">
+    <rect width="260" height="150" fill="none" stroke="var(--axis)"/>
+    <rect x="26" y="26" width="208" height="98" fill="none" stroke="var(--grid)" stroke-dasharray="4 3"/>
+    <circle cx="0" cy="0" r="4" fill="var(--ink)"/>
+    <circle cx="26" cy="26" r="4" fill="var(--orange)"/>
+    <rect x="150" y="60" width="60" height="40" fill="color-mix(in oklab, var(--green) 16%, transparent)" stroke="var(--green)"/>
+    <text x="180" y="84" text-anchor="middle" font-size="11" fill="var(--ink-2)">제자리</text>
+    <text x="130" y="185" text-anchor="middle" font-size="12.5" fill="var(--green)">오프셋을 역산해 갱신 — 화면 위치 불변</text>
+  </g>
+</svg>
+<figcaption>표·그림·도형·수식 setter 4곳 배선 + studio의 오프셋 diff 전송 결함(mm 왕복 반올림 오판,
+표 전체 스냅샷이 rebase를 사문화) 동시 수리. 어울림 훅도 같은 라운드에 단일화 —
+편집 커밋 지점 한 곳(<code>square_reflow_pending</code> → paginate 소비)으로 모아 미배선 4종을 한 번에 해소.</figcaption>
+</figure>
+
+<h2><span class="no">6</span>남은 일</h2>
+<table>
+<tr><th>항목</th><th>상태</th></tr>
+<tr><td>대화형 오라클 5건 (표+그림 병존 · 40%+40% 병치 · 글상자 Square 표 · rel_to 전환 정책 · end-anchor 소형 lineseg)</td><td>웹한글 대조 필요</td></tr>
+<tr><td>배포본(sc-hazel-kappa) 시각 검증 — rebase 위치 보존·어울림 편집·수식 옆 흐름</td><td><b>추천 다음 작업</b></td></tr>
+<tr><td>공유 줄 baseline 0.85 vs 0.50 상충 (§2-E 잔여)</td><td>한컴 PDF 표본 1건이면 종결 — 그 전엔 0.85 잠금</td></tr>
+<tr><td>Tight/Through 윤곽 어울림 · Inside/Outside 홀짝 정렬 (P1 잔여 2건)</td><td>미착수</td></tr>
+<tr><td>P2 구조 부채 (이중 페이지네이션 엔진 · 마진 상수 방어 · FloatBand 이관)</td><td>보류</td></tr>
+</table>
+
+<p class="foot">2026-08-09 · officex/engine-fixes 178커밋 → kingwabg/rhwp main (PR #1, <code>233e32eb4</code>) ·
+검증: nextest 3,461건 통과 · clippy <code>-D warnings</code> 클린 · cargo fmt 전면 적용 · CI + Render Diff 녹색<br>
+근거 문서: <a href="layout_physics_20260805.html">물리 법칙 보고서(진단)</a> ·
+<a href="layout_physics_improvement_20260805.html">실행 계획서</a> ·
+oracle-corpus-mining-20260805 / oracle-pdf-mining-20260806 (mydocs/eng/plans)</p>
+
+</div>
+</body>
+</html>

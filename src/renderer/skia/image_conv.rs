@@ -38,13 +38,15 @@ pub fn draw_svg_fragment(
     y: f32,
     width: f32,
     height: f32,
+    origin_relative: bool,
     sampling: ImageSampling,
 ) -> bool {
-    // [Issue #2292] RawSvg 조각은 페이지 절대 좌표로 방출된다(SVG 백엔드
-    // 직접 삽입·web_canvas 와 동일 계약). viewBox 원점에 조각의 페이지
-    // 위치(x, y)를 넘겨 bbox 창만 래스터한다 — (0,0) 가정 시 창 밖 콘텐츠
-    // 전부 클리핑 + bbox 재배치 이중 오프셋으로 차트가 잘렸다.
-    let Some(png) = rasterize_svg_fragment_to_png(svg_fragment, x, y, width, height) else {
+    // [Issue #2292] 절대 좌표 조각은 viewBox 원점에 조각의 페이지 위치(x, y)를
+    // 넘겨 bbox 창만 래스터한다 — (0,0) 가정 시 창 밖 콘텐츠 전부 클리핑 +
+    // bbox 재배치 이중 오프셋으로 차트가 잘렸다. 원점 기준 조각(차트 —
+    // RawSvgNode::origin_relative)은 viewBox (0,0) 그대로.
+    let (src_x, src_y) = if origin_relative { (0.0, 0.0) } else { (x, y) };
+    let Some(png) = rasterize_svg_fragment_to_png(svg_fragment, src_x, src_y, width, height) else {
         return false;
     };
     draw_image_bytes(

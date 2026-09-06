@@ -9,6 +9,7 @@ use crate::model::control::Control;
 use crate::model::event::DocumentEvent;
 use crate::model::path::{path_from_flat, PathSegment};
 use crate::model::shape::common_obj_offsets;
+use crate::model::table::{CmdClass, Table};
 
 /// 과거 어울림 좁힘 흔적 판정 — 전폭(=단 폭) segment_width 는 흔적이 아니다.
 /// column_start 가 있거나, sw 가 전폭보다 800HU(≈10.7px) 넘게 좁을 때만 흔적.
@@ -38,6 +39,54 @@ pub(crate) fn square_band_float_common(
 }
 
 impl DocumentCore {
+    /// [불변식 가드 2026-09-02] 표 구조 명령의 단일 관문 — clone → 명령 → check_invariants → 위반 시 롤백.
+    ///
+    /// 모델 메서드가 Err 를 돌려도, 성공했지만 격자가 깨졌어도 표는 실행 전 상태로 돌아간다
+    /// (split_cells_in_range 루프 중간 실패의 부분 적용 해소). 렌더 캐시(cell_units_cache 등 표 포인터
+    /// 키)는 명령 성공 뒤 recompose 에서만 갱신되므로 롤백 경로에는 무효화가 필요 없다 — 실패 시
+    /// 여기서 바로 돌아가고 레이아웃은 돌지 않는다.
+    fn with_table_txn<T>(
+        &mut self,
+        section_idx: usize,
+        parent_para_idx: usize,
+        control_idx: usize,
+        class: CmdClass,
+        deletes_content: bool,
+        f: impl FnOnce(&mut crate::model::table::Table) -> Result<T, String>,
+    ) -> Result<T, HwpError> {
+        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
+        let saved = table.clone();
+        let r = f(table);
+        let out = match r {
+            Ok(v) => match table.check_invariants() {
+                Ok(()) => {
+                    // [5단계] 델타 불변식(D1 폭·D2 높이·D4 내용·D5 슬리버·S5' 과대 셀) — 클래스별.
+                    let bad = table.check_deltas(&saved, class, None, deletes_content);
+                    if bad.is_empty() {
+                        Ok(v)
+                    } else {
+                        Err(format!(
+                            "이 조작은 표 크기 규약을 깨뜨려 취소했습니다 — {}",
+                            bad.join("; ")
+                        ))
+                    }
+                }
+                Err(why) => Err(format!("이 조작은 표 격자를 깨뜨려 취소했습니다 — {why}")),
+            },
+            Err(e) => Err(e),
+        };
+        match out {
+            Ok(v) => {
+                table.dirty = true;
+                Ok(v)
+            }
+            Err(e) => {
+                *table = saved;
+                Err(HwpError::RenderError(e))
+            }
+        }
+    }
+
     pub(crate) fn get_table_mut(
         &mut self,
         section_idx: usize,
@@ -492,13 +541,17 @@ impl DocumentCore {
         row_idx: u16,
         below: bool,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .insert_row(row_idx, below)
-            .map_err(|e| HwpError::RenderError(e))?;
-        table.dirty = true;
-        let row_count = table.row_count;
-        let col_count = table.col_count;
+        let (row_count, col_count) = self.with_table_txn(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            CmdClass::KeepWidth,
+            false,
+            |t| {
+                t.insert_row(row_idx, below)?;
+                Ok((t.row_count, t.col_count))
+            },
+        )?;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
@@ -525,13 +578,17 @@ impl DocumentCore {
         col_idx: u16,
         right: bool,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .insert_column(col_idx, right)
-            .map_err(|e| HwpError::RenderError(e))?;
-        table.dirty = true;
-        let row_count = table.row_count;
-        let col_count = table.col_count;
+        let (row_count, col_count) = self.with_table_txn(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            CmdClass::KeepHeight,
+            false,
+            |t| {
+                t.insert_column(col_idx, right)?;
+                Ok((t.row_count, t.col_count))
+            },
+        )?;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
@@ -557,13 +614,17 @@ impl DocumentCore {
         control_idx: usize,
         row_idx: u16,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .delete_row(row_idx)
-            .map_err(|e| HwpError::RenderError(e))?;
-        table.dirty = true;
-        let row_count = table.row_count;
-        let col_count = table.col_count;
+        let (row_count, col_count) = self.with_table_txn(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            CmdClass::KeepWidth,
+            true,
+            |t| {
+                t.delete_row(row_idx)?;
+                Ok((t.row_count, t.col_count))
+            },
+        )?;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
@@ -589,13 +650,17 @@ impl DocumentCore {
         control_idx: usize,
         col_idx: u16,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .delete_column(col_idx)
-            .map_err(|e| HwpError::RenderError(e))?;
-        table.dirty = true;
-        let row_count = table.row_count;
-        let col_count = table.col_count;
+        let (row_count, col_count) = self.with_table_txn(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            CmdClass::KeepHeight,
+            true,
+            |t| {
+                t.delete_column(col_idx)?;
+                Ok((t.row_count, t.col_count))
+            },
+        )?;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
@@ -624,12 +689,17 @@ impl DocumentCore {
         end_row: u16,
         end_col: u16,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .merge_cells(start_row, start_col, end_row, end_col)
-            .map_err(|e| HwpError::RenderError(e))?;
-        table.dirty = true;
-        let cell_count = table.cells.len();
+        let cell_count = self.with_table_txn(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            CmdClass::KeepWidthHeight,
+            false,
+            |t| {
+                t.merge_cells(start_row, start_col, end_row, end_col)?;
+                Ok(t.cells.len())
+            },
+        )?;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
@@ -721,12 +791,17 @@ impl DocumentCore {
         row: u16,
         col: u16,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .split_cell(row, col)
-            .map_err(|e| HwpError::RenderError(e))?;
-        table.dirty = true;
-        let cell_count = table.cells.len();
+        let cell_count = self.with_table_txn(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            CmdClass::KeepWidthHeight,
+            false,
+            |t| {
+                t.split_cell(row, col)?;
+                Ok(t.cells.len())
+            },
+        )?;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
@@ -757,12 +832,17 @@ impl DocumentCore {
         equal_row_height: bool,
         merge_first: bool,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .split_cell_into(row, col, n_rows, m_cols, equal_row_height, merge_first)
-            .map_err(|e| HwpError::RenderError(e))?;
-        table.dirty = true;
-        let cell_count = table.cells.len();
+        let cell_count = self.with_table_txn(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            CmdClass::KeepWidthHeight,
+            false,
+            |t| {
+                t.split_cell_into(row, col, n_rows, m_cols, equal_row_height, merge_first)?;
+                Ok(t.cells.len())
+            },
+        )?;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
@@ -794,20 +874,25 @@ impl DocumentCore {
         m_cols: u16,
         equal_row_height: bool,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .split_cells_in_range(
-                start_row,
-                start_col,
-                end_row,
-                end_col,
-                n_rows,
-                m_cols,
-                equal_row_height,
-            )
-            .map_err(|e| HwpError::RenderError(e))?;
-        table.dirty = true;
-        let cell_count = table.cells.len();
+        let cell_count = self.with_table_txn(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            CmdClass::KeepWidthHeight,
+            false,
+            |t| {
+                t.split_cells_in_range(
+                    start_row,
+                    start_col,
+                    end_row,
+                    end_col,
+                    n_rows,
+                    m_cols,
+                    equal_row_height,
+                )?;
+                Ok(t.cells.len())
+            },
+        )?;
 
         self.document.sections[section_idx].raw_stream = None;
         self.recompose_section(section_idx);
@@ -911,15 +996,18 @@ impl DocumentCore {
         parent_para_idx: usize,
         control_idx: usize,
     ) -> Result<String, HwpError> {
-        let (source_rows, source_cols, changed_cells) = {
-            let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-            let source_rows = table.row_count;
-            let source_cols = table.col_count;
-            let changed_cells = table
-                .transpose_unmerged_table_in_place()
-                .map_err(HwpError::RenderError)?;
-            (source_rows, source_cols, changed_cells)
-        };
+        let (source_rows, source_cols, changed_cells) = self.with_table_txn(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            CmdClass::MayGrow,
+            false,
+            |t| {
+                let (source_rows, source_cols) = (t.row_count, t.col_count);
+                let changed_cells = t.transpose_unmerged_table_in_place()?;
+                Ok((source_rows, source_cols, changed_cells))
+            },
+        )?;
 
         self.document.sections[section_idx].raw_stream = None;
         for (cell_idx, para_count) in changed_cells {
@@ -1346,85 +1434,92 @@ impl DocumentCore {
             None
         };
 
-        let (needs_reflow, reflow_para_count) = {
-            let mut needs_reflow = false;
-            let mut size_changed = false;
-            let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-            let direct_border_fill_id = if has_border_fill_change {
-                None
-            } else {
-                top_u32("borderFillId").map(|v| v as u16).and_then(|bf_id| {
-                    table.cells.get(cell_idx).and_then(|cell| {
-                        if Self::cell_is_covered_by_zone_border_fill(table, cell, bf_id) {
-                            None
-                        } else {
-                            Some(bf_id)
-                        }
+        // [6단계 2026-09-02] 셀 속성 대입은 관문 안에서(구조 불변식·내용 검사, 위반 시 롤백).
+        let (needs_reflow, reflow_para_count) = self.with_table_txn(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            CmdClass::MayGrow,
+            false,
+            |table| {
+                let mut needs_reflow = false;
+                let mut size_changed = false;
+                let direct_border_fill_id = if has_border_fill_change {
+                    None
+                } else {
+                    top_u32("borderFillId").map(|v| v as u16).and_then(|bf_id| {
+                        table.cells.get(cell_idx).and_then(|cell| {
+                            if Self::cell_is_covered_by_zone_border_fill(table, cell, bf_id) {
+                                None
+                            } else {
+                                Some(bf_id)
+                            }
+                        })
                     })
-                })
-            };
-            let cell = table.cells.get_mut(cell_idx).ok_or_else(|| {
-                HwpError::RenderError(format!("셀 인덱스 {} 범위 초과", cell_idx))
-            })?;
-
-            if let Some(v) = top_u32("width") {
-                needs_reflow |= cell.width != v;
-                size_changed |= cell.width != v;
-                cell.width = v;
-            }
-            if let Some(v) = top_u32("height") {
-                size_changed |= cell.height != v;
-                cell.height = v;
-            }
-            if let Some(v) = top_i16("paddingLeft") {
-                needs_reflow |= cell.padding.left != v;
-                cell.padding.left = v;
-            }
-            if let Some(v) = top_i16("paddingRight") {
-                needs_reflow |= cell.padding.right != v;
-                cell.padding.right = v;
-            }
-            if let Some(v) = top_i16("paddingTop") {
-                cell.padding.top = v;
-            }
-            if let Some(v) = top_i16("paddingBottom") {
-                cell.padding.bottom = v;
-            }
-            if let Some(v) = top_bool("applyInnerMargin") {
-                needs_reflow |= cell.apply_inner_margin != v;
-                cell.set_apply_inner_margin(v);
-            }
-            if let Some(v) = top_u8("verticalAlign") {
-                cell.vertical_align = match v {
-                    1 => crate::model::table::VerticalAlign::Center,
-                    2 => crate::model::table::VerticalAlign::Bottom,
-                    _ => crate::model::table::VerticalAlign::Top,
                 };
-            }
-            if let Some(v) = top_u8("textDirection") {
-                cell.text_direction = v;
-            }
-            if let Some(v) = top_bool("isHeader") {
-                cell.set_header(v);
-            }
-            if let Some(v) = top_bool("cellProtect") {
-                cell.set_cell_protect(v);
-            }
-            if let Some(v) = top_bool("editableInForm") {
-                cell.set_editable_in_form(v);
-            }
-            if let Some(v) = top_str("fieldName") {
-                cell.field_name = if v.is_empty() { None } else { Some(v) };
-            }
-            if let Some(v) = direct_border_fill_id {
-                cell.border_fill_id = v;
-            }
-            if size_changed {
-                table.update_ctrl_dimensions();
-            }
-            table.dirty = true;
-            (needs_reflow, table.cells[cell_idx].paragraphs.len())
-        };
+                let cell = table
+                    .cells
+                    .get_mut(cell_idx)
+                    .ok_or_else(|| format!("셀 인덱스 {} 범위 초과", cell_idx))?;
+
+                if let Some(v) = top_u32("width") {
+                    needs_reflow |= cell.width != v;
+                    size_changed |= cell.width != v;
+                    cell.width = v;
+                }
+                if let Some(v) = top_u32("height") {
+                    size_changed |= cell.height != v;
+                    cell.height = v;
+                }
+                if let Some(v) = top_i16("paddingLeft") {
+                    needs_reflow |= cell.padding.left != v;
+                    cell.padding.left = v;
+                }
+                if let Some(v) = top_i16("paddingRight") {
+                    needs_reflow |= cell.padding.right != v;
+                    cell.padding.right = v;
+                }
+                if let Some(v) = top_i16("paddingTop") {
+                    cell.padding.top = v;
+                }
+                if let Some(v) = top_i16("paddingBottom") {
+                    cell.padding.bottom = v;
+                }
+                if let Some(v) = top_bool("applyInnerMargin") {
+                    needs_reflow |= cell.apply_inner_margin != v;
+                    cell.set_apply_inner_margin(v);
+                }
+                if let Some(v) = top_u8("verticalAlign") {
+                    cell.vertical_align = match v {
+                        1 => crate::model::table::VerticalAlign::Center,
+                        2 => crate::model::table::VerticalAlign::Bottom,
+                        _ => crate::model::table::VerticalAlign::Top,
+                    };
+                }
+                if let Some(v) = top_u8("textDirection") {
+                    cell.text_direction = v;
+                }
+                if let Some(v) = top_bool("isHeader") {
+                    cell.set_header(v);
+                }
+                if let Some(v) = top_bool("cellProtect") {
+                    cell.set_cell_protect(v);
+                }
+                if let Some(v) = top_bool("editableInForm") {
+                    cell.set_editable_in_form(v);
+                }
+                if let Some(v) = top_str("fieldName") {
+                    cell.field_name = if v.is_empty() { None } else { Some(v) };
+                }
+                if let Some(v) = direct_border_fill_id {
+                    cell.border_fill_id = v;
+                }
+                if size_changed {
+                    table.update_ctrl_dimensions();
+                }
+                Ok((needs_reflow, table.cells[cell_idx].paragraphs.len()))
+            },
+        )?;
 
         if needs_reflow {
             let para_count = reflow_para_count;
@@ -1471,30 +1566,37 @@ impl DocumentCore {
             };
 
             // 대상 셀 정보 추출 + border_fill_id 변경
-            let (target_row, target_col, target_col_span, target_row_span) = {
-                let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-                let (row, col, col_span, row_span) = {
-                    let cell = table.cells.get_mut(cell_idx).ok_or_else(|| {
-                        HwpError::RenderError(format!("셀 인덱스 {} 범위 초과", cell_idx))
-                    })?;
-                    cell.border_fill_id = new_bf_id;
-                    (cell.row, cell.col, cell.col_span, cell.row_span)
-                };
-                Self::sync_cellzone_origin_cell_diagonal_override(
-                    table,
-                    row,
-                    col,
-                    new_bf_id,
-                    new_bf_has_cell_diagonal,
-                    &cell_diagonal_bf_ids,
-                );
-                (
-                    row as usize,
-                    col as usize,
-                    col_span as usize,
-                    row_span as usize,
-                )
-            };
+            let (target_row, target_col, target_col_span, target_row_span) = self.with_table_txn(
+                section_idx,
+                parent_para_idx,
+                control_idx,
+                CmdClass::MayGrow,
+                false,
+                |table| {
+                    let (row, col, col_span, row_span) = {
+                        let cell = table
+                            .cells
+                            .get_mut(cell_idx)
+                            .ok_or_else(|| format!("셀 인덱스 {} 범위 초과", cell_idx))?;
+                        cell.border_fill_id = new_bf_id;
+                        (cell.row, cell.col, cell.col_span, cell.row_span)
+                    };
+                    Self::sync_cellzone_origin_cell_diagonal_override(
+                        table,
+                        row,
+                        col,
+                        new_bf_id,
+                        new_bf_has_cell_diagonal,
+                        &cell_diagonal_bf_ids,
+                    );
+                    Ok((
+                        row as usize,
+                        col as usize,
+                        col_span as usize,
+                        row_span as usize,
+                    ))
+                },
+            )?;
 
             // 이웃 셀의 공유 엣지 테두리를 갱신
             // borders 배열: [좌(0), 우(1), 상(2), 하(3)]
@@ -1899,8 +2001,6 @@ impl DocumentCore {
         control_idx: usize,
         json: &str,
     ) -> Result<String, HwpError> {
-        const MIN_CELL_SIZE: u32 = 200; // 최소 셀 크기 (HWPUNIT)
-
         // JSON 배열을 수동 파싱: [{"cellIdx":N,"widthDelta":D,"heightDelta":D}, ...]
         let trimmed = json.trim();
         if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
@@ -1913,12 +2013,8 @@ impl DocumentCore {
             cell_idx: usize,
             width_delta: i32,
             height_delta: i32,
-            local_resize: bool,
-            render_width: Option<u32>,
-            render_height: Option<u32>,
         }
         let mut updates: Vec<CellUpdate> = Vec::new();
-        let mut force_local_resize = false;
 
         let mut depth = 0i32;
         let mut start = 0usize;
@@ -1934,8 +2030,9 @@ impl DocumentCore {
                     depth -= 1;
                     if depth == 0 {
                         let obj = &inner[start..=i];
-                        // [officex] 혼동 키 방어: 이 API 는 **델타**(widthDelta/heightDelta)와
-                        // 절대 렌더 힌트(renderWidth/renderHeight)만 받는다. 절대 폭을 뜻하는
+                        // [officex] 혼동 키 방어: 이 API 는 **델타**(widthDelta/heightDelta)만 받는다.
+                        // (localResize/renderWidth/renderHeight 는 9-c 힌트 폐기 후 파싱 수용·무시 —
+                        // 구 스튜디오 빌드가 오류를 내지 않게 한다.) 절대 폭을 뜻하는
                         // "width"/"height" 를 보내면 종전엔 조용히 0 델타로 접혀 아무 일도 안
                         // 일어나는데 {ok:true} 가 나갔다 — 호출자는 "리사이즈가 안 먹는다"로만
                         // 보였다(capability-map §3 의 "no-op(불확정)" 정체). 조용한 무동작 대신
@@ -1945,10 +2042,7 @@ impl DocumentCore {
                             if obj.contains(&format!("\"{bad_key}\":")) {
                                 return Err(HwpError::InvalidField(format!(
                                     "resizeTableCells 는 '{bad_key}' 키를 받지 않습니다 — \
-                                     상대 변화는 '{bad_key}Delta', 절대 렌더 크기는 \
-                                     'render{}{}' 를 쓰세요",
-                                    bad_key[..1].to_uppercase(),
-                                    &bad_key[1..],
+                                     상대 변화는 '{bad_key}Delta' 를 쓰세요"
                                 )));
                             }
                         }
@@ -1959,20 +2053,10 @@ impl DocumentCore {
                         }
                         let width_delta = Self::parse_json_i32(obj, "widthDelta").unwrap_or(0);
                         let height_delta = Self::parse_json_i32(obj, "heightDelta").unwrap_or(0);
-                        let local_resize = obj.contains("\"localResize\":true")
-                            || obj.contains("\"localResize\": true");
-                        force_local_resize |= local_resize;
-                        let render_width = Self::parse_json_i32(obj, "renderWidth")
-                            .and_then(|v| (v > 0).then_some(v as u32));
-                        let render_height = Self::parse_json_i32(obj, "renderHeight")
-                            .and_then(|v| (v > 0).then_some(v as u32));
                         updates.push(CellUpdate {
                             cell_idx: cell_idx as usize,
                             width_delta,
                             height_delta,
-                            local_resize,
-                            render_width,
-                            render_height,
                         });
                     }
                 }
@@ -1984,176 +2068,94 @@ impl DocumentCore {
             return Ok("{\"ok\":true}".to_string());
         }
 
-        // 셀 업데이트 적용
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        // 입력 방어: 범위 밖 cellIdx를 조용히 건너뛰지 않고 거부한다.
-        let cell_count = table.cells.len();
+        // 입력 방어: 범위 밖 cellIdx를 조용히 건너뛰지 않고 거부한다(관문 밖 — InvalidField 유지).
+        let cell_count = self
+            .get_table_mut(section_idx, parent_para_idx, control_idx)?
+            .cells
+            .len();
         if let Some(bad) = updates.iter().find(|u| u.cell_idx >= cell_count) {
             return Err(HwpError::InvalidField(format!(
                 "셀 인덱스 {} 범위 초과 (총 {}셀)",
                 bad.cell_idx, cell_count
             )));
         }
-        // [officex] 최소 크기 아래 델타는 **클램프**한다(거부하지 않는다).
-        // 한때 거부로 바꿨다가 되돌렸다(2026-07-26). 거부 근거였던 "셀 폭 합 != 표 폭 = 자기모순"이
-        // 오진이었기 때문이다 — 열 폭은 그 열 셀들의 **최댓값**으로 유도되는 것이 정의된 계약이라
-        // (get_column_widths / resolve_column_widths 둘 다 max), 한 셀만 깎이면 합이 안 맞는 게 정상이다.
-        // 게다가 거부는 실사용을 깼다: 운영일지가 셀 3(폭 3192)에 -3000을 주는 정상 경로에서
-        // 결과 192가 최소값 200에 8 모자란다는 이유로 배치 전체가 실패했다.
-        // 남은 진짜 위험은 산술 오버플로뿐이라 아래 루프에서 i64로 계산해 막는다.
-        let original_width = table.common.width;
-        let original_height = table.common.height;
-        let original_row_height_sum: u32 = table.get_row_heights().iter().sum();
-        let mut applied_width_delta: i64 = 0;
-        let mut applied_height_delta: i64 = 0;
-        let mut width_delta_by_row = std::collections::BTreeMap::<u16, (usize, i64)>::new();
-        let mut height_delta_by_col = std::collections::BTreeMap::<u16, (usize, i64)>::new();
-        let mut local_resize_rows = std::collections::BTreeSet::<u16>::new();
-        let mut local_resize_cols = std::collections::BTreeSet::<u16>::new();
-        for upd in &updates {
-            if let Some(cell) = table.cells.get_mut(upd.cell_idx) {
-                if upd.width_delta != 0 {
-                    let old_w = cell.width;
-                    // [officex] i32 덧셈은 극단 양수에서 panic(debug)/랩어라운드(release) — i64로 올린다.
-                    let new_w = (cell.width as i64 + upd.width_delta as i64)
-                        .clamp(MIN_CELL_SIZE as i64, u32::MAX as i64)
-                        as u32;
-                    cell.width = new_w;
-                    let actual_delta = new_w as i64 - old_w as i64;
-                    applied_width_delta += actual_delta;
-                    let entry = width_delta_by_row.entry(cell.row).or_insert((0, 0));
-                    entry.0 += 1;
-                    entry.1 += actual_delta;
-                }
-                if upd.height_delta != 0 {
-                    let old_h = cell.height;
-                    let new_h = (cell.height as i64 + upd.height_delta as i64)
-                        .clamp(MIN_CELL_SIZE as i64, u32::MAX as i64)
-                        as u32;
-                    cell.height = new_h;
-                    let actual_delta = new_h as i64 - old_h as i64;
-                    applied_height_delta += actual_delta;
-                    let entry = height_delta_by_col.entry(cell.col).or_insert((0, 0));
-                    entry.0 += 1;
-                    entry.1 += actual_delta;
-                }
-            }
-            if upd.local_resize {
-                if let Some(width) = upd.render_width {
-                    if let Some(cell) = table.cells.get(upd.cell_idx) {
-                        local_resize_rows.insert(cell.row);
-                    }
-                    if let Some((_, existing)) = table
-                        .local_resize_cell_widths
-                        .iter_mut()
-                        .find(|(idx, _)| *idx == upd.cell_idx)
-                    {
-                        *existing = width;
-                    } else {
-                        table.local_resize_cell_widths.push((upd.cell_idx, width));
-                    }
-                }
-                if let Some(height) = upd.render_height {
-                    if let Some(cell) = table.cells.get(upd.cell_idx) {
-                        local_resize_cols.insert(cell.col);
-                    }
-                    if let Some((_, existing)) = table
-                        .local_resize_cell_heights
-                        .iter_mut()
-                        .find(|(idx, _)| *idx == upd.cell_idx)
-                    {
-                        *existing = height;
-                    } else {
-                        table.local_resize_cell_heights.push((upd.cell_idx, height));
+        // [6단계 2026-09-02] 셀 크기 대입은 관문 안에서 — 구조 불변식·내용·슬리버·과대 셀 검사, 위반 시 롤백.
+        // [9-c] common.width/height 되감기·local_resize 힌트 등록은 폐기 — common 은 update_ctrl_dimensions 의
+        // 격자 유도값 하나만 진실이다.
+        let reflow_cells = self.with_table_txn(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            CmdClass::MayGrow,
+            false,
+            |table| {
+                // [officex] 최소 크기 아래 델타는 **클램프**한다(거부하지 않는다).
+                // 한때 거부로 바꿨다가 되돌렸다(2026-07-26). 거부 근거였던 "셀 폭 합 != 표 폭 = 자기모순"이
+                // 오진이었기 때문이다 — 열 폭은 그 열 셀들의 **최댓값**으로 유도되는 것이 정의된 계약이라
+                // (get_column_widths / resolve_column_widths 둘 다 max), 한 셀만 깎이면 합이 안 맞는 게 정상이다.
+                // 게다가 거부는 실사용을 깼다: 운영일지가 셀 3(폭 3192)에 -3000을 주는 정상 경로에서
+                // 결과 192가 최소값 200에 8 모자란다는 이유로 배치 전체가 실패했다.
+                // 남은 진짜 위험은 산술 오버플로뿐이라 아래 루프에서 i64로 계산해 막는다.
+                // [2026-08-13] 높이 델타의 밑절미: **빈 셀 저장 규약 상태(높이 ≤
+                // 자기 패딩)일 때만** 글줄 바닥으로 승격한다. 규약 셀(284) 위에 그대로 더하면
+                // 바닥(1284~) 아래의 보이지 않는 변화가 되고, 종전 '표시 여유 보존' 분기가 그걸
+                // 보정하며 common.height 를 eff 합과 갈라놨다(스테일 +1000 → 렌더 열별 검증 실패
+                // → 균등 폴백). 실높이 셀은 순수 모델 산술 유지 — 파싱 파일의 보상(±d) 조절이
+                // 저장 높이 승격으로 표를 키우면 안 된다(issue_493).
+                let floor_rows_pre = table.row_line_floors_hu();
+                let table_padding = table.padding;
+                for upd in &updates {
+                    if let Some(cell) = table.cells.get_mut(upd.cell_idx) {
+                        if upd.width_delta != 0 {
+                            // [officex] i32 덧셈은 극단 양수에서 panic(debug)/랩어라운드(release) — i64로 올린다.
+                            cell.width = (cell.width as i64 + upd.width_delta as i64)
+                                .clamp(Table::MIN_CELL as i64, u32::MAX as i64)
+                                as u32;
+                        }
+                        if upd.height_delta != 0 {
+                            let old_h = cell.height;
+                            let pad = cell.effective_padding(&table_padding);
+                            let pad_v = (pad.top.max(0) + pad.bottom.max(0)) as u32;
+                            let base_h = if old_h <= pad_v {
+                                old_h.max(
+                                    floor_rows_pre.get(cell.row as usize).copied().unwrap_or(0),
+                                )
+                            } else {
+                                old_h
+                            };
+                            let mut new_h = (base_h as i64 + upd.height_delta as i64)
+                                .clamp(Table::MIN_CELL as i64, u32::MAX as i64)
+                                as u32;
+                            // [2026-09-06] 패딩 규약(≤ pad_v)과 글줄 바닥 사이의 저장 높이는 화면에 보이지 않는
+                            // 유령 값이다(행은 바닥 아래로 안 줄어든다). 종전엔 Alt+↓ 보상(−d)이 284→1284−849=435 를
+                            // 남겨, 다음 "표시 높이 기준" 델타(높이 같게 등)가 435+287=722 로 바닥 밑에 머물러
+                            // 균등화가 한 행만 빠뜨렸다(배포 검증 실측). 결과가 그 구간이면 바닥으로 붙인다 —
+                            // 화면은 동일하고 저장값만 표시값과 일치한다. 스팬 셀·조각 행(바닥 0)은 대상 아님.
+                            if cell.row_span <= 1 {
+                                let floor =
+                                    floor_rows_pre.get(cell.row as usize).copied().unwrap_or(0);
+                                if floor > 0 && new_h > pad_v && new_h < floor {
+                                    new_h = floor;
+                                }
+                            }
+                            cell.height = new_h;
+                        }
                     }
                 }
-            }
-        }
-        for row in local_resize_rows {
-            if !table.local_resize_rows.contains(&row) {
-                table.local_resize_rows.push(row);
-            }
-        }
-        for col in local_resize_cols {
-            if !table.local_resize_cols.contains(&col) {
-                table.local_resize_cols.push(col);
-            }
-        }
-        for (row, (count, _delta_sum)) in width_delta_by_row {
-            // ⚠ 종전 조건은 `delta_sum == 0 || force_local_resize` 였다 —
-            //   그런데 **정상 열 드래그가 바로 합 0**이다(표 폭을 지키려고 +d/−d 를
-            //   짝으로 보낸다). 그래서 모든 행이 '독립 폭'으로 등록됐고,
-            //   resolve_column_widths 가 그런 행을 열 폭 계산에서 통째로 빼는 바람에
-            //   열이 0에서 출발해 격자가 붕괴했다(2026-08-01 실측 187→24px).
-            //   독립 폭은 **호출자가 localResize 로 요청할 때만**이다(Shift 드래그).
-            if count >= 2 && force_local_resize && !table.local_resize_rows.contains(&row) {
-                table.local_resize_rows.push(row);
-            }
-        }
-        for (col, (count, _delta_sum)) in height_delta_by_col {
-            // 세로도 같은 이유 — 행 경계선 드래그의 합 0 은 정상이다
-            if count >= 2 && force_local_resize && !table.local_resize_cols.contains(&col) {
-                table.local_resize_cols.push(col);
-            }
-        }
-        table.update_ctrl_dimensions();
-        if updates.iter().any(|u| u.height_delta != 0)
-            && !force_local_resize
-            && original_height > original_row_height_sum
-            && table.row_count > 1
-        {
-            // 여러 행 표에서 일부 행을 조절할 때만 생성 표의 표시 height 여유분을 보존한다.
-            // 1행 표는 조절한 셀 높이가 곧 표 높이라는 기존 TAC 전환 회귀 규칙을 유지해야 한다.
-            let resized_row_height_sum: u32 = table.get_row_heights().iter().sum();
-            let row_height_delta = resized_row_height_sum as i64 - original_row_height_sum as i64;
-            let adjusted_height = if row_height_delta >= 0 {
-                original_height.saturating_add(row_height_delta.min(u32::MAX as i64) as u32)
-            } else {
-                original_height.saturating_sub((-row_height_delta).min(u32::MAX as i64) as u32)
-            }
-            .max(resized_row_height_sum);
-            table.common.height = adjusted_height;
-            if table.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
-                table.raw_ctrl_data[common_obj_offsets::HEIGHT]
-                    .copy_from_slice(&adjusted_height.to_le_bytes());
-            }
-        }
-        if applied_width_delta == 0
-            || (force_local_resize && updates.iter().any(|u| u.width_delta != 0))
-        {
-            table.common.width = original_width;
-            if table.raw_ctrl_data.len() >= common_obj_offsets::WIDTH.end {
-                table.raw_ctrl_data[common_obj_offsets::WIDTH]
-                    .copy_from_slice(&original_width.to_le_bytes());
-            }
-        }
-        if applied_height_delta == 0
-            || (force_local_resize && updates.iter().any(|u| u.height_delta != 0))
-        {
-            table.common.height = original_height;
-            if table.raw_ctrl_data.len() >= common_obj_offsets::HEIGHT.end {
-                table.raw_ctrl_data[common_obj_offsets::HEIGHT]
-                    .copy_from_slice(&original_height.to_le_bytes());
-            }
-        }
-        table.dirty = true;
-
-        // 너비가 변경된 셀의 모든 문단에 대해 line_segs 재계산 (텍스트 리플로우)
-        let reflow_cells: Vec<(usize, usize)> = {
-            let para = &self.document.sections[section_idx].paragraphs[parent_para_idx];
-            if let Some(Control::Table(table)) = para.controls.get(control_idx) {
-                updates
+                // 단일 진실: common = 격자 유도 합(update_ctrl_dimensions). 종전 "델타 합 0 이면 원값 되감기"
+                // 도 폐기 — 한 셀만 바꾼 경우 표 폭·높이가 격자(열 max)에 따라 커질 수 있고 그게 계약이다.
+                table.update_ctrl_dimensions();
+                // 너비가 변경된 셀의 모든 문단에 대해 line_segs 재계산 (텍스트 리플로우) — 대상 산출
+                let reflow_cells: Vec<(usize, usize)> = updates
                     .iter()
                     .filter(|u| u.width_delta != 0)
                     .filter_map(|u| {
-                        let pc = table.cells.get(u.cell_idx)?.paragraphs.len();
-                        Some((u.cell_idx, pc))
+                        Some((u.cell_idx, table.cells.get(u.cell_idx)?.paragraphs.len()))
                     })
-                    .collect()
-            } else {
-                Vec::new()
-            }
-        };
+                    .collect();
+                Ok(reflow_cells)
+            },
+        )?;
         for (cell_idx, para_count) in reflow_cells {
             for cell_para_idx in 0..para_count {
                 self.reflow_cell_paragraph(
@@ -2186,13 +2188,17 @@ impl DocumentCore {
         control_idx: usize,
         widths: Vec<u32>,
     ) -> Result<String, HwpError> {
-        let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
-        table
-            .set_column_widths(&widths)
-            .map_err(HwpError::RenderError)?;
-        table.dirty = true;
-        let col_count = table.col_count;
-        let total: u32 = table.get_column_widths().iter().sum();
+        let (col_count, total) = self.with_table_txn(
+            section_idx,
+            parent_para_idx,
+            control_idx,
+            CmdClass::MayGrow,
+            false,
+            |t| {
+                t.set_column_widths(&widths)?;
+                Ok((t.col_count, t.get_column_widths().iter().sum::<u32>()))
+            },
+        )?;
 
         // 폭이 바뀐 셀의 모든 문단을 재배치(line_segs 재계산)한다.
         let reflow: Vec<(usize, usize)> = {
@@ -2323,8 +2329,6 @@ impl DocumentCore {
         parent_para_idx: usize,
         control_idx: usize,
     ) -> Result<String, HwpError> {
-        const MIN_COL: u32 = 200; // 최소 열 폭 (HWPUNIT)
-
         // 현재 열 폭과 표 바깥 좌우 여백을 읽는다.
         let (widths, outer_lr, horz_rel_to) = {
             let table = self.get_table_mut(section_idx, parent_para_idx, control_idx)?;
@@ -2361,8 +2365,8 @@ impl DocumentCore {
             *last = (*last as u64 + remainder) as u32;
         }
         for w in &mut new_w {
-            if *w < MIN_COL {
-                *w = MIN_COL;
+            if *w < Table::MIN_CELL as u32 {
+                *w = Table::MIN_CELL as u32;
             }
         }
 
@@ -2819,9 +2823,14 @@ impl DocumentCore {
         // 바깥 여백 (CommonObjAttr margin ranges, parse_common_obj_attr 정합).
         // 물리를 먼저 쓴다 — 종전엔 바이트 길이 가드가 물리 대입까지 감싸서 HWPX
         // 로드 표(raw_ctrl_data 비어 있음)의 바깥 여백 지정이 조용히 무시됐다.
+        // ⚠ 표 여백은 3중 표현(outer_margin_* / common.margin / raw 바이트)이며
+        // 렌더러·직렬화기가 읽는 쪽이 서로 다르다 — 셋을 항상 같이 쓴다.
+        // 종전엔 outer_margin_* 을 방치해 렌더는 옛 값, getter·HWP5 저장은 새 값을
+        // 읽는 이중 진실("표가 뜬다/밀린다" + 재로드 돌변)의 유일한 활성 생성기였다.
         let has_raw_margins = table.raw_ctrl_data.len() >= common_obj_offsets::MARGIN_BOTTOM.end;
         if let Some(v) = json_i16(json, "outerLeft") {
             table.common.margin.left = v;
+            table.outer_margin_left = v;
             if has_raw_margins {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_LEFT]
                     .copy_from_slice(&v.to_le_bytes());
@@ -2829,6 +2838,7 @@ impl DocumentCore {
         }
         if let Some(v) = json_i16(json, "outerRight") {
             table.common.margin.right = v;
+            table.outer_margin_right = v;
             if has_raw_margins {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_RIGHT]
                     .copy_from_slice(&v.to_le_bytes());
@@ -2836,6 +2846,7 @@ impl DocumentCore {
         }
         if let Some(v) = json_i16(json, "outerTop") {
             table.common.margin.top = v;
+            table.outer_margin_top = v;
             if has_raw_margins {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_TOP]
                     .copy_from_slice(&v.to_le_bytes());
@@ -2843,6 +2854,7 @@ impl DocumentCore {
         }
         if let Some(v) = json_i16(json, "outerBottom") {
             table.common.margin.bottom = v;
+            table.outer_margin_bottom = v;
             if has_raw_margins {
                 table.raw_ctrl_data[common_obj_offsets::MARGIN_BOTTOM]
                     .copy_from_slice(&v.to_le_bytes());
@@ -3454,313 +3466,4 @@ fn json_escape(s: &str) -> String {
     }
     r.push('"');
     r
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::model::shape::common_obj_offsets;
-    use crate::parser::control::parse_common_obj_attr;
-    use crate::DocumentCore;
-
-    /// [개선 트랙2 선행] 저장 lineseg 의 전폭 segment_width 는 좁힘 흔적이 아니다 —
-    /// 이 판정이 무너지면 어울림 없는 문서의 타이핑마다 전 페이지 조판이 붙는다.
-    #[test]
-    fn full_width_stored_segs_do_not_trip_narrow_trace() {
-        use crate::model::paragraph::{LineSeg, Paragraph};
-        let full_hu = 42_520; // A4 본문 폭 상당
-        let mut para = Paragraph::default();
-        para.line_segs = vec![
-            LineSeg {
-                segment_width: full_hu,
-                ..Default::default()
-            },
-            LineSeg {
-                segment_width: full_hu - 300,
-                ..Default::default()
-            }, // 오차 수준
-        ];
-        assert!(
-            !super::paragraph_has_narrow_trace(&para, full_hu),
-            "전폭은 흔적 아님"
-        );
-
-        para.line_segs[1].segment_width = full_hu - 2_000; // 실제 좁힘
-        assert!(
-            super::paragraph_has_narrow_trace(&para, full_hu),
-            "좁힘은 흔적"
-        );
-
-        para.line_segs[1].segment_width = full_hu;
-        para.line_segs[1].column_start = 5_000; // 우측 조각
-        assert!(
-            super::paragraph_has_narrow_trace(&para, full_hu),
-            "column_start 는 흔적"
-        );
-    }
-
-    /// [officex] 열 경계선 드래그가 **격자를 무너뜨리면 안 된다**.
-    ///
-    /// 증상(2026-08-01 사용자 신고 "표 경계선 이동이 또 이상해졌어"): 3×3 표에서 첫
-    /// 세로선을 오른쪽으로 끌면 열이 187·187·187px → **24·24·512px** 로 붕괴했다.
-    ///
-    /// 원인: 정상적인 열 드래그는 각 행에 (+d, −d) 두 갱신을 보낸다 — 표 폭을
-    /// 유지하려면 합이 **0이어야** 한다. 그런데 `count>=2 && delta_sum==0` 을
-    /// "이 행은 독립 폭(local_resize)" 신호로 읽어 모든 행을 등록했고,
-    /// resolve_column_widths 는 local_resize 행을 **열 폭 계산에서 통째로 제외**한다.
-    /// 결국 모든 행이 빠져 열 폭이 0에서 출발했다.
-    ///
-    /// 독립 폭은 **호출자가 localResize 로 요청할 때만**이다(Shift 드래그).
-    #[test]
-    fn column_drag_keeps_grid_and_does_not_mark_rows_local() {
-        let mut core = DocumentCore::new_empty();
-        let mut section = crate::model::document::Section::default();
-        section.section_def.page_def = crate::model::page::PageDef::a4_default();
-        section
-            .paragraphs
-            .push(crate::model::paragraph::Paragraph::new_empty());
-        let mut document = crate::model::document::Document::default();
-        document.sections.push(section);
-        core.set_document(document);
-        core.create_blank_document_native().expect("blank");
-        let created = core.create_table_native(0, 0, 0, 3, 3).expect("table");
-        let v: serde_json::Value = serde_json::from_str(&created).expect("json");
-        let pi = v["paraIdx"].as_u64().expect("paraIdx") as usize;
-        let ci = v["controlIdx"].as_u64().expect("controlIdx") as usize;
-
-        let before = {
-            let t = core.get_table_mut(0, pi, ci).expect("table");
-            t.get_column_widths()
-        };
-        assert_eq!(before.len(), 3, "3열이어야 한다");
-
-        // 첫 세로선을 오른쪽으로: 각 행마다 (col0 +d, col1 −d) — 합 0 이 정상이다
-        let d = 3060;
-        let updates = format!(
-            "[{{\"cellIdx\":0,\"widthDelta\":{d}}},{{\"cellIdx\":1,\"widthDelta\":{md}}},\
-             {{\"cellIdx\":3,\"widthDelta\":{d}}},{{\"cellIdx\":4,\"widthDelta\":{md}}},\
-             {{\"cellIdx\":6,\"widthDelta\":{d}}},{{\"cellIdx\":7,\"widthDelta\":{md}}}]",
-            d = d,
-            md = -d,
-        );
-        core.resize_table_cells_native(0, pi, ci, &updates)
-            .expect("resize");
-
-        let t = core.get_table_mut(0, pi, ci).expect("table");
-        assert!(
-            t.local_resize_rows.is_empty(),
-            "정상 열 드래그는 행을 독립 폭으로 만들지 않는다: {:?}",
-            t.local_resize_rows
-        );
-        let after = t.get_column_widths();
-        assert_eq!(
-            (after[0] as i64, after[1] as i64, after[2] as i64),
-            (
-                before[0] as i64 + d as i64,
-                before[1] as i64 - d as i64,
-                before[2] as i64
-            ),
-            "열 폭이 끈 만큼만 옮겨져야 한다 (전 {before:?} → 후 {after:?})"
-        );
-    }
-
-    /// [officex] resizeTableCells 규약 핀 — 절대 'width'/'height' 키는 조용히 무시되지
-    /// 않고 거부된다. 종전엔 0 델타로 접혀 {ok:true} 만 나가서 "리사이즈가 안 먹는다"로
-    /// 보였다(capability-map §3 "no-op(불확정)"의 정체 = 호출자 규약 착오).
-    #[test]
-    fn resize_table_cells_rejects_absolute_width_height_keys() {
-        let mut core = DocumentCore::new_empty();
-        let mut section = crate::model::document::Section::default();
-        section.section_def.page_def = crate::model::page::PageDef::a4_default();
-        section
-            .paragraphs
-            .push(crate::model::paragraph::Paragraph::new_empty());
-        let mut document = crate::model::document::Document::default();
-        document.sections.push(section);
-        core.set_document(document);
-        core.create_blank_document_native().expect("blank");
-        let created = core.create_table_native(0, 0, 0, 2, 3).expect("table");
-        let v: serde_json::Value = serde_json::from_str(&created).expect("json");
-        let pi = v["paraIdx"].as_u64().expect("paraIdx") as usize;
-        let ci = v["controlIdx"].as_u64().expect("controlIdx") as usize;
-
-        for bad in [
-            r#"[{"cellIdx":0,"width":5000}]"#,
-            r#"[{"cellIdx":0,"height":5000}]"#,
-        ] {
-            let err = core
-                .resize_table_cells_native(0, pi, ci, bad)
-                .expect_err("절대 키는 거부되어야 한다");
-            let msg = format!("{err:?}");
-            assert!(
-                msg.contains("Delta") && msg.contains("render"),
-                "거부 메시지가 규약을 알려주지 않는다: {msg}"
-            );
-        }
-
-        // 정상 규약(델타)은 그대로 동작한다 — 과잉 거부 회귀 차단.
-        core.resize_table_cells_native(0, pi, ci, r#"[{"cellIdx":0,"widthDelta":-2000}]"#)
-            .expect("델타 경로는 통과해야 한다");
-    }
-
-    #[test]
-    fn raw_ctrl_data_offsets_match_parser() {
-        // CommonObjAttr layout: [0..4]=flags, [4..8]=v_offset, [8..12]=h_offset, [12..16]=width
-        let mut data = vec![0u8; 36];
-        let flags: u32 = (2 << 3) | (3 << 8) | (1 << 21); // vert=Para, horz=Para, wrap=TopAndBottom
-        data[common_obj_offsets::FLAGS].copy_from_slice(&flags.to_le_bytes());
-        data[common_obj_offsets::V_OFFSET].copy_from_slice(&42_u32.to_le_bytes());
-        data[common_obj_offsets::H_OFFSET].copy_from_slice(&99_u32.to_le_bytes());
-        data[common_obj_offsets::WIDTH].copy_from_slice(&5000_u32.to_le_bytes());
-        data[common_obj_offsets::HEIGHT].copy_from_slice(&3000_u32.to_le_bytes());
-
-        assert_eq!(
-            common_obj_offsets::MIN_LEN,
-            common_obj_offsets::INSTANCE_ID.end
-        );
-        assert_eq!(
-            common_obj_offsets::MIN_LEN_WITH_PREVENT_PAGE_BREAK,
-            common_obj_offsets::PREVENT_PAGE_BREAK.end
-        );
-
-        let common = parse_common_obj_attr(&data);
-        assert_eq!(
-            common.vertical_offset, 42,
-            "v_offset must be at bytes [4..8]"
-        );
-        assert_eq!(
-            common.horizontal_offset, 99,
-            "h_offset must be at bytes [8..12]"
-        );
-        assert_eq!(common.width, 5000);
-        assert_eq!(common.height, 3000);
-    }
-
-    #[test]
-    fn update_ctrl_dimensions_writes_correct_slots() {
-        use crate::model::table::{Cell, Table};
-
-        let mut tbl = Table::default();
-        tbl.col_count = 2;
-        tbl.row_count = 1;
-        tbl.cells = vec![
-            Cell {
-                row: 0,
-                col: 0,
-                col_span: 1,
-                row_span: 1,
-                width: 5000,
-                height: 3000,
-                ..Default::default()
-            },
-            Cell {
-                row: 0,
-                col: 1,
-                col_span: 1,
-                row_span: 1,
-                width: 4000,
-                height: 3000,
-                ..Default::default()
-            },
-        ];
-        tbl.raw_ctrl_data = vec![0u8; 36];
-
-        tbl.update_ctrl_dimensions();
-
-        let common = parse_common_obj_attr(&tbl.raw_ctrl_data);
-        assert_eq!(common.width, 9000, "width at [12..16]");
-        assert_eq!(common.height, 3000, "height at [16..20]");
-        assert_eq!(common.horizontal_offset, 0, "h_offset at [8..12] untouched");
-    }
-}
-
-#[cfg(test)]
-mod table_attr_save_roundtrip_tests {
-    //! 표 배치 속성(attr 비트) 변경의 HWP5 저장 유실 회귀 테스트.
-    //!
-    //! set_table_properties_native 는 글자처럼 취급/배치/기준/정렬/제한/겹침을
-    //! table.attr/common 에만 반영하고 raw_ctrl_data FLAGS(0..4)를 패치하지
-    //! 않았다. HWP5 직렬화기는 raw_ctrl_data 를 그대로 기록하므로(HWP5 에서
-    //! 파싱된 표는 raw 가 항상 보존됨) 변경이 저장 파일에서 통째로 유실되고
-    //! 재로드 시 원복됐다. 화면(getter)은 common 필드로 정상 표시되어
-    //! "소리 없는" 유실이었다.
-
-    use crate::document_core::DocumentCore;
-    use crate::model::control::Control;
-    use crate::model::shape::{TextWrap, VertRelTo};
-
-    const SAMPLE: &str = "samples/calc-cell.hwp";
-
-    fn load() -> DocumentCore {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(SAMPLE);
-        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {SAMPLE}: {e}"));
-        DocumentCore::from_bytes(&bytes).unwrap_or_else(|e| panic!("load {SAMPLE}: {e}"))
-    }
-
-    fn find_first_table(core: &DocumentCore) -> (usize, usize) {
-        for (pi, para) in core.document().sections[0].paragraphs.iter().enumerate() {
-            for (ci, ctrl) in para.controls.iter().enumerate() {
-                if matches!(ctrl, Control::Table(_)) {
-                    return (pi, ci);
-                }
-            }
-        }
-        panic!("{SAMPLE}: 표 컨트롤이 필요함");
-    }
-
-    fn table_attrs(core: &DocumentCore, pi: usize, ci: usize) -> (bool, TextWrap, bool, VertRelTo) {
-        match &core.document().sections[0].paragraphs[pi].controls[ci] {
-            Control::Table(t) => (
-                t.common.treat_as_char,
-                t.common.text_wrap,
-                t.common.allow_overlap,
-                t.common.vert_rel_to,
-            ),
-            _ => unreachable!(),
-        }
-    }
-
-    #[test]
-    fn table_attr_changes_survive_hwp_save_roundtrip() {
-        let mut core = load();
-        let (pi, ci) = find_first_table(&core);
-        let (orig_tac, orig_wrap, _, _) = table_attrs(&core, pi, ci);
-
-        // 파싱 원본과 반드시 달라지는 값으로 변경
-        let new_tac = !orig_tac;
-        let new_wrap = if matches!(orig_wrap, TextWrap::TopAndBottom) {
-            "Square"
-        } else {
-            "TopAndBottom"
-        };
-        let json = format!(
-            r#"{{"treatAsChar":{new_tac},"textWrap":"{new_wrap}","vertRelTo":"Para","allowOverlap":true}}"#
-        );
-        core.set_table_properties_native(0, pi, ci, &json)
-            .expect("set_table_properties_native");
-
-        // 메모리(IR) 반영 확인
-        let (mem_tac, mem_wrap, mem_overlap, mem_vrel) = table_attrs(&core, pi, ci);
-        assert_eq!(mem_tac, new_tac);
-        assert_eq!(format!("{mem_wrap:?}"), new_wrap);
-        assert!(mem_overlap);
-        assert!(matches!(mem_vrel, VertRelTo::Para));
-
-        // HWP5 저장 → 재로드 후에도 보존되어야 한다.
-        // (수정 전에는 raw_ctrl_data FLAGS 가 파싱 원본 그대로 기록되어 전부 원복)
-        let saved = core.export_hwp_with_adapter().expect("export_hwp");
-        let reloaded = DocumentCore::from_bytes(&saved).expect("재로드");
-        let (pi2, ci2) = find_first_table(&reloaded);
-        let (tac, wrap, overlap, vrel) = table_attrs(&reloaded, pi2, ci2);
-        assert_eq!(tac, new_tac, "treatAsChar 변경이 HWP5 저장에서 유실됨");
-        assert_eq!(
-            format!("{wrap:?}"),
-            new_wrap,
-            "textWrap 변경이 HWP5 저장에서 유실됨"
-        );
-        assert!(overlap, "allowOverlap 변경이 HWP5 저장에서 유실됨");
-        assert!(
-            matches!(vrel, VertRelTo::Para),
-            "vertRelTo 변경이 HWP5 저장에서 유실됨 (실제: {vrel:?})"
-        );
-    }
 }

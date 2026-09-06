@@ -1308,7 +1308,9 @@ pub(crate) fn reflow_line_segs_with_bands(
     let ls_value = para_style.map(|s| s.line_spacing).unwrap_or(160.0);
     // 줄 기준선 비율 r = bd/lh — 문단 모양의 세로 정렬에서 온다(글꼴기준 0.85 /
     // 가운데 0.50 / 아래쪽 1.00, oracle-pdf-mining-20260806 §2-A).
-    let baseline_ratio = para_style.map(|s| s.line_baseline_ratio).unwrap_or(0.85);
+    let baseline_ratio = para_style
+        .map(|s| s.line_baseline_ratio)
+        .unwrap_or(crate::renderer::style_resolver::FONT_BASELINE_RATIO);
 
     // 줄별 max_font_size에 따라 line_height/text_height/baseline_distance를 계산
     // 한컴은 줄마다 최대 폰트 크기에 맞게 다른 치수를 사용
@@ -1383,7 +1385,10 @@ pub(crate) fn reflow_line_segs_with_bands(
                     .get(line_idx)
                     .or_else(|| orig_line_segs.first())
                 {
-                    seg.line_spacing = template.line_spacing;
+                    // ⚠ line_spacing 은 **상속하지 않는다** — 문단 모양에서 다시 계산한
+                    // make_line_seg 값을 쓴다. 종전 상속은 개체(표·그림)만 있는 문단의
+                    // 줄간격을 첫 값에 고착시켜, 글자처럼취급 이후 줄간격을 바꿔도
+                    // 화면이 그대로였다(2026-08-11 신고). 텍스트 문단은 원래 재계산한다.
                     seg.segment_width = if template.segment_width > 0 {
                         template.segment_width
                     } else {

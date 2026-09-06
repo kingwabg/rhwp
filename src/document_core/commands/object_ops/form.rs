@@ -314,6 +314,29 @@ impl DocumentCore {
             form.properties.insert("GroupName".into(), v);
         }
 
+        // [2026-08-15 신고 "명령 단추·선택 상자·입력 상자 자유 이동이 안 된다"] 시각 오프셋.
+        //
+        // 양식 개체는 앵커가 글자 사이(인라인)에 있고, 이 오프셋은 그 앵커로부터의
+        // **시각 델타**다(HWPUNIT, 음수 허용). 조판 계약은 건드리지 않는다 — 폭 예약·
+        // 줄 높이·캐럿 칸은 그대로라 기존 문서는 비트 동일하게 나온다(델타 0 = +0.0).
+        //
+        // 저장소는 HWPX 정본 키를 그대로 쓴다. 파서(hwpx/section.rs 의 hp:pos)와
+        // 직렬화기(serializer/hwpx/form.rs 의 hp:pos)가 이미 이 키를 왕복시키므로
+        // 새 키를 만들면 두 번째 진실이 생긴다.
+        //
+        // ⚠ 한컴 발산: 한컴 실물 코퍼스는 양식을 전수 인라인(오프셋 0)으로만 저장한다
+        // (HWPX 190/190, HWP 214/214 실측). 즉 비0 오프셋은 한컴 미채취 영역이고,
+        // 한컴에서 열면 오프셋을 무시해 원래 자리로 보일 가능성이 높다. HWP5 직렬화기는
+        // 아직 이 값을 쓰지 않으므로 .hwp 로 저장하면 위치가 0으로 돌아간다.
+        if let Some(v) = json_i32(props_json, "horzOffset") {
+            form.properties
+                .insert("PosHorzOffset".into(), v.to_string());
+        }
+        if let Some(v) = json_i32(props_json, "vertOffset") {
+            form.properties
+                .insert("PosVertOffset".into(), v.to_string());
+        }
+
         // 콤보 항목 — `"items":["봄","여름",...]`. 정본 저장소는 properties 의 listItem{N}
         // (HWPX 왕복이 이미 이 키를 쓴다). HWP5 는 항목이 스크립트 스트림(JScript)에 사니
         // 거기도 같이 갱신한다 — 안 하면 한컴에서 열었을 때 항목이 옛것으로 남는다.

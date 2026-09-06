@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>표 클립보드 왕복 + 선택 밴드 — 실측 분석 (2026-08-10)</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface: #fcfcfb; --page: #f9f9f7;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --ring: rgba(11,11,11,.10);
+  --blue: #2a78d6; --green: #1baf7a; --red: #d03b3b; --yellow: #eda100;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface: #1a1a19; --page: #0d0d0d;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --ring: rgba(255,255,255,.10);
+    --blue: #3987e5; --green: #199e70; --red: #e66767; --yellow: #c98500;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.75 system-ui, -apple-system, "Apple SD Gothic Neo", sans-serif; }
+.wrap { max-width: 980px; margin: 0 auto; padding: 40px 24px 120px; }
+h1 { font-size: 26px; margin: 20px 0 8px; }
+h2 { font-size: 21px; margin: 52px 0 8px; padding-top: 20px; border-top: 1px solid var(--grid); }
+h2 .no { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--ink); color: var(--page); font-size: 15px; margin-right: 10px; vertical-align: -4px; }
+h3 { font-size: 17px; margin: 28px 0 6px; }
+.sub { color: var(--ink-2); margin: 0 0 8px; }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; padding: 14px; }
+figcaption { color: var(--ink-2); font-size: 14px; margin-top: 10px; line-height: 1.6; }
+.ba { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 20px 0; }
+.ba figure::before { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 10px; border-radius: 20px; margin-bottom: 10px; }
+.ba figure.a::before { content: "복사 전 (원본)"; background: color-mix(in oklab, var(--green) 14%, var(--surface)); color: var(--green); }
+.ba figure.b::before { content: "붙여넣기 후"; background: color-mix(in oklab, var(--red) 14%, var(--surface)); color: var(--red); }
+.ba figure.h::before { content: "한컴 기준"; background: color-mix(in oklab, var(--blue) 14%, var(--surface)); color: var(--blue); }
+img { width: 100%; border: 1px solid var(--grid); border-radius: 6px; image-rendering: pixelated; background: #fff; }
+table { border-collapse: collapse; width: 100%; margin: 14px 0; background: var(--surface); font-size: 14px; }
+th, td { border: 1px solid var(--grid); padding: 7px 10px; text-align: left; }
+th { background: color-mix(in oklab, var(--surface) 92%, var(--ink)); }
+.ok { color: var(--green); font-weight: 700; }
+.bad { color: var(--red); font-weight: 700; }
+.warn { color: var(--yellow); font-weight: 700; }
+.talk { background: var(--surface); border: 1px solid var(--ring); border-left: 4px solid var(--blue); border-radius: 10px; padding: 14px 18px; margin: 16px 0; }
+.talk.bad { border-left-color: var(--red); }
+.talk.good { border-left-color: var(--green); }
+.talk.warn { border-left-color: var(--yellow); }
+code { background: color-mix(in oklab, var(--surface) 90%, var(--ink)); padding: 1px 5px; border-radius: 4px; font-size: 13.5px; }
+pre { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 14px 16px; overflow-x: auto; font-size: 13px; line-height: 1.7; }
+.chain { display: grid; gap: 8px; margin: 16px 0; }
+.chain div { background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; padding: 10px 14px; font-size: 14.5px; }
+.chain div b { font-family: ui-monospace, monospace; }
+.foot { margin-top: 60px; padding-top: 16px; border-top: 1px solid var(--grid); color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>표 클립보드 왕복 — 테두리 굵기·폭 변질 분석</h1>
+<p class="sub">rhwp studio ↔ 한컴독스 웹한글 복사·붙여넣기 실측. 2026-08-10.</p>
+
+<div class="talk bad"><b>결론 — 렌더링은 한컴과 거의 같은데, 복사→붙여넣기 왕복에서 표가 변질된다.</b>
+<br>· 테두리 굵기 <b>1.95배</b> (잉크질량 247 → 482) — 0.25mm 선이 0.5mm가 된다
+<br>· 표 폭 <b>1.5배</b> (100.0mm → 150.5mm) — 셀 너비가 클립보드에 안 실려 단 폭으로 늘어난다
+<br>· 원인은 클립보드 export가 HWP 테두리 <b>굵기 인덱스를 픽셀 값으로 그대로</b> 쓰기 때문 (인덱스 4 → <code>4.0px</code>)</div>
+
+<h2><span class="no">1</span>실측 — 무엇이 얼마나 달라지나</h2>
+<p>같은 표(3×3, 폭 100mm, 기본 테두리)를 우리 편집기에서 만들고 → 전체 선택 → 복사 → 문서 끝에 붙여넣기
+("서식 유지" 선택). 테두리는 <b>잉크질량</b>(선을 가로질러 스캔한 (255−밝기)의 합)으로 쟀다 — 안티앨리어싱
+때문에 "픽셀 두께"만으로는 굵기를 비교할 수 없어서다.</p>
+<table>
+<tr><th>항목</th><th>원본 (우리)</th><th>붙여넣기 후 (우리)</th><th>한컴 기준</th><th>판정</th></tr>
+<tr><td>세로 테두리 잉크질량</td><td>247 (249·235·247·257)</td><td class="bad">482 (490·469·477·492)</td><td>275</td><td class="bad">1.95배 굵어짐</td></tr>
+<tr><td>선 픽셀 폭</td><td>1~2px</td><td class="bad">3px</td><td>1~2px</td><td class="bad">불일치</td></tr>
+<tr><td>표 폭</td><td>378px = 100.0mm</td><td class="bad">569px = 150.5mm</td><td>지정값 유지</td><td class="bad">1.5배 확장</td></tr>
+<tr><td>테두리 색</td><td>검정(안티앨리어싱 회색)</td><td>검정</td><td>검정</td><td class="ok">색상값 자체는 동일</td></tr>
+</table>
+<div class="talk"><b>"색이 다르다"의 정체</b> — 색상값(#000000)은 같다. 다만 선이 <b>2배 굵어지면서 더 진해
+보인다</b>(잉크질량 247→482). 즉 체감상의 색 차이는 굵기 변질의 결과다.</div>
+
+<h3>원본 vs 붙여넣기 후</h3>
+<div class="ba">
+<figure class="a"><img src="assets/clipboard-20260810/our-original.png" alt="원본 표"><figcaption>우리 편집기에서 만든 3×3 / 100mm 표. 테두리가 가늘고 폭이 정확히 100mm.</figcaption></figure>
+<figure class="b"><img src="assets/clipboard-20260810/our-pasted.png" alt="붙여넣은 표"><figcaption>같은 표를 복사→붙여넣은 결과. 테두리가 눈에 띄게 굵고, 표가 단 폭까지 늘어났다(150.5mm).</figcaption></figure>
+</div>
+
+<h3>한컴 기준선</h3>
+<div class="ba">
+<figure class="h"><img src="assets/clipboard-20260810/hancom-table.png" alt="한컴 표"><figcaption>한컴에서 만든 기본 표(30mm). 세로선 잉크질량 275 — 우리 원본(247)과 사실상 같은 굵기다.</figcaption></figure>
+<figure class="h"><img src="assets/clipboard-20260810/hancom-selection.png" alt="한컴 표 선택"><figcaption>참고: 한컴은 표를 드래그 선택하면 <b>셀 안쪽까지 파란 틴트</b>가 덮이고 밴드가 내용 끝에서 멈춘다.</figcaption></figure>
+</div>
+
+<h2><span class="no">2</span>근본 원인 — 굵기 인덱스를 픽셀로 쓴다</h2>
+<p>HWP에서 테두리 굵기는 길이가 아니라 <b>0~15 인덱스</b>다(0=0.1mm, 1=0.12mm, 4=0.25mm, 7=0.5mm …).
+렌더러는 이걸 표로 변환해 쓰는데(<code>border_width_to_px</code>), 클립보드 export는 인덱스를 그대로
+픽셀로 쓴다.</p>
+<pre>// src/document_core/commands/clipboard.rs — apply_border_fill_css
+let px = (bl.width as f64).max(1.0);            // ← bl.width 는 "굵기 인덱스"
+css.push_str(&format!("border-{}:{:.1}px solid {};", side, px, color));
+
+// src/renderer/layout/border_rendering.rs — 렌더러의 올바른 변환
+const WIDTHS_PX: [f64; 16] = [0.4, 0.5, 0.6, 0.75, <b>1.0</b>, 1.1, 1.5, <b>1.9</b>, ...];
+//                            0    1    2    3     4(0.25mm)   5    6    7(0.5mm)</pre>
+
+<h3>변질 경로 (실제 값 추적)</h3>
+<div class="chain">
+<div>① 원본 표 테두리 = 굵기 <b>인덱스 4</b> (0.25mm) → 렌더 <b>1.0px</b> ✓</div>
+<div>② 복사 export: <code>px = 4</code> → <b>border-left:4.0px solid #000000</b> ← 4배 과장</div>
+<div>③ 붙여넣기 import: 4.0px × 0.75 = <b>3.0pt</b> → 3.0 × 0.3528 = <b>1.058mm</b></div>
+<div>④ mm → 인덱스: 0.45mm 이상은 전부 <b>인덱스 7</b>(0.5mm)로 clamp</div>
+<div>⑤ 결과: 0.25mm → <b>0.5mm</b> = 렌더 1.9px → 실측 잉크질량 <b>247 → 482 (1.95배)</b> ✓ 예측과 일치</div>
+</div>
+
+<h3>표 폭이 늘어나는 이유 — 셀 너비를 안 내보낸다</h3>
+<p>클립보드 HTML의 <code>&lt;td&gt;</code>에 <b>width가 아예 없다</b>. 그래서 붙여넣기 쪽은 폭 정보를 못 받고
+단 폭을 균등 분할한다 → 100mm 표가 본문 단 폭(150.5mm)으로 늘어난다.</p>
+<pre>&lt;td style="border-left:4.0px solid #000000;border-right:4.0px solid #000000;
+           border-top:4.0px solid #000000;border-bottom:4.0px solid #000000;
+           padding:1px 5px;vertical-align:top;"&gt;   &lt;!-- width 없음 --&gt;</pre>
+<p>참고로 엔진에는 <b>제대로 된 다른 export 경로</b>가 이미 있다 —
+<code>width:38.50pt;height:21.31pt;border-top:solid #000000 0.28pt</code>처럼 <b>pt 단위 + 크기 포함</b>으로
+내보내는 코드가 테스트에 고정돼 있다. 클립보드 경로만 이 규약을 안 따른다.</p>
+
+<h2><span class="no">3</span>한컴 → 우리 방향</h2>
+<div class="talk warn"><b>미확정 — 한컴의 복사가 시스템 클립보드에 실리지 않았다.</b>
+<br>한컴 웹한글에서 표 줄을 선택하고 Cmd+C를 보냈지만 시스템 클립보드 내용이 바뀌지 않았다(복사 전후 모두
+우리 스튜디오가 넣어둔 <code>[표]</code> 그대로). 같은 자동화 방식으로 <b>우리 쪽 Cmd+C는 정상 동작</b>했으므로
+한컴 웹에디터가 자체(내부) 클립보드를 쓰는 쪽에 무게가 실리지만, 자동화 한계일 가능성도 남아 있어
+<b>손으로 직접 확인이 필요</b>하다. 확인되면 이 절을 채운다.</div>
+
+<h2><span class="no">4</span>선택 밴드 — 줄간격이 빠지던 문제 (수리 완료)</h2>
+<div class="talk good"><b>사용자 지적</b>: "드래그할 때 <b>간격에 대한 드래그를 안 한다</b>" — 정확했다.
+한컴 밴드는 <b>줄간격(160%) 포함 줄 전체 높이</b>(잉크의 1.66배)인데 우리는 글자 상자만(1.06배)이라
+줄 사이 간격이 선택에서 빠져 보였다.</div>
+<table>
+<tr><th>항목</th><th class="bad">수리 전</th><th class="ok">수리 후</th><th>한컴</th></tr>
+<tr><td>밴드 세로 규격</td><td class="bad">캐럿 규격(글자 상자) 16px</td><td class="ok">줄 상자 + 줄간격 47.6px</td><td>줄 전체 높이</td></tr>
+<tr><td>표가 있는 줄</td><td class="bad">표(34.3px)를 못 덮음</td><td class="ok">표 전체 덮음(136.0~170.3 포함)</td><td>표 포함</td></tr>
+<tr><td>표 셀 안쪽</td><td class="bad">흰색 — 밴드에 구멍</td><td class="ok">파란 틴트로 덮임</td><td>틴트</td></tr>
+</table>
+<div class="ba">
+<figure class="b" style="--x:0"><img src="assets/clipboard-20260810/our-band-after.png" alt="수리 후 밴드"><figcaption>수리 후 우리 편집기 — 밴드가 표 전체 높이를 덮고 셀 안쪽까지 칠해지며 "다라" 끝에서 멈춘다.</figcaption></figure>
+<figure class="h"><img src="assets/clipboard-20260810/hancom-selection.png" alt="한컴 밴드"><figcaption>한컴 기준 — 같은 규칙.</figcaption></figure>
+</div>
+<figure style="margin-top:16px"><img src="assets/clipboard-20260810/our-band-multi.png" alt="여러 줄 드래그"><figcaption>여러 줄 드래그: 각 줄이 자기 줄 높이(표·그림 포함)만큼 덮인다.</figcaption></figure>
+<p><b>원인 두 겹</b> — ① 밴드 세로 규격이 캐럿 규격(글자 상자)이었다. ② 그걸 고친 뒤에도 표가 있는 줄은
+안 덮였는데, 줄 상자를 찾는 코드가 <b>표 셀 안의 TextLine</b>(13.3px)을 본문 줄로 오인했기 때문. 표 안으로
+내려가지 않도록 막고, TextLine 노드가 아예 없는 인라인 표 문단은 <b>같은 줄 본문 노드들의 합집합</b>으로
+줄 상자를 구하게 했다.</p>
+<div class="talk warn"><b>미확인 1건</b> — 선택이 다음 줄로 <b>이어지는 중간 줄</b>의 오른쪽 끝을 한컴이
+어디까지 칠하는지(단 오른쪽 끝 vs 내용 끝)는 측정에 실패해 확정하지 못했다. 근거 없이 바꾸지 않고
+현행(단 오른쪽 끝)을 유지한다.</div>
+
+<h2><span class="no">5</span>수리 방향</h2>
+<table>
+<tr><th>#</th><th>수리</th><th>효과</th></tr>
+<tr><td>1</td><td>클립보드 export의 테두리 굵기를 <b>인덱스 → mm</b>로 변환해 내보낸다(<code>border:0.25mm</code>). CSS는 mm를 지원하므로 왕복이 무손실이 된다. 최소 수정은 렌더러의 <code>border_width_to_px</code>를 재사용하는 것.</td><td>테두리 2배 변질 제거</td></tr>
+<tr><td>2</td><td><code>&lt;td&gt;</code>에 <b>셀 너비·높이</b>를 pt(또는 mm)로 내보낸다 — 이미 다른 export 경로가 쓰는 규약.</td><td>표 폭 1.5배 확장 제거</td></tr>
+<tr><td>3</td><td>import의 <code>css_border_width_to_hwp</code> 상한(현재 0.45mm 이상 전부 인덱스 7)을 <b>전체 16단계</b>로 확장.</td><td>굵은 테두리(1mm+) 보존</td></tr>
+</table>
+
+<p class="foot">측정: CDP 자동화 + 픽셀 잉크질량 스캔(선 가로지르는 (255−밝기) 합) · 원본/붙여넣기 모두 100% 배율 ·
+한컴 기준선은 한컴독스 웹한글 실측 · 2026-08-10</p>
+
+</div>
+</body>
+</html>

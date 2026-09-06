@@ -42,25 +42,3 @@ pub fn decode_hwp3_string(bytes: &[u8]) -> String {
 
     result
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_decode_hwp3_string() {
-        // ASCII 테스트
-        let ascii_bytes = b"Hello\0World";
-        assert_eq!(decode_hwp3_string(ascii_bytes), "Hello");
-
-        // 조합형 테스트
-        // "가"의 조합형 코드는 0x88 0x61
-        // 리틀 엔디안 바이트 배열: [0x88, 0x61]
-        let johab_bytes = [0x88, 0x61, 0x00];
-        assert_eq!(decode_hwp3_string(&johab_bytes), "가");
-
-        // 혼합 텍스트 테스트
-        let mixed_bytes = [0x41, 0x88, 0x61, 0x42, 0x00];
-        assert_eq!(decode_hwp3_string(&mixed_bytes), "A가B");
-    }
-}

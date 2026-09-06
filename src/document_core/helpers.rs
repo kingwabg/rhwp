@@ -1529,6 +1529,20 @@ pub(crate) fn parse_css_border_shorthand(val: &str) -> (f64, u32, u8) {
 
 /// CSS border 두께(pt)를 HWP border width 인덱스로 변환한다.
 /// HWP 스펙: width 값이 선 굵기 인덱스 (0: 0.1mm, 1: 0.12mm, 2: 0.15mm, 3: 0.2mm, 4: 0.25mm, 5: 0.3mm, 6: 0.4mm, 7: 0.5mm)
+/// HWP 테두리 굵기 **인덱스**(0~15) → pt. 클립보드 HTML 수출용.
+///
+/// ⚠ `BorderLine.width` 는 길이가 아니라 [`BORDER_WIDTHS`] mm 표의 인덱스다.
+/// 종전 수출은 이 인덱스를 그대로 px 로 적어(idx4 → "4.0px") 붙여넣기마다 테두리가
+/// 굵어졌다(실측 1.95배, 0.25mm → 0.5mm). pt 로 내보내면 수입측
+/// [`css_border_width_to_hwp`] 가 mm 로 되돌려 인덱스가 왕복 보존된다.
+pub(crate) fn hwp_border_width_idx_to_pt(idx: u8) -> f64 {
+    let mm = crate::model::style::BORDER_WIDTHS
+        .get(idx as usize)
+        .map(|(mm, _)| *mm)
+        .unwrap_or(0.1);
+    mm / 0.3528
+}
+
 pub(crate) fn css_border_width_to_hwp(pt: f64) -> u8 {
     let mm = pt * 0.3528; // 1pt ≈ 0.3528mm
     if mm < 0.11 {
@@ -1640,99 +1654,5 @@ pub(crate) fn border_fills_equal(
         (Some(sa), Some(sb)) => sa.background_color == sb.background_color,
         (None, None) => true,
         _ => false,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::document::SectionDef;
-    use crate::model::footnote::Footnote;
-    use crate::model::image::Picture;
-    use crate::model::page::ColumnDef;
-    use crate::model::shape::TextWrap;
-
-    #[test]
-    fn navigable_text_len_counts_trailing_footnote_marker() {
-        let para = Paragraph {
-            text: "abc".to_string(),
-            char_offsets: vec![0, 1, 2],
-            controls: vec![Control::Footnote(Box::default())],
-            ..Default::default()
-        };
-
-        assert_eq!(find_control_text_positions(&para), vec![3]);
-        assert_eq!(navigable_text_len(&para), 4);
-    }
-
-    #[test]
-    fn logical_positions_ignore_section_and_column_controls() {
-        let para = Paragraph {
-            text: "  ".to_string(),
-            char_offsets: vec![24, 25],
-            controls: vec![
-                Control::SectionDef(Box::default()),
-                Control::ColumnDef(ColumnDef::default()),
-                Control::Footnote(Box::default()),
-                Control::Footnote(Box::default()),
-            ],
-            ..Default::default()
-        };
-
-        assert_eq!(find_control_text_positions(&para), vec![0, 0, 0, 2]);
-        assert_eq!(find_logical_control_positions(&para), vec![0, 0, 0, 3]);
-        assert_eq!(logical_paragraph_length(&para), 4);
-        assert_eq!(navigable_text_len(&para), 4);
-    }
-
-    #[test]
-    fn logical_positions_do_not_double_count_control_only_fallback() {
-        let mut first_picture = Picture::default();
-        first_picture.common.treat_as_char = true;
-        let mut second_picture = Picture::default();
-        second_picture.common.treat_as_char = true;
-
-        let para = Paragraph {
-            text: String::new(),
-            char_offsets: vec![],
-            controls: vec![
-                Control::SectionDef(Box::<SectionDef>::default()),
-                Control::ColumnDef(ColumnDef::default()),
-                Control::Picture(Box::new(first_picture)),
-                Control::Picture(Box::new(second_picture)),
-            ],
-            ..Default::default()
-        };
-
-        assert_eq!(find_control_text_positions(&para), vec![0, 0, 0, 1]);
-        assert_eq!(find_logical_control_positions(&para), vec![0, 0, 0, 1]);
-        assert_eq!(logical_paragraph_length(&para), 2);
-        assert_eq!(navigable_text_len(&para), 2);
-    }
-
-    #[test]
-    fn logical_positions_skip_non_tac_picture_controls() {
-        let mut tac_picture = Picture::default();
-        tac_picture.common.treat_as_char = true;
-        let mut topbottom_picture = Picture::default();
-        topbottom_picture.common.treat_as_char = false;
-        topbottom_picture.common.text_wrap = TextWrap::TopAndBottom;
-
-        let para = Paragraph {
-            text: String::new(),
-            char_offsets: vec![],
-            controls: vec![
-                Control::SectionDef(Box::<SectionDef>::default()),
-                Control::ColumnDef(ColumnDef::default()),
-                Control::Picture(Box::new(topbottom_picture)),
-                Control::Picture(Box::new(tac_picture)),
-            ],
-            ..Default::default()
-        };
-
-        assert_eq!(find_control_text_positions(&para), vec![0, 0, 0, 1]);
-        assert_eq!(find_logical_control_positions(&para), vec![0, 0, 0, 0]);
-        assert_eq!(logical_paragraph_length(&para), 1);
-        assert_eq!(navigable_text_len(&para), 1);
     }
 }

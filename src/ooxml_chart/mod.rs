@@ -23,6 +23,7 @@
 
 pub mod parser;
 pub mod renderer;
+pub mod writer;
 
 /// OOXML 차트 데이터 모델
 #[derive(Debug, Clone, Default)]

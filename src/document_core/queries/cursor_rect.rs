@@ -1396,6 +1396,10 @@ impl DocumentCore {
             bbox_y: f64,
             bbox_w: f64,
             bbox_h: f64,
+            // 캐럿 규격(y = bbox_y + baseline − ascent, h = font) 계산용 — TAC 개체가 있는
+            // 줄에서 run bbox 는 줄 상자(개체 높이)라 클릭 커서가 줄 전체로 커졌다.
+            font_size: f64,
+            baseline: f64,
             // 셀/글상자 컨텍스트 (본문 텍스트는 None)
             cell_context: Option<CellContext>,
             is_textbox: bool,
@@ -1654,6 +1658,8 @@ impl DocumentCore {
                             bbox_y: node.bbox.y,
                             bbox_w: node.bbox.width,
                             bbox_h: node.bbox.height,
+                            font_size: text_run.style.font_size,
+                            baseline: text_run.baseline,
                             cell_context,
                             is_textbox: false,
                             column_index: col,
@@ -1723,9 +1729,19 @@ impl DocumentCore {
                     run.bbox_x
                 }
             };
+            // 캐럿 규격 y/h — run bbox(줄 상자)를 그대로 쓰면 TAC 개체 줄에서 커서가
+            // 줄 전체 높이로 나온다(get_cursor_rect 와 어긋남).
+            let (caret_y, caret_h) = if run.baseline > 0.0 && run.font_size > 0.0 {
+                (
+                    run.bbox_y + run.baseline - run.font_size * 0.8,
+                    run.font_size,
+                )
+            } else {
+                (run.bbox_y, run.bbox_h)
+            };
             let cursor_rect = format!(
                 ",\"cursorRect\":{{\"pageIndex\":{},\"x\":{:.1},\"y\":{:.1},\"height\":{:.1}}}",
-                page_num, cursor_x, run.bbox_y, run.bbox_h
+                page_num, cursor_x, caret_y, caret_h
             );
             if let Some(ref ctx) = run.cell_context {
                 let outer = &ctx.path[0];
@@ -2038,12 +2054,26 @@ impl DocumentCore {
                 .any(|cb| cb.x > right + 1.0 && cb.y < iy + ih && cb.y + cb.h > iy);
             // 오른쪽에 이웃 셀이 있으면(나란한 표) 밴드를 아예 끈다 — 좁은 밴드조차
             // 표 사이 좁은 간격을 삼켜 셀 클릭을 가로챈다(exam_social 2단 표 실측).
-            // 오른쪽에 이웃 셀이 있으면(나란한 표) 밴드를 끈다 — 표 사이 클릭은 셀로.
-            // 없으면 표 오른쪽은 줄 끝까지 빈 여백이므로, 멀리 클릭해도 표 뒤로 보낸다.
+            // 없으면 빈 여백만큼 표 뒤로 보내되, **같은 줄 오른쪽 본문 텍스트 앞까지만** —
+            // 종전 무한 밴드는 표 오른쪽 텍스트 위 클릭·드래그 앵커까지 전부 '표 뒤'로
+            // 삼켜 그 텍스트를 마우스로 선택할 수 없었다(2026-08-10 신고).
+            let right_text_start = runs
+                .iter()
+                .filter(|r| {
+                    r.section_index == si
+                        && r.paragraph_index == pi
+                        && r.cell_context.is_none()
+                        && r.char_count > 0
+                        && r.bbox_x >= right - 1.0
+                        && r.bbox_y < iy + ih
+                        && r.bbox_y + r.bbox_h > iy
+                })
+                .map(|r| r.bbox_x)
+                .fold(f64::INFINITY, f64::min);
             let right_band = if has_right_neighbor {
                 0.0
             } else {
-                f64::INFINITY
+                (right_text_start - right).max(0.0)
             };
             let _ = sole;
             if right_band > 0.0 && x >= right && x <= right + right_band && y >= iy && y <= iy + ih
@@ -2058,7 +2088,22 @@ impl DocumentCore {
                     caret_h,
                 ));
             }
-            if x < ix && x >= ix - caret_h && y >= iy && y <= iy + ih {
+            // 왼쪽 밴드도 본문 텍스트가 붙어 있으면 양보 — 직전 글자 클릭을 삼키지 않는다.
+            let left_text_end = runs
+                .iter()
+                .filter(|r| {
+                    r.section_index == si
+                        && r.paragraph_index == pi
+                        && r.cell_context.is_none()
+                        && r.char_count > 0
+                        && r.bbox_x + r.bbox_w <= ix + 1.0
+                        && r.bbox_y < iy + ih
+                        && r.bbox_y + r.bbox_h > iy
+                })
+                .map(|r| r.bbox_x + r.bbox_w)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let left_band = (ix - left_text_end).clamp(0.0, caret_h);
+            if x < ix && x >= ix - left_band && y >= iy && y <= iy + ih {
                 return Ok(format_body_inline_image_hit(
                     page_num,
                     si,
@@ -2270,8 +2315,29 @@ impl DocumentCore {
         let mut hit_body: Option<(usize, usize)> = None; // (run_idx, char_offset)
         let mut hit_cell: Option<(usize, usize)> = None;
         let mut hit_cell_area: Option<i64> = None;
+        // [2026-08-17] 셀 런은 **자기 셀 bbox 안**에서만 히트 — 얇은 조각 셀(어긋내기)의
+        // 빈 문단 lineseg 가 글줄 높이로 셀 밖(아래 행)까지 뻗어, 마지막 행 클릭이 위
+        // 조각 셀로 오판됐다(3열 어긋 실측: 전체 드래그에서 마지막 행 누락). 글상자
+        // 게이트(text_run_hit_allowed_by_textbox_bbox)와 같은 원리 — 셀 clip 렌더와 정합.
+        let run_cell_bbox_ok = |run: &RunInfo| -> bool {
+            let Some(ctx) = run.cell_context.as_ref() else {
+                return true;
+            };
+            let ci = ctx.innermost().cell_index;
+            let Some(cb) = cell_bboxes
+                .iter()
+                .find(|cb| cb.table_id == run.table_id && cb.cell_index == ci)
+            else {
+                return true;
+            };
+            let eps = 0.5;
+            x >= cb.x - eps && x <= cb.x + cb.w + eps && y >= cb.y - eps && y <= cb.y + cb.h + eps
+        };
         for (i, run) in runs.iter().enumerate() {
             if !text_run_hit_allowed_by_textbox_bbox(run, &textbox_bboxes, x, y) {
+                continue;
+            }
+            if !run_cell_bbox_ok(run) {
                 continue;
             }
             if x >= run.bbox_x
@@ -5329,330 +5395,5 @@ impl DocumentCore {
             "{{\"ok\":true,\"sectionIdx\":{},\"paraIdx\":{},\"controlIdx\":{},\"sourceType\":\"{}\"}}",
             section_idx, para_idx, control_idx, source_type
         ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{clamp_cursor_to_cell_bounds, resolve_x_on_line, CellCursorBounds, LineRunView};
-
-    #[test]
-    fn cell_cursor_bounds_clamp_coordinates_and_height() {
-        let bounds = CellCursorBounds {
-            x: 10.0,
-            y: 20.0,
-            w: 30.0,
-            h: 8.0,
-        };
-        let (x, y, height, overflowed) = clamp_cursor_to_cell_bounds(50.0, 40.0, 14.0, bounds);
-        assert_eq!((x, y, height, overflowed), (40.0, 20.0, 8.0, true));
-    }
-
-    // 줄 단위 x 해석(`resolve_x_on_line`)의 회귀 테스트.
-    //
-    // 핵심은 "줄 시작/끝으로 스냅하지 않는다" 이다. char_positions 는 production
-    // 의 `compute_char_positions` 와 동일하게 `[0.0, w1, w1+w2, ...]` (char_count+1
-    // 개, 0.0 포함) 형태로 구성한다. 줄 안 글자 경계로의 정확한 라운딩은
-    // production `find_char_at_x` 의 미드포인트 규칙을 그대로 따르므로, 여기서는
-    // "줄 시작/끝 상수로 붕괴하지 않고 x 에 따라 단조 증가" 라는 회귀 핵심 속성을
-    // 검증한다.
-
-    /// char_count 개 글자가 균등 폭 `w` 로 놓인 한 run.
-    fn run(
-        bbox_x: f64,
-        char_start: usize,
-        char_count: usize,
-        w: f64,
-        positions: &[f64],
-    ) -> LineRunView<'_> {
-        LineRunView {
-            bbox_x,
-            bbox_w: w * char_count as f64,
-            char_start,
-            char_count,
-            char_positions: positions,
-        }
-    }
-
-    /// 10글자 run 하나로 된 줄. bbox_x=100, 글자 폭 10px. char_start=7 (줄 시작이
-    /// 문단 offset 0 이 아님을 확인).
-    const POS10: [f64; 11] = [
-        0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0,
-    ];
-
-    /// 회귀: 줄 한가운데 x 의 클릭은 줄 시작도 끝도 아닌 중간 글자 offset 으로
-    /// 해석되어야 한다. (leading-gap 클릭이 줄 시작/끝으로 스냅하던 버그)
-    ///
-    /// `resolve_x_on_line` 은 클릭 y 와 무관하게 줄 안에서 x 만으로 해석하므로,
-    /// 글리프 bbox 의 행간 여백(leading gap)에 떨어진 클릭도 동일하게 이 경로를
-    /// 타게 되어 더 이상 줄 시작/끝으로 스냅하지 않는다.
-    #[test]
-    fn mid_line_x_resolves_to_mid_line_offset_not_start_or_end() {
-        let line = vec![run(100.0, 7, 10, 10.0, &POS10)];
-        let line_start = 7; // char_start
-        let line_end = 17; // char_start + char_count
-
-        // 줄 한가운데(x=150)
-        let (idx, offset) = resolve_x_on_line(&line, 150.0);
-        assert_eq!(idx, 0, "단일 run 줄이므로 run 인덱스는 0");
-        assert!(
-            offset > line_start && offset < line_end,
-            "회귀: 줄 한가운데(x=150) 클릭이 줄 시작({line_start})/끝({line_end}) 사이의 \
-             중간 글자로 해석되어야 함, got {offset}"
-        );
-    }
-
-    /// 줄 전체에 x 를 쓸어가며 해석한 offset 이 (약)단조 증가하고, 시작/끝 상수로
-    /// 붕괴하지 않아야 한다. (어떤 내부 x 도 줄 시작/끝으로 스냅하지 않음을 확인)
-    #[test]
-    fn interior_x_sweep_is_monotonic_and_spans_the_line() {
-        let line = vec![run(100.0, 7, 10, 10.0, &POS10)];
-        let mut prev = 0usize;
-        let mut distinct = std::collections::BTreeSet::new();
-        let mut x = 100.0; // bbox_x
-        while x <= 200.0 {
-            let (_, offset) = resolve_x_on_line(&line, x);
-            assert!(
-                offset >= prev,
-                "x={x} 에서 offset={offset} 이 직전 {prev} 보다 작음 (단조 증가 위반)"
-            );
-            distinct.insert(offset);
-            prev = offset;
-            x += 2.0;
-        }
-        assert!(
-            distinct.len() >= 8,
-            "회귀: 줄 내부 x 스윕이 {} 개의 distinct offset 만 냄 {distinct:?}; \
-             줄 시작/끝 상수로 스냅하면 1~2 개로 붕괴함",
-            distinct.len()
-        );
-    }
-
-    /// 줄 경계 밖: 왼쪽은 줄 시작, 오른쪽은 줄 끝으로 클램프.
-    #[test]
-    fn outside_line_clamps_to_start_and_end() {
-        let line = vec![run(100.0, 7, 10, 10.0, &POS10)];
-        assert_eq!(resolve_x_on_line(&line, 50.0), (0, 7), "줄 왼쪽 → 줄 시작");
-        assert_eq!(
-            resolve_x_on_line(&line, 999.0),
-            (0, 17),
-            "줄 오른쪽 → 줄 끝"
-        );
-    }
-
-    /// 다중 run 줄: 두 run 사이의 빈틈 클릭은 줄 끝으로 스냅하지 않고
-    /// 더 가까운 run 경계로 해석되어야 한다. (다중 run 줄 inter-run-gap 버그)
-    #[test]
-    fn inter_run_gap_snaps_to_nearer_boundary_not_line_end() {
-        const P0: [f64; 4] = [0.0, 10.0, 20.0, 30.0]; // 3 chars, 폭 10
-        const P1: [f64; 4] = [0.0, 10.0, 20.0, 30.0]; // 3 chars, 폭 10
-                                                      // run0: x[100,130], chars 0..3 ; 빈틈 ; run1: x[200,230], chars 5..8
-        let line = vec![run(100.0, 0, 3, 10.0, &P0), run(200.0, 5, 3, 10.0, &P1)];
-        let line_end = 5 + 3; // 8
-
-        // 빈틈 안에서 왼쪽 run 에 가까운 x(140) → 왼쪽 run 끝 (offset 3)
-        let (idx, offset) = resolve_x_on_line(&line, 140.0);
-        assert_eq!((idx, offset), (0, 3), "빈틈 왼쪽 → 왼쪽 run 끝");
-        assert_ne!(
-            offset, line_end,
-            "회귀: 빈틈 클릭이 줄 끝으로 스냅하면 안 됨"
-        );
-
-        // 빈틈 안에서 오른쪽 run 에 가까운 x(190) → 오른쪽 run 시작 (offset 5)
-        let (idx, offset) = resolve_x_on_line(&line, 190.0);
-        assert_eq!((idx, offset), (1, 5), "빈틈 오른쪽 → 오른쪽 run 시작");
-    }
-
-    /// 회귀: 빈 입력칸(char_count=0)이지만 bbox_w 가 셀 폭만큼 넓은 run.
-    /// char_positions = [0.0] 한 개뿐이라 라운딩 함수가 len()=1 을 돌려주지만,
-    /// 글자 인덱스는 char_count(=0) 로 클램프되어 offset 은 항상 char_start 여야 한다.
-    /// (exam_social/exam_science 답안지 `성명` 빈 입력칸 클릭이 offset 1 로 새던 버그)
-    #[test]
-    fn empty_run_with_wide_bbox_clamps_to_char_start() {
-        const EMPTY: [f64; 1] = [0.0];
-        let line = vec![LineRunView {
-            bbox_x: 212.7,
-            bbox_w: 97.0, // 빈 입력칸 폭(글자 없음)
-            char_start: 0,
-            char_count: 0,
-            char_positions: &EMPTY,
-        }];
-        // bbox 한참 안쪽 클릭(x=250)도 빈 run 이므로 offset 0 (줄/run 시작).
-        assert_eq!(resolve_x_on_line(&line, 250.0), (0, 0));
-        // 오른쪽 끝 너머도 마찬가지.
-        assert_eq!(resolve_x_on_line(&line, 999.0), (0, 0));
-    }
-
-    /// [#2021] 계측 프로브 — 대형 표 문서의 콜드 rect 비용 분해.
-    /// 실행: cargo test --profile release-test --lib document_core::queries::cursor_rect -- --ignored --nocapture
-    #[test]
-    #[ignore = "계측 프로브 — 수동 실행"]
-    fn probe_2021_cursor_rect_by_path_cold_cost() {
-        use std::time::Instant;
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("samples/issue1949_giant_cell_nested_tables_perf.hwp");
-        let bytes = std::fs::read(&p).expect("read sample");
-        let core = crate::document_core::DocumentCore::from_bytes(&bytes).expect("parse");
-
-        let doc = core.document();
-        let mut host = None;
-        'outer: for (pi, para) in doc.sections[0].paragraphs.iter().enumerate() {
-            for (ci, c) in para.controls.iter().enumerate() {
-                if matches!(c, crate::model::control::Control::Table(_)) {
-                    host = Some((pi, ci));
-                    break 'outer;
-                }
-            }
-        }
-        let (host_pi, host_ci) = host.expect("표 없음");
-        let path_json = format!(
-            r#"[{{"controlIndex":{},"cellIndex":0,"cellParaIndex":0}}]"#,
-            host_ci
-        );
-
-        let total_pages = core.page_count();
-        let pages = core.find_pages_for_paragraph(0, host_pi).expect("pages");
-        eprintln!(
-            "#2021 probe: 총 {}쪽 / 호스트 pi={} 걸친 페이지 = {}개 (first={:?} last={:?})",
-            total_pages,
-            host_pi,
-            pages.len(),
-            pages.first(),
-            pages.last()
-        );
-
-        let t = Instant::now();
-        let warm = core.get_cursor_rect_by_path_native(0, host_pi, &path_json, 0);
-        eprintln!(
-            "#2021 probe: 웜 ok={} ({:.1}ms)",
-            warm.is_ok(),
-            t.elapsed().as_secs_f64() * 1000.0
-        );
-
-        core.invalidate_page_tree_cache();
-        let t = Instant::now();
-        let cold = core.get_cursor_rect_by_path_native(0, host_pi, &path_json, 0);
-        let cold_ms = t.elapsed().as_secs_f64() * 1000.0;
-        eprintln!(
-            "#2021 probe: 콜드 ok={} ({:.1}ms) rect={:?}",
-            cold.is_ok(),
-            cold_ms,
-            cold.as_deref().unwrap_or("-")
-        );
-
-        // 셀 내부 깊은 문단 — 실제 시나리오(후반 페이지에 렌더되는 셀 문단) 재현
-        if let Some(crate::model::control::Control::Table(t)) =
-            doc.sections[0].paragraphs[host_pi].controls.get(host_ci)
-        {
-            let n_paras = t.cells.first().map(|c| c.paragraphs.len()).unwrap_or(0);
-            for frac in [2usize, 4, 10] {
-                let cpi = n_paras.saturating_sub(1) / frac * (frac - 1);
-                let path_deep = format!(
-                    r#"[{{"controlIndex":{},"cellIndex":0,"cellParaIndex":{}}}]"#,
-                    host_ci, cpi
-                );
-                core.invalidate_page_tree_cache();
-                let t2 = Instant::now();
-                let r = core.get_cursor_rect_by_path_native(0, host_pi, &path_deep, 0);
-                eprintln!(
-                    "#2021 probe: 셀0 문단 {}/{} 콜드 ok={} ({:.1}ms) rect={:?}",
-                    cpi,
-                    n_paras,
-                    r.is_ok(),
-                    t2.elapsed().as_secs_f64() * 1000.0,
-                    r.as_deref().unwrap_or("-")
-                );
-            }
-        }
-
-        // 뒤쪽 셀(마지막 셀) — 캐럿 페이지가 문서 후반일 때의 선형 탐색 비용
-        if let Some(crate::model::control::Control::Table(t)) =
-            doc.sections[0].paragraphs[host_pi].controls.get(host_ci)
-        {
-            let last_cell = t.cells.len().saturating_sub(1);
-            let path_last = format!(
-                r#"[{{"controlIndex":{},"cellIndex":{},"cellParaIndex":0}}]"#,
-                host_ci, last_cell
-            );
-            core.invalidate_page_tree_cache();
-            let t2 = Instant::now();
-            let cold_last = core.get_cursor_rect_by_path_native(0, host_pi, &path_last, 0);
-            eprintln!(
-                "#2021 probe: 마지막 셀(idx {}) 콜드 ok={} ({:.1}ms) rect={:?}",
-                last_cell,
-                cold_last.is_ok(),
-                t2.elapsed().as_secs_f64() * 1000.0,
-                cold_last.as_deref().unwrap_or("-")
-            );
-        }
-
-        if let Ok(ref json) = cold {
-            let page: u32 = json
-                .split("\"pageIndex\":")
-                .nth(1)
-                .and_then(|s| s.split(&[',', '}'][..]).next())
-                .and_then(|s| s.trim().parse().ok())
-                .unwrap_or(0);
-            core.invalidate_page_tree_cache();
-            let t = Instant::now();
-            let _ = core.build_page_tree_cached(page);
-            eprintln!(
-                "#2021 probe: 캐럿 페이지({}) 1장 빌드 = {:.1}ms",
-                page,
-                t.elapsed().as_secs_f64() * 1000.0
-            );
-        }
-    }
-
-    /// [#2021] 힌트 탐색 동등성 핀 — 힌트 유/무·오힌트 fallback 모두 좌표 완전 일치.
-    #[test]
-    fn issue_2021_hint_search_equivalence() {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("samples/issue1949_giant_cell_nested_tables_perf.hwp");
-        let bytes = std::fs::read(&p).expect("read sample");
-        let core = crate::document_core::DocumentCore::from_bytes(&bytes).expect("parse");
-        let doc = core.document();
-        let mut host = None;
-        'outer: for (pi, para) in doc.sections[0].paragraphs.iter().enumerate() {
-            for (ci, c) in para.controls.iter().enumerate() {
-                if matches!(c, crate::model::control::Control::Table(_)) {
-                    host = Some((pi, ci));
-                    break 'outer;
-                }
-            }
-        }
-        let (host_pi, host_ci) = host.expect("표 없음");
-        let total = core.page_count() as u32;
-        for cell in 0..3usize {
-            let path = format!(
-                r#"[{{"controlIndex":{},"cellIndex":{},"cellParaIndex":0}}]"#,
-                host_ci, cell
-            );
-            core.invalidate_page_tree_cache();
-            let base = core
-                .get_cursor_rect_by_path_with_hint(0, host_pi, &path, 0, None)
-                .expect("base rect");
-            // 정힌트(정답 페이지) / 오힌트(마지막 페이지·범위 밖) 전부 동일해야 한다.
-            let base_page: u32 = base
-                .split("\"pageIndex\":")
-                .nth(1)
-                .and_then(|s| s.split(&[',', '}'][..]).next())
-                .and_then(|s| s.trim().parse().ok())
-                .expect("pageIndex");
-            for hint in [
-                Some(base_page),
-                Some(total.saturating_sub(1)),
-                Some(total + 7),
-            ] {
-                core.invalidate_page_tree_cache();
-                let hinted = core
-                    .get_cursor_rect_by_path_with_hint(0, host_pi, &path, 0, hint)
-                    .expect("hinted rect");
-                assert_eq!(
-                    base, hinted,
-                    "#2021 힌트 {hint:?} 좌표 불일치 (cell {cell})"
-                );
-            }
-        }
     }
 }

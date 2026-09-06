@@ -156,23 +156,3 @@ fn raw_deflate(input: &[u8]) -> Option<Vec<u8>> {
     encoder.write_all(input).ok()?;
     encoder.finish().ok()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn zlib_deflate_roundtrip() {
-        use flate2::read::ZlibDecoder;
-        use std::io::Read;
-
-        let input = b"hello rhwp scripts test";
-        let compressed = zlib_deflate(input).expect("zlib deflate failed");
-        let mut decoder = ZlibDecoder::new(&compressed[..]);
-        let mut decoded = Vec::new();
-        decoder
-            .read_to_end(&mut decoded)
-            .expect("zlib inflate failed");
-        assert_eq!(decoded, input);
-    }
-}

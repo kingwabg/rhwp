@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>표 어긋내기가 안 되는 상황 — 2026-08-17 실측</title>
+<style>
+  :root {
+    --ink: #16191d; --dim: #5b6570; --line: #dfe3e8; --bg: #f6f7f9;
+    --no: #c0392b; --no-bg: #fdf2f1; --yes: #1f7a4d; --yes-bg: #f0f9f4;
+    --warn: #a15c00; --warn-bg: #fdf6ea;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 28px 80px; background: var(--bg); color: var(--ink);
+    font: 15px/1.75 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  header { margin-bottom: 34px; }
+  h1 { font-size: 28px; margin: 0 0 10px; letter-spacing: -0.5px; }
+  .sub { color: var(--dim); font-size: 14px; }
+  .sub code { background: #fff; border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; font-size: 12px; }
+  h2 { font-size: 19px; margin: 42px 0 6px; padding-bottom: 8px; border-bottom: 2px solid var(--ink); }
+  h2 .cnt { font-size: 13px; font-weight: normal; color: var(--dim); margin-left: 8px; }
+  .lead { color: var(--dim); margin: 0 0 18px; font-size: 14px; }
+
+  .card {
+    background: #fff; border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px 20px; margin-bottom: 14px; display: grid;
+    grid-template-columns: 232px 1fr; gap: 20px; align-items: start;
+  }
+  .card.no { border-left: 4px solid var(--no); }
+  .card.yes { border-left: 4px solid var(--yes); }
+  .card.warn { border-left: 4px solid var(--warn); }
+  .fig { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 6px; }
+  .fig svg { display: block; width: 100%; height: auto; }
+  .body h3 { margin: 0 0 8px; font-size: 16.5px; }
+  .msg {
+    display: inline-block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px; padding: 5px 10px; border-radius: 5px; margin-bottom: 10px;
+  }
+  .no .msg { background: var(--no-bg); color: var(--no); border: 1px solid #f2c9c4; }
+  .yes .msg { background: var(--yes-bg); color: var(--yes); border: 1px solid #bfe3ce; }
+  .warn .msg { background: var(--warn-bg); color: var(--warn); border: 1px solid #ecd9b0; }
+  .why { margin: 0 0 10px; }
+  .fix { background: var(--bg); border-radius: 6px; padding: 10px 12px; font-size: 14px; }
+  .fix b { color: var(--ink); }
+  .shot { margin-top: 12px; }
+  .shot img { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; display: block; }
+  .shot figcaption { color: var(--dim); font-size: 12.5px; margin-top: 5px; }
+  table.sum { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; font-size: 14px; }
+  table.sum th, table.sum td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--line); }
+  table.sum th { background: #eef1f4; font-weight: 600; }
+  table.sum tr:last-child td { border-bottom: none; }
+  .tag { font-size: 12px; padding: 2px 8px; border-radius: 20px; white-space: nowrap; }
+  .tag.no { background: var(--no-bg); color: var(--no); }
+  .tag.yes { background: var(--yes-bg); color: var(--yes); }
+  footer { margin-top: 40px; color: var(--dim); font-size: 13px; border-top: 1px solid var(--line); padding-top: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>표 어긋내기가 안 되는 상황</h1>
+  <p class="sub">
+    2026-08-17 엔진 실측 · 각 상황마다 새 표를 만들어 실제로 조작하고 엔진이 돌려준 메시지를 그대로 옮겼습니다.
+    근거 프로브 <code>examples/diag_stagger_blocked.rs</code> · 화면 캡처는 실제 편집기.
+  </p>
+</header>
+
+<p class="lead" style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px 16px;">
+  <b>어긋내기</b>란 셀 하나의 경계선만 옮겨 다른 줄과 어긋나게 만드는 조작입니다(마우스: <b>Shift+경계선 드래그</b>,
+  키보드: <b>F5로 셀 선택 후 Shift+화살표</b>). Shift 없이 끌면 그 줄 전체가 움직이는 <b>일반 리사이즈</b>라
+  어긋나지 않습니다 — "어긋내기가 안 된다"고 느끼는 경우 중 상당수가 이것입니다.
+</p>
+
+<h2>1. 구조상 불가능 <span class="cnt">— 표 모양 자체가 허용하지 않음</span></h2>
+<p class="lead">이 셋은 델타를 아무리 작게 줘도 항상 거부됩니다. 표를 바꾸지 않는 한 방법이 없습니다.</p>
+
+<div class="card no" id="outer">
+  <div class="fig"><svg viewBox="0 0 220 128" xmlns="http://www.w3.org/2000/svg"><rect x="14" y="22" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="14" y="49" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="14" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="78" y="22" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="78" y="49" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="78" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="142" y="22" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="142" y="49" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="142" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><line x1="14" y1="103" x2="206" y2="103" stroke="#c0392b" stroke-width="4" stroke-linecap="round"/><line x1="206" y1="22" x2="206" y2="103" stroke="#c0392b" stroke-width="4" stroke-linecap="round"/><circle cx="110.0" cy="103" r="9" fill="#fff" stroke="#c0392b" stroke-width="2.4"/><line x1="106.0" y1="99" x2="114.0" y2="107" stroke="#c0392b" stroke-width="2.6" stroke-linecap="round"/><line x1="114.0" y1="99" x2="106.0" y2="107" stroke="#c0392b" stroke-width="2.6" stroke-linecap="round"/><circle cx="206" cy="62.5" r="9" fill="#fff" stroke="#c0392b" stroke-width="2.4"/><line x1="202" y1="58.5" x2="210" y2="66.5" stroke="#c0392b" stroke-width="2.6" stroke-linecap="round"/><line x1="210" y1="58.5" x2="202" y2="66.5" stroke="#c0392b" stroke-width="2.6" stroke-linecap="round"/><text x="110.0" y="16" font-size="11.5" fill="#c0392b" text-anchor="middle" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,sans-serif">바깥 테두리 = 옮길 수 없음</text><text x="110.0" y="122" font-size="10.5" fill="#5b6570" text-anchor="middle" font-weight="normal" font-family="-apple-system,BlinkMacSystemFont,sans-serif">안쪽 선만 어긋내기 대상</text></svg></div>
+  <div class="body">
+    <h3>바깥 테두리 — 표의 맨 아래·맨 오른쪽 선</h3>
+    <div class="msg">바깥 테두리는 어긋낼 수 없습니다</div>
+    <p class="why">어긋내기는 <b>내부 경계선</b>을 옮겨 이웃 칸에서 공간을 뺏어오는 조작입니다.
+      바깥 테두리는 뺏어올 이웃이 없습니다. 옮기면 표 전체 크기가 변하는데, 그건 어긋내기가 아니라 표 크기 조절입니다.</p>
+    <div class="fix"><b>대신</b> 표 전체를 키우려면 표를 선택해 모서리 핸들로 조절하거나, 안쪽 경계선을 옮기세요.
+      화면에서는 바깥 테두리를 잡으면 어긋내기 그랩 대신 <b>표 개체 선택</b>이 됩니다.</div>
+  
+    <figure class="shot"><img src="assets/stagger-blocked-20260817/base-3x3.png" alt="기본 3×3 표 — 바깥 테두리(맨 아래·맨 오른쪽 선)는 어긋내기 대상이 아닙니다"><figcaption>기본 3×3 표 — 바깥 테두리(맨 아래·맨 오른쪽 선)는 어긋내기 대상이 아닙니다</figcaption></figure>
+  </div>
+</div>
+
+<div class="card no" id="single">
+  <div class="fig"><svg viewBox="0 0 220 128" xmlns="http://www.w3.org/2000/svg"><rect x="60" y="22" width="100" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="60" y="49" width="100" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="60" y="76" width="100" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><line x1="60" y1="22" x2="60" y2="103" stroke="#c0392b" stroke-width="4" stroke-linecap="round"/><line x1="160" y1="22" x2="160" y2="103" stroke="#c0392b" stroke-width="4" stroke-linecap="round"/><circle cx="60" cy="62.5" r="9" fill="#fff" stroke="#c0392b" stroke-width="2.4"/><line x1="56" y1="58.5" x2="64" y2="66.5" stroke="#c0392b" stroke-width="2.6" stroke-linecap="round"/><line x1="64" y1="58.5" x2="56" y2="66.5" stroke="#c0392b" stroke-width="2.6" stroke-linecap="round"/><circle cx="160" cy="62.5" r="9" fill="#fff" stroke="#c0392b" stroke-width="2.4"/><line x1="156" y1="58.5" x2="164" y2="66.5" stroke="#c0392b" stroke-width="2.6" stroke-linecap="round"/><line x1="164" y1="58.5" x2="156" y2="66.5" stroke="#c0392b" stroke-width="2.6" stroke-linecap="round"/><text x="110.0" y="16" font-size="11.5" fill="#c0392b" text-anchor="middle" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,sans-serif">1열 표 = 세로 내부 경계 없음</text><text x="110.0" y="122" font-size="10.5" fill="#5b6570" text-anchor="middle" font-weight="normal" font-family="-apple-system,BlinkMacSystemFont,sans-serif">보이는 세로선은 전부 바깥 테두리</text></svg></div>
+  <div class="body">
+    <h3>1열짜리 표의 세로 경계 · 1행짜리 표의 가로 경계</h3>
+    <div class="msg">바깥 테두리는 어긋낼 수 없습니다</div>
+    <p class="why">1열 표에는 세로 내부 경계가, 1행 표에는 가로 내부 경계가 <b>아예 없습니다</b>.
+      보이는 세로선은 전부 바깥 테두리라 위와 같은 이유로 거부됩니다.</p>
+    <div class="fix"><b>대신</b> 열(또는 행)을 하나 더 추가하면 내부 경계가 생겨 어긋낼 수 있습니다.</div>
+  </div>
+</div>
+
+<div class="card no" id="merged">
+  <div class="fig"><svg viewBox="0 0 220 128" xmlns="http://www.w3.org/2000/svg"><rect x="14" y="22" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="14" y="49" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="14" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="78" y="22" width="64" height="54" fill="#eef1f4" stroke="#8a929b" stroke-width="1.6"/><rect x="78" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="142" y="22" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="142" y="49" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="142" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><line x1="78" y1="22" x2="78" y2="76" stroke="#c0392b" stroke-width="4" stroke-linecap="round"/><circle cx="78" cy="49.0" r="9" fill="#fff" stroke="#c0392b" stroke-width="2.4"/><line x1="74" y1="45.0" x2="82" y2="53.0" stroke="#c0392b" stroke-width="2.6" stroke-linecap="round"/><line x1="82" y1="45.0" x2="74" y2="53.0" stroke="#c0392b" stroke-width="2.6" stroke-linecap="round"/><text x="110.0" y="53.0" font-size="10.5" fill="#5b6570" text-anchor="middle" font-weight="normal" font-family="-apple-system,BlinkMacSystemFont,sans-serif">병합</text><text x="110.0" y="16" font-size="11.5" fill="#c0392b" text-anchor="middle" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,sans-serif">마주 보는 칸 높이가 다름</text><text x="110.0" y="122" font-size="10.5" fill="#5b6570" text-anchor="middle" font-weight="normal" font-family="-apple-system,BlinkMacSystemFont,sans-serif">왼쪽 3칸 vs 오른쪽 1칸(2행 높이)</text></svg></div>
+  <div class="body">
+    <h3>마주 보는 두 칸의 크기가 다를 때 (병합된 칸이 걸림)</h3>
+    <div class="msg">위아래 높이가 다른 칸과는 경계를 어긋낼 수 없습니다</div>
+    <div class="msg">좌우 폭이 다른 칸과는 경계를 어긋낼 수 없습니다</div>
+    <p class="why">세로 경계를 옮기려면 왼쪽·오른쪽 칸의 <b>높이가 같아야</b> 하고, 가로 경계는 위·아래 칸의
+      <b>폭이 같아야</b> 합니다. 한쪽이 병합돼 크기가 다르면 경계를 옮겼을 때 격자가 성립하지 않습니다.
+      대상 칸이 병합됐어도, 이웃 칸이 병합됐어도 똑같이 거부됩니다.</p>
+    <div class="fix"><b>대신</b> 병합을 풀고(셀 나누기) 어긋낸 뒤 다시 병합하거나, 병합 구간을 피해 다른 줄의
+      같은 경계를 옮기세요. <b>양쪽이 똑같이 병합된 경우는 정상 동작합니다</b>(아래 3번 참고).</div>
+  
+    <figure class="shot"><img src="assets/stagger-blocked-20260817/merged-vert.png" alt="가운데 열이 세로 병합된 표 — 이 상태에서 첫 열의 오른쪽 경계는 거부됩니다"><figcaption>가운데 열이 세로 병합된 표 — 이 상태에서 첫 열의 오른쪽 경계는 거부됩니다</figcaption></figure>
+  </div>
+</div>
+
+<h2>2. 공간이 없어서 거부 <span class="cnt">— 더 줄일 수 없는 한계</span></h2>
+<p class="lead">모양은 되는데 밀어 넣을 자리가 없는 경우입니다. 방향을 바꾸거나 표를 키우면 풀립니다.</p>
+
+<div class="card no" id="content">
+  <div class="fig"><svg viewBox="0 0 220 128" xmlns="http://www.w3.org/2000/svg"><rect x="14" y="22" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="14" y="49" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="14" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="78" y="22" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="78" y="49" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="78" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="142" y="22" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="142" y="49" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="142" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><text x="46.0" y="67" font-size="11" fill="#16191d" text-anchor="middle" font-weight="normal" font-family="-apple-system,BlinkMacSystemFont,sans-serif">내용</text><defs><marker id="a45483" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#c0392b"/></marker></defs><line x1="46.0" y1="53" x2="46.0" y2="72" stroke="#c0392b" stroke-width="2.2" marker-end="url(#a45483)"/><circle cx="46.0" cy="76" r="9" fill="#fff" stroke="#c0392b" stroke-width="2.4"/><line x1="42.0" y1="72" x2="50.0" y2="80" stroke="#c0392b" stroke-width="2.6" stroke-linecap="round"/><line x1="50.0" y1="72" x2="42.0" y2="80" stroke="#c0392b" stroke-width="2.6" stroke-linecap="round"/><line x1="14" y1="76" x2="78" y2="76" stroke="#c0392b" stroke-width="4" stroke-linecap="round"/><text x="110.0" y="16" font-size="11.5" fill="#c0392b" text-anchor="middle" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,sans-serif">글자보다 얇아질 수 없음</text><text x="110.0" y="122" font-size="10.5" fill="#5b6570" text-anchor="middle" font-weight="normal" font-family="-apple-system,BlinkMacSystemFont,sans-serif">글줄 한 줄 높이가 바닥</text></svg></div>
+  <div class="body">
+    <h3>글자가 든 칸을 글줄보다 얇게 만들려 할 때</h3>
+    <div class="msg">이웃 칸에 남는 높이가 없습니다</div>
+    <div class="msg">대상 칸에 남는 높이가 없습니다</div>
+    <p class="why">칸은 <b>자기 안의 글줄보다 얇아질 수 없습니다</b>. 글자가 한 줄 들어 있으면 그 한 줄 높이가 바닥이고,
+      거기 닿으면 그 방향으로는 더 못 갑니다. 빈 칸은 훨씬 얇아질 수 있어(최소 2.7px) 같은 표에서도
+      글자가 든 칸 쪽만 막힙니다.</p>
+    <div class="fix"><b>대신</b> 반대 방향으로 옮기거나, 글자 크기를 줄이거나, 표(행)를 먼저 키운 뒤 어긋내세요.</div>
+  
+    <figure class="shot"><img src="assets/stagger-blocked-20260817/with-text.png" alt="둘째 행 첫 칸에 글자가 든 표 — 그 칸은 글줄 높이 아래로 못 줄입니다"><figcaption>둘째 행 첫 칸에 글자가 든 표 — 그 칸은 글줄 높이 아래로 못 줄입니다</figcaption></figure>
+  </div>
+</div>
+
+<div class="card no" id="limit">
+  <div class="fig"><svg viewBox="0 0 220 128" xmlns="http://www.w3.org/2000/svg"><rect x="14" y="22" width="184" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="198" y="22" width="8" height="27" fill="#fdf2f1" stroke="#8a929b" stroke-width="1.6"/><rect x="14" y="49" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="78" y="49" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="142" y="49" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="14" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="78" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="142" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><defs><marker id="a60210" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#c0392b"/></marker></defs><line x1="172" y1="35.5" x2="194" y2="35.5" stroke="#c0392b" stroke-width="2.2" marker-end="url(#a60210)"/><circle cx="198" cy="35.5" r="9" fill="#fff" stroke="#c0392b" stroke-width="2.4"/><line x1="194" y1="31.5" x2="202" y2="39.5" stroke="#c0392b" stroke-width="2.6" stroke-linecap="round"/><line x1="202" y1="31.5" x2="194" y2="39.5" stroke="#c0392b" stroke-width="2.6" stroke-linecap="round"/><text x="110.0" y="16" font-size="11.5" fill="#c0392b" text-anchor="middle" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,sans-serif">이웃이 최소 크기에 닿음</text><text x="110.0" y="122" font-size="10.5" fill="#5b6570" text-anchor="middle" font-weight="normal" font-family="-apple-system,BlinkMacSystemFont,sans-serif">실측: 26번째에서 거부(표 폭은 불변)</text></svg></div>
+  <div class="body">
+    <h3>같은 방향으로 계속 밀어 이웃을 다 먹었을 때</h3>
+    <div class="msg">이웃 칸에 남는 폭이 없습니다</div>
+    <p class="why">한 방향으로 반복해 밀면 이웃 칸이 계속 얇아지다가 최소 크기(2.7px)에 닿습니다.
+      실측: 3×3 새 표에서 오른쪽으로 한 칸씩 밀면 <b>26번째</b>에 이웃이 바닥나 거부됐습니다.
+      그때까지 표 전체 폭은 한 번도 변하지 않습니다.</p>
+    <div class="fix"><b>대신</b> 반대 방향으로 되돌리거나(되돌리기는 항상 가능), 열 폭을 먼저 넓히세요.</div>
+  
+    <figure class="shot"><img src="assets/stagger-blocked-20260817/shift-limit.png" alt="오른쪽으로 반복해 민 상태 — 표 전체 폭은 그대로입니다"><figcaption>오른쪽으로 반복해 민 상태 — 표 전체 폭은 그대로입니다</figcaption></figure>
+  </div>
+</div>
+
+<h2>3. 오해하기 쉬운데 실제로는 되는 것 <span class="cnt">— 실측으로 확인</span></h2>
+<p class="lead">"안 된다"고 느끼기 쉽지만 엔진은 정상 처리합니다. 다만 결과가 기대와 다를 수 있습니다.</p>
+
+<div class="card warn" id="clamp">
+  <div class="fig"><svg viewBox="0 0 220 128" xmlns="http://www.w3.org/2000/svg"><rect x="14" y="22" width="136" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="150" y="22" width="56" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="14" y="49" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="78" y="49" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="142" y="49" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="14" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="78" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="142" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><line x1="150" y1="22" x2="150" y2="49" stroke="#1f7a4d" stroke-width="4" stroke-linecap="round"/><line x1="214" y1="22" x2="214" y2="49" stroke="#a15c00" stroke-width="2.4" stroke-dasharray="4 3"/><defs><marker id="a50604" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#a15c00"/></marker></defs><line x1="154" y1="35.5" x2="210" y2="35.5" stroke="#a15c00" stroke-width="2.2" stroke-dasharray="4 3" marker-end="url(#a50604)"/><circle cx="150" cy="35.5" r="9" fill="#fff" stroke="#1f7a4d" stroke-width="2.4"/><polyline points="145.5,35.5 149,39.0 154.5,32.0" fill="none" stroke="#1f7a4d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><text x="110.0" y="16" font-size="11.5" fill="#a15c00" text-anchor="middle" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,sans-serif">크게 끌면 한계까지만 이동</text><text x="110.0" y="122" font-size="10.5" fill="#5b6570" text-anchor="middle" font-weight="normal" font-family="-apple-system,BlinkMacSystemFont,sans-serif">점선=끈 거리, 실선=실제 도달(성공)</text></svg></div>
+  <div class="body">
+    <h3>한 번에 크게 끌면 — 거부가 아니라 갈 수 있는 데까지만 갑니다</h3>
+    <div class="msg">결과: 성공(한계까지 이동)</div>
+    <p class="why">이웃 폭·높이보다 훨씬 큰 값을 줘도 거부되지 않고 <b>한계 지점까지 이동</b>합니다.
+      화면에서는 "많이 끌었는데 조금만 움직였다"로 보여 실패처럼 느껴집니다.
+      다른 열이 이미 어긋나 있으면 그 선에서 한 번 멈추고, 한 번 더 끌면 넘어갑니다.</p>
+    <div class="fix"><b>확인법</b> 표 전체 크기가 그대로면 정상입니다 — 어긋내기는 표 크기를 절대 바꾸지 않습니다.</div>
+  
+    <figure class="shot"><img src="assets/stagger-blocked-20260817/ok-staggered.png" alt="정상 어긋내기 결과 — 첫 열 경계만 내려가고 표 크기는 불변"><figcaption>정상 어긋내기 결과 — 첫 열 경계만 내려가고 표 크기는 불변</figcaption></figure>
+  </div>
+</div>
+
+<div class="card yes" id="merged-ok">
+  <div class="fig"><svg viewBox="0 0 220 128" xmlns="http://www.w3.org/2000/svg"><rect x="14" y="22" width="64" height="54" fill="#eef1f4" stroke="#8a929b" stroke-width="1.6"/><rect x="14" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="78" y="22" width="64" height="54" fill="#eef1f4" stroke="#8a929b" stroke-width="1.6"/><rect x="78" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="142" y="22" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="142" y="49" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><rect x="142" y="76" width="64" height="27" fill="#fff" stroke="#8a929b" stroke-width="1.6"/><line x1="78" y1="22" x2="78" y2="76" stroke="#1f7a4d" stroke-width="4" stroke-linecap="round"/><circle cx="78" cy="49.0" r="9" fill="#fff" stroke="#1f7a4d" stroke-width="2.4"/><polyline points="73.5,49.0 77,52.5 82.5,45.5" fill="none" stroke="#1f7a4d" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><text x="46.0" y="53.0" font-size="10.5" fill="#5b6570" text-anchor="middle" font-weight="normal" font-family="-apple-system,BlinkMacSystemFont,sans-serif">병합</text><text x="110.0" y="53.0" font-size="10.5" fill="#5b6570" text-anchor="middle" font-weight="normal" font-family="-apple-system,BlinkMacSystemFont,sans-serif">병합</text><text x="110.0" y="16" font-size="11.5" fill="#1f7a4d" text-anchor="middle" font-weight="600" font-family="-apple-system,BlinkMacSystemFont,sans-serif">양쪽 높이가 같으면 가능</text><text x="110.0" y="122" font-size="10.5" fill="#5b6570" text-anchor="middle" font-weight="normal" font-family="-apple-system,BlinkMacSystemFont,sans-serif">병합 자체가 금지가 아님</text></svg></div>
+  <div class="body">
+    <h3>양쪽이 똑같이 병합된 경우 · 병합 칸 자신의 반대편 경계</h3>
+    <div class="msg">결과: 성공</div>
+    <p class="why">두 칸이 <b>같은 높이로</b> 세로 병합돼 있으면 그 사이 세로 경계는 정상적으로 어긋납니다.
+      세로로 병합된 칸의 <b>아래 경계</b>도(아래 이웃과 폭만 같으면) 정상입니다.
+      즉 병합 자체가 금지가 아니라, <b>마주 보는 크기가 어긋나는 것</b>만 금지입니다.</p>
+    <div class="fix"><b>요령</b> 병합 때문에 막히면, 마주 보는 두 칸의 크기를 같게 맞춰주면 풀립니다.</div>
+  </div>
+</div>
+
+<h2>4. 화면 조작에서 막히는 경우 <span class="cnt">— 엔진이 아니라 조작 방식</span></h2>
+<p class="lead">엔진은 허용하는데 화면에서 조작이 안 닿는 상황입니다. 가장 흔한 원인입니다.</p>
+
+<table class="sum">
+  <tr><th style="width:230px">증상</th><th>원인</th><th style="width:300px">해결</th></tr>
+  <tr>
+    <td>끌었더니 그 줄 전체가 움직임</td>
+    <td>Shift를 안 눌렀습니다. Shift 없는 드래그는 행/열 전체 리사이즈입니다.</td>
+    <td><b>Shift를 누른 채</b> 경계선을 끄세요.</td>
+  </tr>
+  <tr>
+    <td>바깥 테두리를 잡으면 표가 통째로 선택됨</td>
+    <td>바깥 테두리는 어긋내기 그랩에서 제외돼 있습니다(표 개체 선택 우선).</td>
+    <td>안쪽 경계선을 잡으세요.</td>
+  </tr>
+  <tr>
+    <td>Shift+화살표를 눌러도 아무 일이 없음</td>
+    <td>셀 선택 상태가 아닙니다. 키보드 어긋내기는 셀 선택에서만 동작합니다.</td>
+    <td><b>F5</b>로 셀을 선택한 뒤 <b>Shift+화살표</b>.</td>
+  </tr>
+  <tr>
+    <td>표 밖을 클릭한 뒤 경계선이 안 잡힘</td>
+    <td>캐럿이 표 안에 없으면 경계 그랩 판정을 하지 않습니다(대형 문서 성능 보호).</td>
+    <td>셀을 한 번 클릭해 캐럿을 넣고 끄세요.</td>
+  </tr>
+  <tr>
+    <td>"이 조작은 표 격자를 깨뜨려 취소했습니다"</td>
+    <td>안전망이 작동했습니다. 조작 결과가 표를 깨뜨릴 뻔해 되돌린 것으로, 표는 손상되지 않았습니다.</td>
+    <td>더 작은 폭으로 나눠 옮기거나 다른 경계를 쓰세요.</td>
+  </tr>
+</table>
+
+<h2>전체 실측 결과</h2>
+<table class="sum">
+  <tr><th style="width:70px">판정</th><th style="width:330px">상황</th><th>엔진 응답</th></tr>
+  <tr><td><span class="tag no">거부</span></td><td>맨 아래 행의 아래(바깥) 테두리</td><td>바깥 테두리는 어긋낼 수 없습니다</td></tr>
+  <tr><td><span class="tag no">거부</span></td><td>맨 오른쪽 열의 오른쪽(바깥) 테두리</td><td>바깥 테두리는 어긋낼 수 없습니다</td></tr>
+  <tr><td><span class="tag no">거부</span></td><td>오른쪽 이웃이 세로 병합(높이가 다름)</td><td>위아래 높이가 다른 칸과는 경계를 어긋낼 수 없습니다</td></tr>
+  <tr><td><span class="tag no">거부</span></td><td>아래 이웃이 가로 병합(폭이 다름)</td><td>좌우 폭이 다른 칸과는 경계를 어긋낼 수 없습니다</td></tr>
+  <tr><td><span class="tag no">거부</span></td><td>대상이 가로 병합된 칸(아래 이웃과 폭 다름)</td><td>좌우 폭이 다른 칸과는 경계를 어긋낼 수 없습니다</td></tr>
+  <tr><td><span class="tag yes">가능</span></td><td>오른쪽으로 이웃 폭보다 크게</td><td>한계까지 이동 후 성공</td></tr>
+  <tr><td><span class="tag yes">가능</span></td><td>왼쪽으로 대상 폭보다 크게</td><td>한계까지 이동 후 성공</td></tr>
+  <tr><td><span class="tag yes">가능</span></td><td>아래로 이웃 높이보다 크게</td><td>한계까지 이동 후 성공</td></tr>
+  <tr><td><span class="tag yes">가능</span></td><td>새 표에서 위로(대상이 글줄 바닥)</td><td>한계까지 이동 후 성공</td></tr>
+  <tr><td><span class="tag no">거부</span></td><td>글자가 든 아래 칸을 글줄보다 얇게</td><td>이웃 칸에 남는 높이가 없습니다</td></tr>
+  <tr><td><span class="tag no">거부</span></td><td>오른쪽으로 계속 밀기(26회째)</td><td>이웃 칸에 남는 폭이 없습니다</td></tr>
+  <tr><td><span class="tag no">거부</span></td><td>1열짜리 표의 우변</td><td>바깥 테두리는 어긋낼 수 없습니다</td></tr>
+  <tr><td><span class="tag no">거부</span></td><td>1행짜리 표의 하변</td><td>바깥 테두리는 어긋낼 수 없습니다</td></tr>
+  <tr><td><span class="tag yes">가능</span></td><td>대상이 세로 병합된 칸의 아래 경계</td><td>한계까지 이동 후 성공</td></tr>
+  <tr><td><span class="tag yes">가능</span></td><td>양쪽 모두 같은 높이로 병합된 칸 사이</td><td>한계까지 이동 후 성공</td></tr>
+  <tr><td><span class="tag no">거부</span></td><td>글자가 든 칸 자신을 글줄보다 얇게</td><td>대상 칸에 남는 높이가 없습니다</td></tr>
+  <tr><td><span class="tag yes">가능</span></td><td>정상: 내부 경계 아래로 한 칸</td><td>한계까지 이동 후 성공</td></tr>
+</table>
+
+<footer>
+  실측 환경: rhwp 엔진 네이티브 프로브 16케이스(각 케이스마다 새 3×3 표) + 실제 편집기 화면 캡처.
+  최소 칸 크기 200 HWPUNIT ≈ 2.7px, 글줄 바닥은 칸 안 글자 크기에 따라 결정됩니다.
+</footer>
+</div>
+</body>
+</html>

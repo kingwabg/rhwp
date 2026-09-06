@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>캐럿·선택 정밀 분석 — sc- 임베드 실측 (12pt/50pt, 2026-08-09)</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface: #fcfcfb; --page: #f9f9f7;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --ring: rgba(11,11,11,.10);
+  --blue: #2a78d6; --green: #1baf7a; --red: #d03b3b; --yellow: #eda100;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface: #1a1a19; --page: #0d0d0d;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --ring: rgba(255,255,255,.10);
+    --blue: #3987e5; --green: #199e70; --red: #e66767; --yellow: #c98500;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 16px/1.75 system-ui, -apple-system, "Apple SD Gothic Neo", sans-serif; }
+.wrap { max-width: 960px; margin: 0 auto; padding: 40px 24px 120px; }
+h1 { font-size: 26px; margin: 20px 0 8px; }
+h2 { font-size: 21px; margin: 56px 0 8px; padding-top: 20px; border-top: 1px solid var(--grid); }
+h2 .no { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: var(--ink); color: var(--page); font-size: 15px; margin-right: 10px; vertical-align: -4px; }
+.sub { color: var(--ink-2); margin: 0 0 8px; }
+figure { margin: 20px 0; background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; padding: 16px; }
+figcaption { color: var(--ink-2); font-size: 14px; margin-top: 10px; line-height: 1.6; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid2 figure { margin: 0; }
+img { width: 100%; border: 1px solid var(--grid); border-radius: 6px; image-rendering: pixelated; background: #fff; }
+table { border-collapse: collapse; width: 100%; margin: 14px 0; background: var(--surface); font-size: 14px; }
+th, td { border: 1px solid var(--grid); padding: 7px 10px; text-align: left; }
+th { background: color-mix(in oklab, var(--surface) 92%, var(--ink)); }
+.ok { color: var(--green); font-weight: 700; }
+.bad { color: var(--red); font-weight: 700; }
+.talk { background: var(--surface); border: 1px solid var(--ring); border-left: 4px solid var(--blue); border-radius: 10px; padding: 14px 18px; margin: 16px 0; }
+.talk.warn { border-left-color: var(--red); }
+.talk.good { border-left-color: var(--green); }
+.foot { margin-top: 60px; padding-top: 16px; border-top: 1px solid var(--grid); color: var(--muted); font-size: 13px; }
+code { background: color-mix(in oklab, var(--surface) 90%, var(--ink)); padding: 1px 5px; border-radius: 4px; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>캐럿·선택 정밀 분석 — 임베드 실측</h1>
+<p class="sub">sc-hazel-kappa 임베드(동일 소스 로컬 빌드)를 헤드리스 크롬으로 몰아 12pt·50pt 전 시나리오를
+캡처하고, DOM 캐럿 rect · 엔진 커서 rect · <b>렌더 픽셀</b>(글자 잉크 bbox) 3계층을 대조했다. 2026-08-09.</p>
+
+<div class="talk good"><b>요약</b> — 이중 캐럿 스펙(공백=세로·글자 뒤=그 글자 폭 밑줄, 하늘색)은 12pt에서 스펙대로
+동작. 계측이 <b>50pt 결함 1건을 적발</b>(밑줄이 글자를 12px 관통)해 즉시 수리했다: 앵커를 "기준선 추정
+(y+0.8h)" → "<b>글자 rect 바닥</b>"으로. 수리 후 12/50pt 모두 잉크 바닥 아래 1~3px에 정확히 앉는다.</div>
+
+<h2><span class="no">1</span>적발·수리한 결함 — 50pt 밑줄 관통</h2>
+<table>
+<tr><th>크기</th><th>글자 잉크 바닥(픽셀 실측)</th><th>수리 전 밑줄 top</th><th>수리 후 밑줄 top</th><th>판정</th></tr>
+<tr><td>12pt</td><td>278~280px</td><td>279px (우연히 정합)</td><td>282px (잉크+2~3px)</td><td class="ok">정상</td></tr>
+<tr><td>50pt</td><td>334px</td><td class="bad">322px — 글자 위 12px 관통</td><td>335px (잉크+1px)</td><td class="ok">수리됨</td></tr>
+</table>
+<p>원인: 엔진 커서 rect에서 기준선을 <code>y + 0.8·height</code>로 추정했는데, 렌더러의 한글 잉크는
+크기와 무관하게 <b>글자 rect 바닥 − 1px</b>까지 내려온다(12pt·50pt 공통 실측). 작은 글자에선 두 값이
+우연히 겹쳐 안 보였고, 50pt에서 12px 차이로 드러났다. 밑줄 앵커를 rect 바닥으로 교체.</p>
+
+<h2><span class="no">2</span>캐럿 상태 매트릭스 — 12pt vs 50pt (수리 후)</h2>
+
+<h3>① 입력 전 / 문단 시작 — 세로 하늘색 캐럿</h3>
+<div class="grid2">
+<figure><img src="assets/caret-20260809/12pt-1-empty.png" alt="12pt 빈 문단 세로 캐럿"><figcaption>12pt 빈 문단: 세로 2×13px, 글자 높이와 동일.</figcaption></figure>
+<figure><img src="assets/caret-20260809/50pt-1-empty.png" alt="50pt 문단 시작 세로 캐럿"><figcaption>50pt 문단 시작(글자 앞): 세로 2×67px — 글자 크기를 따라간다.</figcaption></figure>
+</div>
+
+<h3>② 타이핑 직후 — 직전 글자 폭의 밑줄</h3>
+<div class="grid2">
+<figure><img src="assets/caret-20260809/12pt-2-typed.png" alt="12pt 타이핑 직후 밑줄 캐럿"><figcaption>12pt "가나다" 입력 직후: 밑줄 13×2px = '다' 폭(12px)과 일치, 잉크 바닥 아래 2px.</figcaption></figure>
+<figure><img src="assets/caret-20260809/50pt-2-typed.png" alt="50pt 타이핑 직후 밑줄 캐럿"><figcaption>50pt: 밑줄 65×2px = 글자 폭과 일치, 잉크 바닥(334px) 아래 1px(335px).</figcaption></figure>
+</div>
+
+<h3>③ 깜빡임 (500ms 간격 2프레임)</h3>
+<div class="grid2">
+<figure><img src="assets/caret-20260809/12pt-3-blink-a.png" alt="12pt 깜빡임 켜짐"><figcaption>12pt 위상 A — 밑줄 표시.</figcaption></figure>
+<figure><img src="assets/caret-20260809/12pt-3-blink-b.png" alt="12pt 깜빡임 꺼짐"><figcaption>12pt 위상 B(+500ms) — 소등. 밑줄 상태 그대로 깜빡인다.</figcaption></figure>
+</div>
+
+<h3>④ 공백 입력 뒤 — 세로 캐럿으로 복귀</h3>
+<div class="grid2">
+<figure><img src="assets/caret-20260809/12pt-4-after-space.png" alt="12pt 공백 뒤 세로 캐럿"><figcaption>12pt: 공백은 밑줄 댈 잉크가 없으므로 세로 캐럿.</figcaption></figure>
+<figure><img src="assets/caret-20260809/50pt-4-after-space.png" alt="50pt 공백 뒤 세로 캐럿"><figcaption>50pt 동일 — 세로 2×67px.</figcaption></figure>
+</div>
+
+<h3>⑤ 키보드 이동 — ←로 글자 사이, Home으로 시작</h3>
+<div class="grid2">
+<figure><img src="assets/caret-20260809/12pt-6-arrow-left.png" alt="12pt 화살표 이동"><figcaption>12pt "라마"에서 ← 1회: 커서가 라|마 사이 → 밑줄이 <b>'라' 아래로</b> 이동.</figcaption></figure>
+<figure><img src="assets/caret-20260809/12pt-7-home.png" alt="12pt Home 이동"><figcaption>Home: 문단 시작(글자 앞) → 세로 캐럿 복귀.</figcaption></figure>
+</div>
+<div class="grid2">
+<figure><img src="assets/caret-20260809/50pt-6-arrow-left.png" alt="50pt 화살표 이동"><figcaption>50pt ← 이동: 밑줄이 이동한 위치의 직전 글자 폭으로.</figcaption></figure>
+<figure><img src="assets/caret-20260809/50pt-7-home.png" alt="50pt Home"><figcaption>50pt Home: 세로 캐럿.</figcaption></figure>
+</div>
+
+<h2><span class="no">3</span>드래그 선택 — 밴드 기하 실측</h2>
+<div class="grid2">
+<figure><img src="assets/caret-20260809/12pt-8-drag-select.png" alt="12pt 드래그 선택"><figcaption>12pt 드래그: 밴드 (y268, h13) — 글자 잉크(269~280)를 1px 여유로 감싼다.</figcaption></figure>
+<figure><img src="assets/caret-20260809/50pt-8-drag-select.png" alt="50pt 드래그 선택"><figcaption>50pt 드래그: 밴드 (y268, h67) — 글자 rect 전체 높이. 드래그 끝점에는 캐럿이 함께 표시.</figcaption></figure>
+</div>
+<table>
+<tr><th>크기</th><th>선택 밴드</th><th>글자 잉크</th><th>관계</th></tr>
+<tr><td>12pt</td><td>y 268~281 (h=13)</td><td>y 269~280</td><td>잉크 위 1px·아래 1px 여유 — <b>글자 상자 높이</b></td></tr>
+<tr><td>50pt</td><td>y 268~335 (h=67)</td><td>y 272~334</td><td>잉크 위 4px·아래 1px 여유 — 글자 상자 높이</td></tr>
+</table>
+<div class="talk"><b>한컴과의 구조 차이(§5에서 실측 확정)</b> — 한컴 선택 밴드는 <b>줄간격(160%) 포함
+줄 전체 높이</b>(잉크의 1.66배, 12pt·50pt 동일 비율)이고, 우리는 <b>글자 상자 밴드</b>(잉크의
+1.06~1.11배)다. 아래 §5 실측 대조표 참조.</div>
+
+<h2><span class="no">4</span>수리 반영 상태</h2>
+<p>50pt 밑줄 앵커 수리는 이 보고서 작성 시점에 로컬 검증까지 완료했고, 임베드 배포는 캐럿 1차 배포와
+같은 경로(studio → sc- 재벤더링)로 나간다. 수리 전/후 수치는 §1 표와 같다.</p>
+
+<h2><span class="no">5</span>한컴 실측 대조 — 웹한글(hancomdocs) 픽셀 계측 (2026-08-10 완료)</h2>
+<div class="talk good"><b>실측 완료</b> — 한컴독스 웹한글 에디터(새 문서, 함초롬 계열 기본 글꼴, 100%
+배율)를 CDP로 몰아 임베드와 동일한 12pt·50pt × 7시나리오를 캡처했다. 캔버스 에디터라 DOM 계측이
+불가능해 <b>깜빡임 2프레임 픽셀 diff로 캐럿을 분리</b>해 측정했다. 핵심 판정 셋:
+<br>· <b>한컴은 타이핑 직후에도 세로 캐럿이다.</b> 밑줄은 <b>한글 조합 중에만</b> 나타난다 — 우리의 "확정 글자 뒤 상시 밑줄" 스펙과 다르다.
+<br>· <b>조합 밑줄 규칙(실측)</b>: 폭 = 조합 글리프 폭, 두께 2px, top = 줄상자 바닥 + 2px, 세로 캐럿 없이 단독 표시, 캐럿과 같은 주기로 깜빡인다.
+<br>· <b>선택 밴드 = 줄간격(160%) 포함 줄 전체 높이</b> — §3의 가설이 확정됐다.</div>
+
+<h3>① 타이핑 직후 — 한컴은 세로, 우리는 밑줄</h3>
+<div class="grid2">
+<figure><img src="assets/caret-20260809/hancom-12pt-2-typed.png" alt="한컴 12pt 타이핑 직후"><figcaption>한컴 12pt "가나다" 입력 직후(조합 확정): <b>세로 캐럿 2×17px</b>, 검정. 밑줄 없음.</figcaption></figure>
+<figure><img src="assets/caret-20260809/hancom-50pt-2-typed.png" alt="한컴 50pt 타이핑 직후"><figcaption>한컴 50pt 동일: 세로 2×68px. 임베드(§2-②)는 같은 상태에서 밑줄 캐럿.</figcaption></figure>
+</div>
+
+<h3>② 한글 조합 중 — 밑줄이 나타나는 유일한 상태</h3>
+<div class="grid2">
+<figure><img src="assets/caret-20260809/hancom-12pt-9-composing.png" alt="한컴 12pt 조합 중 밑줄"><figcaption>12pt "가나" + '다' 조합 중: 밑줄 16×2px = '다' 글리프 폭, top y394 = 줄상자 바닥(392)+2px. 세로 캐럿 없음.</figcaption></figure>
+<figure><img src="assets/caret-20260809/hancom-50pt-9-composing.png" alt="한컴 50pt 조합 중 밑줄"><figcaption>50pt '가' 조합 중: 밑줄 67×2px = 글리프 폭(66px), top y445 = 줄상자 바닥(443)+2px. 같은 규칙.</figcaption></figure>
+</div>
+<p>조합 밑줄도 <b>깜빡인다</b> — 10프레임 추적에서 세로 캐럿과 같은 ~530ms 주기의 ON/OFF 교대를
+확인했다. 즉 한컴의 "가로 캐럿"의 정체는 <b>IME 조합 표시</b>이고, 조합이 끝나는 순간 세로 캐럿으로
+복귀한다.</p>
+
+<h3>③ 드래그 선택 — 줄 전체 밴드</h3>
+<div class="grid2">
+<figure><img src="assets/caret-20260809/hancom-12pt-8-drag-select.png" alt="한컴 12pt 드래그 선택"><figcaption>한컴 12pt: 밴드 h=25px vs 잉크 h=15px (1.67배) — 12pt×1.33px/pt×160% ≈ 25.6px와 일치.</figcaption></figure>
+<figure><img src="assets/caret-20260809/hancom-50pt-8-drag-select.png" alt="한컴 50pt 드래그 선택"><figcaption>한컴 50pt: 밴드 h=106px vs 잉크 h=64px (1.66배) — 50pt 환산 106.4px와 일치. 연파랑, 글자색 유지.</figcaption></figure>
+</div>
+
+<h3>④ 정합 대조표 — 한컴 실측 vs 임베드 실측</h3>
+<table>
+<tr><th>항목</th><th>한컴 웹한글 (실측)</th><th>임베드 (실측, §1~3)</th><th>판정</th></tr>
+<tr><td>세로 캐럿 크기</td><td>2px 폭 × 줄상자 높이 (12pt 17px / 50pt 68px, 잉크의 1.06~1.13배)</td><td>2px 폭 × 12pt 13.3px / 50pt 66.7px (잉크의 1.06~1.11배)</td><td class="ok">비율 정합</td></tr>
+<tr><td>세로 캐럿 x</td><td>글리프 잉크 시작 5px 왼쪽 = advance 경계</td><td>advance 경계</td><td class="ok">정합</td></tr>
+<tr><td>타이핑 직후(조합 확정 후)</td><td><b>세로 캐럿</b></td><td class="bad"><b>밑줄 캐럿(상시)</b></td><td class="bad">불일치 — 스펙 결정 필요</td></tr>
+<tr><td>조합 중 표시</td><td>밑줄만: 글리프 폭 × 2px, 줄상자 바닥+2px, 깜빡임</td><td>(조합 구분 없음 — 밑줄이 확정 글자에도 표시)</td><td class="bad">불일치</td></tr>
+<tr><td>밑줄 세로 위치</td><td>줄상자 바닥 + 2px (12/50pt 공통)</td><td>글자 잉크 바닥 + 1~3px</td><td>근소 차이 (한컴이 2~5px 아래)</td></tr>
+<tr><td>선택 밴드 높이</td><td><b>줄간격 포함 줄 전체</b> (잉크의 1.66배 = 160% 줄간격)</td><td class="bad">글자 상자만 (잉크의 1.06~1.11배)</td><td class="bad">불일치 — 수리 후보</td></tr>
+<tr><td>캐럿 색</td><td>검정 (선택 밴드는 연파랑·글자색 유지)</td><td>하늘색</td><td>의도적 차이 (현행 스펙)</td></tr>
+<tr><td>깜빡임</td><td>세로·밑줄 모두 ~530ms 주기</td><td>세로·밑줄 모두 500ms</td><td class="ok">정합</td></tr>
+</table>
+
+<div class="talk"><b>수리 후보 (사용자 결정 대기)</b>
+<br>① <b>선택 밴드를 줄간격 포함 줄 전체 높이로</b> — 한컴 정합, 기하 규칙 명확(잉크×줄간격%), 효과가 가장 크다.
+<br>② <b>밑줄 캐럿을 조합 중에만 표시</b>하고 그 외엔 세로 캐럿 — 한컴과 동작 정합. 단, 현행 "글자 뒤 상시 밑줄"은 사용자 지정 스펙이므로 유지 여부 판단 필요.
+<br>③ 밑줄 앵커를 "잉크 바닥+1~3px" → "줄상자 바닥+2px"로 — ②와 묶어서 진행할 때 의미 있음.</div>
+
+<h2><span class="no">6</span>글자처럼 취급(TAC) 개체 — 표·그림 실측 대조와 엔진 수리 (2026-08-10)</h2>
+<div class="talk good"><b>실측 완료 + 수리 3건</b> — 한컴독스 웹한글에 "가나[개체]다라" 라인 3종(2×2 표
+30mm·그림 120×80·그림 90×160, 전부 글자처럼 취급)을 만들어 캐럿·선택·기하를 실측하고, 같은 문서를
+HWPX로 내려받아 우리 엔진·스튜디오에 로드해 픽셀 대조했다. 조판(기준선 잠김·줄높이)은 이미 정합,
+캐럿·선택 질의 3건을 수리했다.</div>
+
+<h3>① 한컴 실측 — TAC 개체의 기준선 잠김 규칙</h3>
+<div class="grid2">
+<figure><img src="assets/caret-20260809/hancom-tac-all-lines.png" alt="한컴 TAC 3종 라인"><figcaption>한컴: 세 라인 모두 개체가 양옆 텍스트와 같은 줄. 개체가 클수록 바닥이 기준선 아래로 더 잠긴다.</figcaption></figure>
+<figure><img src="assets/caret-20260809/hancom-tactbl-select.png" alt="한컴 TAC 표 라인 드래그 선택"><figcaption>표 라인 전체 드래그: 밴드가 표 위 2px부터 줄상자 바닥+10px까지 — 줄 전체(행간 포함).</figcaption></figure>
+</div>
+<table>
+<tr><th>개체(높이 px)</th><th>한컴: 바닥이 기준선 아래로</th><th>rhwp 엔진(HEAD)</th><th>판정</th></tr>
+<tr><td>표 2×2 (36)</td><td>3px</td><td>2.4px</td><td class="ok">정합(±1)</td></tr>
+<tr><td>그림 (80)</td><td>11px</td><td>12px</td><td class="ok">정합(±1)</td></tr>
+<tr><td>그림 (160)</td><td>23px</td><td>24px</td><td class="ok">정합(±1)</td></tr>
+<tr><td>줄 전진(줄높이)</td><td>50 / 89 / 170px</td><td>51.4 / 89.6 / 169.6px</td><td class="ok">정합(±1.4)</td></tr>
+</table>
+<p>실측 회귀식: <b>잠김 ≈ 0.15·H − 1px (r=0.85 기준선 분할)</b> — 두 그림이 정확히 선형(기울기 0.15),
+표는 보더 렌더 두께만큼의 ±1px 오차. 엔진의 r-분할 구현(8/9 롤업)이 한컴과 일치함을 실물로 확정.</p>
+
+<h3>② 한컴 실측 — TAC 라인의 캐럿·선택 규칙</h3>
+<div class="grid2">
+<figure><img src="assets/caret-20260809/hancom-tactbl-after-obj.png" alt="한컴 표 뒤 캐럿"><figcaption>한컴, 표 바로 뒤 캐럿: 2×17px — <b>개체(36px) 높이가 아니라 텍스트 높이</b>. 모든 위치에서 동일.</figcaption></figure>
+<figure><img src="assets/caret-20260809/hancom-tacimg2-select.png" alt="한컴 세로 그림 라인 선택"><figcaption>160px 그림 라인 선택: 밴드 h=170(개체 160+아래 여백 10). 캐럿은 여전히 h17.</figcaption></figure>
+</div>
+<p>추가 관찰: 한컴에서 ←→ 키는 TAC 표를 건너뛰지 않고 <b>셀 안으로 진입</b>하며(셀 캐럿 h14=셀 10pt),
+표 테두리 클릭은 개체 선택(핸들)이 된다.</p>
+
+<h3>③ 우리 쪽 적발·수리 — 엔진 질의 3건</h3>
+<table>
+<tr><th>#</th><th>증상 (수리 전 실측)</th><th>원인</th><th>수리</th></tr>
+<tr><td>1</td><td class="bad">표 뒤 '다' 뒤 밑줄 캐럿이 두 글자 폭(32px), 마지막 글자 선택 rect 빈 배열 → 끝 캐럿이 세로로 오락가락</td><td>TAC 표 문단 전용 레이아웃(<code>layout_inline_table_paragraph</code>)이 TextRun.char_start 를 <b>텍스트 좌표</b>로 기록 — 커서/선택 워커는 논리 좌표(개체=1칸)를 기대</td><td>run 시작 글자의 논리 위치로 변환해 기록 (paragraph_layout.rs, 3개 지점)</td></tr>
+<tr><td>2</td><td class="bad">Home/End(줄 경계) 캐럿이 줄 상자 높이(표 라인에서 35.5px)로 커짐 — 클릭/화살표 캐럿(16px)과 비일관, 한컴과도 불일치</td><td>줄 경계 커서 후보가 run bbox(줄 박스) y/h 를 그대로 사용</td><td>캐럿 규격(baseline−ascent, 글꼴 높이)으로 후보 y/h 계산 (cursor_nav.rs)</td></tr>
+<tr><td>3</td><td class="bad">8/5 배포 wasm: TAC 그림이 기준선 잠김 없이 바닥=기준선(§6-① 규칙 위반), 구버전 CLI는 표가 줄 머리로 이탈</td><td>8/9 롤업 이전 엔진이 임베드에 잔존</td><td>롤업 포함 최신 엔진으로 wasm 재벤더링</td></tr>
+</table>
+<div class="grid2">
+<figure><img src="assets/caret-20260809/studio-tac-table-line.png" alt="스튜디오 수리 후 표 라인"><figcaption>수리 후 스튜디오: 가나[표]다라 같은 줄, 문단 끝 캐럿 = '라' 폭 밑줄(하늘색). 논리 오프셋 0~5 캐럿 전 위치 정상.</figcaption></figure>
+<figure><img src="assets/caret-20260809/studio-tac-images.png" alt="스튜디오 수리 후 그림 라인"><figcaption>수리 후 스튜디오: 그림 80/160px 라인 — 기준선 잠김이 한컴 규칙(0.15·H−1)대로.</figcaption></figure>
+</div>
+<p>핀 테스트: <code>tests/officex_tac_table_caret_selection.rs</code> 3건(캐럿 x 단조·텍스트 높이 / 줄 경계
+캐럿 높이 / 표 뒤 선택 rect 한 글자 폭) + 픽스처 <code>samples/officex_tac_mid_anchor.hwpx</code>(한컴 원본
+저장본). 관련 회귀(선택 rect·TAC 커서 나브·글머리 캐럿 등 20건 + lib 2340건) 통과.</p>
+<p>남은 니글: '다' 뒤 밑줄의 세로 앵커가 다른 밑줄보다 2.4px 낮음(선택 rect 좌단이 표 상자 히트를
+우선하는 동률 규칙) — 시각 영향 미미, 밴드 커버리지 규칙과 얽혀 있어 §5 수리 후보 ①과 함께 다룰 것.</p>
+
+<p class="foot">계측: 헤드리스 크롬 + 픽셀 스캔(잉크 = RGB&lt;120), 시나리오 14캡처 × 2회(수리 전/후) ·
+한컴 실측: hancomdocs 웹한글 + CDP 9777, 깜빡임 2프레임 diff·조합은 Input.imeSetComposition ·
+TAC 실측: 동일 문서 HWPX 내려받아 엔진/스튜디오 픽셀 대조 ·
+캐럿 구현 rhwp-studio(입양본) caret-renderer.ts · 2026-08-09~10</p>
+
+</div>
+</body>
+</html>

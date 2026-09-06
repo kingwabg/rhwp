@@ -229,6 +229,40 @@ ComboBox.InsertString("겨울", 3);
 - 조건부 항목 추가(`if`문 내부) 등 복잡한 스크립트 로직은 처리하지 않음
 - `InsertString` 패턴 매칭만 지원 (완전한 스크립트 엔진이 아님)
 
+## 배치 — 시각 오프셋 (2026-08-15)
+
+양식 개체는 **앵커가 글자 사이(인라인)** 에 있고, 그 앵커로부터의 **시각 델타**로 자유
+이동한다. `setFormObjectProps` 의 두 키가 정본이다.
+
+| 키 | 단위 | 비고 |
+|----|------|------|
+| `horzOffset` | HWPUNIT | 음수 허용(왼쪽/위로) |
+| `vertOffset` | HWPUNIT | 1 page px = 75 HWPUNIT |
+
+저장소는 HWPX 정본 키 `PosHorzOffset` / `PosVertOffset`(`properties`)이다. 새 키를 만들지
+않는다 — HWPX 파서(`hp:pos`)와 직렬화기가 이미 이 키를 왕복시키므로 새 키는 두 번째
+진실이 된다.
+
+**조판 불변이 계약이다.** 델타는 렌더 bbox에만 들어가고 폭 예약(`x += tac_w`)·줄 높이·
+캐럿 칸·쪽수를 건드리지 않는다. 그래서 개체를 옆으로 옮겨도 원래 자리에 빈칸이 남는다 —
+버그가 아니라 이 설계의 정의다. 이걸 없애려면 줄 폭·재래핑·쪽수가 함께 움직이므로 별건.
+`Control::Form(_) => true`(인라인 술어, composer.rs·layout.rs·helpers.rs)를 열지 말 것.
+
+**포맷 수용력과 한컴 실물은 다르다.** HWPX `<hp:pos>` 는 양식이든 그림이든 속성 집합이
+같고(11속성 동일) HWP5 양식 CTRL_HEADER 도 46바이트 개체 공통 속성 그 자체라 포맷은 부동
+배치를 담을 수 있다. 그러나 **한컴 실물은 전수 인라인**이다(샘플 실측: HWPX 190/190,
+HWP 214/214 가 `treatAsChar=1` + 오프셋 0). 즉 비0 오프셋은 한컴 미채취 영역이고,
+한컴에서 열면 오프셋을 무시해 원래 자리로 보일 수 있다.
+
+**저장 매체 한계.** HWPX 는 왕복 보존된다. HWP5 직렬화기는 아직 오프셋을 쓰지 않으므로
+`.hwp` 로 저장하면 위치가 0으로 돌아간다(신고 시 조각 C 로 처리).
+
+**표 셀 안 양식은 제외**다. 히트 결과의 `(para, ci)` 쌍이 호스트 문단 기준이라 그대로
+setter 에 넣으면 엉뚱한 컨트롤을 건드린다. 스튜디오가 `inCell` 을 보고 자유 이동을 막고
+기존 글자 사이 이동만 허용한다.
+
+핀: `tests/officex_form_free_move.rs` — 양·음 이동 / 조판 불변 / 오프셋 0 렌더 동일.
+
 ## 파일 내 위치 참조
 
 | 구분 | 파일 경로 |
@@ -238,10 +272,10 @@ ComboBox.InsertString("겨울", 3);
 | WASM API | `src/wasm_api.rs` — getFormObjectAt, getFormValue, setFormValue, getFormObjectInfo |
 | 네이티브 구현 | `src/document_core/queries/form_query.rs` |
 | 렌더 트리 | `src/renderer/render_tree.rs` — FormObjectNode |
-| 레이아웃 | `src/renderer/layout/paragraph_layout.rs` — 인라인 배치 |
+| 레이아웃 | `src/renderer/layout/paragraph_layout.rs` — 인라인 배치, `form_visual_delta_px` |
 | SVG 렌더링 | `src/renderer/svg.rs` — render_form_object |
 | Canvas 렌더링 | `src/renderer/web_canvas.rs` — render_form_object |
 | TS 인터페이스 | `rhwp-studio/src/core/types.ts` — FormObjectHitResult, FormValueResult, FormObjectInfoResult |
 | TS Bridge | `rhwp-studio/src/core/wasm-bridge.ts` — getFormObjectAt 등 래퍼 |
-| 클릭 처리 | `rhwp-studio/src/engine/input-handler.ts` — handleFormObjectClick |
+| 클릭 처리 | `rhwp-studio/src/engine/input-handler.ts` — handleFormObjectClick, `commitFormFreeMove` |
 | CSS | `rhwp-studio/src/styles/form-overlay.css` |
