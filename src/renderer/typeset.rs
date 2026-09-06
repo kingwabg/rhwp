@@ -15892,10 +15892,15 @@ impl TypesetEngine {
             // 정의상 일치한다(px content_offset·MeasuredTable 누적 제거).
             const ROWBREAK_SPLIT_ROW_OVERFLOW_TOLERANCE_PX: f64 = 2.0;
             const LANDSCAPE_ROWBREAK_WHOLE_ROW_TOLERANCE_PX: f64 = 36.0;
-            const LANDSCAPE_ROWBREAK_SHORT_ROW_TOLERANCE_PX: f64 = 260.0;
+            // [2026-09-06] 가로 RowBreak 연속 쪽의 "짧은 행 흘림"(≤260px 행을 본문 아래 260px 까지 수용)은 폐기(0).
+            // 교육과정 연결맵(1342000_edu_curriculum_map, 244행 표)에서 쪽마다 2~3행이 종이 밖으로 밀려 **보이지 않고**
+            // 쪽수도 한컴 415 대비 385 로 줄었다. 한컴 2022 PDF 는 행을 통째로 다음 쪽으로 넘긴다(p121/122 실측).
+            // 말뭉치 PDF 302쌍: 폐기 후 교육과정 385→414(PDF 415), 편람 394→399(PDF 383, 흘림이 다른 결함을
+            // 가리던 것), 나머지 동일. 통행 관용(36/48px)은 한컴과 일치해 유지(0 으로 두면 교육과정 421 로 과대).
+            const LANDSCAPE_ROWBREAK_SHORT_ROW_TOLERANCE_PX: f64 = 0.0;
             const LANDSCAPE_ROWBREAK_SHORT_ROW_MAX_HEIGHT_PX: f64 = 260.0;
             const HWPX_LANDSCAPE_ROWBREAK_WHOLE_ROW_TOLERANCE_PX: f64 = 48.0;
-            const HWPX_LANDSCAPE_ROWBREAK_SHORT_ROW_TOLERANCE_PX: f64 = 320.0;
+            const HWPX_LANDSCAPE_ROWBREAK_SHORT_ROW_TOLERANCE_PX: f64 = 0.0;
             const HWPX_LANDSCAPE_ROWBREAK_SHORT_ROW_MAX_HEIGHT_PX: f64 = 320.0;
             let landscape_rowbreak_bleed = st.layout.body_area.height < 700.0;
             let landscape_whole_row_tolerance = if st.is_hwpx_source {
