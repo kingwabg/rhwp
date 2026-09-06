@@ -2037,9 +2037,20 @@ impl DocumentCore {
                     } else {
                         old_h
                     };
-                    let new_h = (base_h as i64 + upd.height_delta as i64)
+                    let mut new_h = (base_h as i64 + upd.height_delta as i64)
                         .clamp(Table::MIN_CELL as i64, u32::MAX as i64)
                         as u32;
+                    // [2026-09-06] 패딩 규약(≤ pad_v)과 글줄 바닥 사이의 저장 높이는 화면에 보이지 않는
+                    // 유령 값이다(행은 바닥 아래로 안 줄어든다). 종전엔 Alt+↓ 보상(−d)이 284→1284−849=435 를
+                    // 남겨, 다음 "표시 높이 기준" 델타(높이 같게 등)가 435+287=722 로 바닥 밑에 머물러
+                    // 균등화가 한 행만 빠뜨렸다(배포 검증 실측). 결과가 그 구간이면 바닥으로 붙인다 —
+                    // 화면은 동일하고 저장값만 표시값과 일치한다. 스팬 셀·조각 행(바닥 0)은 대상 아님.
+                    if cell.row_span <= 1 {
+                        let floor = floor_rows_pre.get(cell.row as usize).copied().unwrap_or(0);
+                        if floor > 0 && new_h > pad_v && new_h < floor {
+                            new_h = floor;
+                        }
+                    }
                     cell.height = new_h;
                 }
             }
