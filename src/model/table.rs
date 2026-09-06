@@ -1505,8 +1505,10 @@ impl Table {
         // 걸친 행이 사라져 row_span 이 줄면 그만큼 height 도 줄여야 남은 행 높이가 실제
         // 행 수에 비례한다. 안 줄이면 병합 셀이 2행치 높이를 그대로 물고 있어 행은
         // 줄었는데 표 전체 높이(=행 높이 합)는 삭제 전과 같아지는 결함이 난다.
+        // [2026-09-06] raw(빈 칸 규약 284)가 아니라 **실효** 높이를 뺀다 — 병합 칸은 실효 합을 물려받으므로
+        // raw 를 빼면 남은 행이 지워진 행 높이만큼 부풀었다(2568 − 284 = 2284 ≠ 1284).
         let deleted_row_height = self
-            .get_raw_row_heights()
+            .effective_row_heights()
             .get(row_idx as usize)
             .copied()
             .unwrap_or(0);
@@ -1704,14 +1706,26 @@ impl Table {
             ));
         }
 
-        // 열폭/행높이 합산 (원본 값 보존: 0은 fallback 없이 그대로 유지)
+        // 범위에 칸이 하나뿐이면 합칠 것이 없다 — 한컴과 같이 무변화(빈 칸 규약 높이를 실효값으로 굳히지 않는다).
+        let in_range_count = self
+            .cells
+            .iter()
+            .filter(|c| c.col >= start_col && c.col <= end_col && c.row >= start_row && c.row <= end_row)
+            .count();
+        if in_range_count <= 1 {
+            return Ok(());
+        }
+
+        // 열폭/행높이 합산 — 병합 칸은 **실효** 기하(격자 열 폭 합, 실효 행 높이 합)를 물려받는다.
+        // 종전엔 raw 행 높이(빈 칸 규약 284)를 더해 표 전체 병합이 3852 → 1284 로 주저앉았다(D2 거부, 2026-09-06).
+        // 한컴도 병합 칸 높이 = 합쳐진 행들의 실제 높이 합.
         let col_widths = self.get_column_widths();
-        let raw_row_heights = self.get_raw_row_heights();
+        let eff_row_heights = self.effective_row_heights();
         let new_width: HwpUnit = (start_col..=end_col)
             .map(|c| col_widths.get(c as usize).copied().unwrap_or(0))
             .sum();
         let new_height: HwpUnit = (start_row..=end_row)
-            .map(|r| raw_row_heights.get(r as usize).copied().unwrap_or(0))
+            .map(|r| eff_row_heights.get(r as usize).copied().unwrap_or(0))
             .sum();
 
         // 비주 셀의 비어있지 않은 문단 수집 (모든 메타데이터 보존)
@@ -1785,6 +1799,12 @@ impl Table {
 
         // 그리드 인덱스 재구축
         self.rebuild_grid();
+
+        // 병합으로 어떤 칸도 경계로 쓰지 않게 된 격자 선(어긋난 칸과 이웃을 합칠 때의 어긋선, 표 전체 병합의
+        // 안쪽 선)을 접는다. 죽은 선이 남으면 열 폭 솔버가 그 양쪽 열을 나눌 근거를 잃어 1800 폴백으로
+        // 흩어지고 D1(표 폭) 관문이 거부했다(2026-09-06: 41952 → 31568).
+        self.collapse_dead_lines(Axis::Cols);
+        self.collapse_dead_lines(Axis::Rows);
 
         Ok(())
     }
