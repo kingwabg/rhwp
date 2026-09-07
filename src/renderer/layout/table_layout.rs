@@ -2377,6 +2377,9 @@ impl LayoutEngine {
         // 셀 내 문단 + 컨트롤 통합 레이아웃
         let mut para_y = text_y_start;
         let mut has_preceding_text = false;
+        // [2026-09-07] 직전 문단의 저장 첫 줄 vpos — 저장 쪽나눔 리셋(vpos 가 뒤로 감) 판정용.
+        let mut prev_para_first_vpos: i32 = -1;
+        let mut stored_vpos_reset = false;
         for (cp_idx, (composed, para)) in composed_paras
             .iter()
             .zip(cell.paragraphs.iter())
@@ -2423,7 +2426,17 @@ impl LayoutEngine {
             let use_saved_cell_para_vpos = use_top_vpos_anchor
                 || trust_stored_cell_flow
                 || has_initial_tac_shape_host(&cell.paragraphs);
-            if use_saved_cell_para_vpos && !has_nested_table {
+            // [2026-09-07] 저장 vpos 가 직전 문단보다 뒤로 가면 한컴이 그 자리에서 쪽을 나눈
+            // 리셋이다 — 앵커하면 셀 상단에 되감겨 앞 문단과 겹친다(issue2007 중첩 셀 p[2]
+            // vpos=0). 리셋 이후 문단은 누적 흐름으로 잇는다.
+            let cur_first_vpos = para.line_segs.first().map(|s| s.vertical_pos).unwrap_or(-1);
+            if cur_first_vpos >= 0 && cur_first_vpos < prev_para_first_vpos {
+                stored_vpos_reset = true;
+            }
+            if cur_first_vpos >= 0 {
+                prev_para_first_vpos = cur_first_vpos;
+            }
+            if use_saved_cell_para_vpos && !has_nested_table && !stored_vpos_reset {
                 if let Some(first_seg) = para.line_segs.first() {
                     if first_seg.vertical_pos >= 0 {
                         let spacing_before = styles

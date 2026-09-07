@@ -4248,7 +4248,13 @@ impl LayoutEngine {
                 // no advance
             } else if para
                 .and_then(|p| Some((p.line_segs.get(line_idx)?, p.line_segs.get(line_idx + 1)?)))
-                .map(|(a, b)| b.vertical_pos == a.vertical_pos)
+                .map(|(a, b)| {
+                    // [2026-09-07] 저장 쪽나눔 리셋(vpos 0→0, 같은 x 구간)은 옆 세그가 아니다 —
+                    // 같은 줄의 두 세그는 x 구간이 다르다. 리셋을 옆 세그로 오판하면 이어
+                    // 채운 줄이 직전 줄과 같은 y 에 겹쳐 그려진다(교육과정 p324, issue2007).
+                    b.vertical_pos == a.vertical_pos
+                        && (b.column_start != a.column_start || b.segment_width != a.segment_width)
+                })
                 .unwrap_or(false)
             {
                 // [양쪽 흐름] 다음 줄이 같은 vertical_pos = 같은 시각적 줄의 다음 세그
