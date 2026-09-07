@@ -15794,6 +15794,11 @@ impl TypesetEngine {
                 && !table.common.treat_as_char
                 && vert_offset_overhead > 0.0
                 && !para_has_non_whitespace_text(para);
+            let cont_outer_top = if is_continuation {
+                hwpunit_to_px(table.outer_margin_top as i32, self.dpi)
+            } else {
+                0.0
+            };
             let page_avail = if is_continuation {
                 // [Task #1937] 연속 페이지는 신선 full-page 를 기준으로 한다(레퍼런스
                 // Paginator engine.rs:2502-2503 과 정합). table_available 은 표 *시작*
@@ -15803,7 +15808,12 @@ impl TypesetEngine {
                 // 페이지당 ~1행으로 과분할된다(122행 → 188쪽). 표 각주는 첫 fragment fit
                 // 판정에서만 보수적으로 예약하고, 연속 페이지는 신선 본문 가용을 쓴다.
                 // zone offset·border tolerance 는 유지.
-                (base_available - st.current_zone_y_offset - st.layout.pagination_tolerance_px)
+                // [2026-09-07] 이어지는 조각 위 바깥 여백(outer_margin_top) 차감 — 한컴은 연속 쪽
+                // 맨 위에도 이 여백을 둔다(PDF 쌍 24건 실측). 렌더러 table_partial y_start 와 짝.
+                (base_available
+                    - st.current_zone_y_offset
+                    - st.layout.pagination_tolerance_px
+                    - cont_outer_top)
                     .max(0.0)
             } else if is_empty_host_column_float {
                 // out-of-flow float 은 para_start + v_off 에 배치된다(#986/#1088/#157).
@@ -16160,8 +16170,11 @@ impl TypesetEngine {
                     });
                     // 마지막 fragment: spacing_after만 포함 (Paginator engine.rs:1051 동일)
                     // host_line_spacing과 outer_bottom은 포함하지 않음
-                    st.current_height +=
-                        partial_height + bottom_caption_extra + ft.host_spacing.spacing_after_only;
+                    // [2026-09-07] 이어지는 조각은 위 바깥 여백(cont_outer_top)만큼 아래에서 시작한다.
+                    st.current_height += partial_height
+                        + cont_outer_top
+                        + bottom_caption_extra
+                        + ft.host_spacing.spacing_after_only;
                 }
                 break;
             }
@@ -16180,7 +16193,7 @@ impl TypesetEngine {
             });
             // [#2238] 중간 fragment 가시높이 부기 — used_height(flush 시 current_height)
             // 표시용. advance 직후 current_height 가 리셋되므로 흐름/기하 불변.
-            st.current_height += partial_height;
+            st.current_height += partial_height + cont_outer_top;
             st.advance_column_or_new_page();
 
             // 커서 전진 — [Task #993] 컷은 절대 유닛 인덱스이므로 누적 없이 대입.

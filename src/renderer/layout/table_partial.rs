@@ -1467,6 +1467,11 @@ impl LayoutEngine {
                 .unwrap_or(0.0);
             let eff_off = (hwpunit_to_px(vert_off_signed, self.dpi) - host_h).max(0.0);
             y_start + eff_off
+        } else if is_continuation {
+            // [2026-09-07] 이어지는 조각도 표 위 바깥 여백(outer_margin_top)을 다시 둔다 —
+            // 한컴 실측(PDF 쌍 24건: 1.0mm 표 +3.5px, 0.5mm +1.5px, 0mm 0). typeset 의
+            // 연속 쪽 예산(page_avail)·마지막 조각 높이와 짝.
+            y_start + hwpunit_to_px(table.outer_margin_top as i32, self.dpi)
         } else {
             y_start
         };
