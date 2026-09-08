@@ -485,7 +485,11 @@ impl LayoutEngine {
                 })
             } else {
                 false
-            };
+            }
+            // [2026-09-07] 유닛 컷이 셀 중간에서 시작하는 이어지는 조각(1×1 중첩 표 fragment 셀 등)도
+            // 잘린 셀이다 — 줄 범위만 보면 (lc,lc) 로 접혀 "안 잘림"으로 보여 가운데 정렬이 적용되고,
+            // 중첩 표 상자가 조각 상단보다 아래(86712 p27: +47.7px)에 놓여 이월 내용이 잘린다.
+            || cut_units.is_some_and(|(su, _)| su > 0);
             let effective_align = if (is_in_split_row || is_rowbreak_straddle) && cell_was_split {
                 VerticalAlign::Top
             } else {

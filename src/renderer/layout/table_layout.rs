@@ -5092,13 +5092,16 @@ impl LayoutEngine {
                     // nested_table_mixed_fragment_heights(단일 행 셀 문단을 페이지 분할 가능한
                     // fragment 로 분해)를 빈-텍스트 문단에도 적용해 splittable 유닛으로 산출.
                     let nt = nested_tables[0];
-                    let frags = self.nested_table_mixed_fragment_heights(nt, styles);
-                    // 게이트: 콘텐츠가 **명백히 여러 페이지가 필요**(≥ MULTI_PAGE_PX)할 때만
-                    // fragment 분해한다. 임계를 넉넉히(≈2 페이지) 두는 이유:
-                    // - 한 페이지에 맞는 1×1 중첩 표(서식): fragment 렌더 미세차로 회귀(form-002).
-                    // - 1~2 페이지 경계선 표(76076 규제영향분석서의 여러 ~1000px 중첩셀): fragment
-                    //   경계가 기존 배치와 ±1 어긋나 공식 PDF 쪽수(issue_1891) 회귀.
-                    // 42065 pi=7(8164px, 8쪽분)·2781515 별표(수쪽분)처럼 ≫ 2페이지인 거대 셀만 대상.
+                    let mut frags = self.nested_table_mixed_fragment_heights(nt, styles);
+                    // 게이트 1: 콘텐츠가 본문 높이보다 크면(42065 pi=7 8164px, 2781515 별표 등) 무조건
+                    // fragment 분해 — 원자로 두면 못 쪼개져 under-pagination.
+                    // 게이트 2 [2026-09-07]: block RowBreak 표는 본문 높이 이하라도 분해하되, fragment 합을
+                    // 원자 높이에 **정규화**(잔여를 마지막 fragment 에 가산)한다. 한 쪽에 들어가면 유닛을 전부
+                    // 소비하므로 통행 높이·렌더가 원자와 동일하고, 쪽 경계에 걸릴 때만 내부 문단 사이에서
+                    // 잘린다(86712 p26/27: 한컴은 내부 문단 8/9 사이 컷, rhwp 는 596px 원자를 통째 이월해
+                    // 26쪽 아래 550px 공백 +1쪽). form-002·issue_1891 회귀의 기제는 "fragment 합 < 원자"로
+                    // 완전 가시 조각이 클립·단축되던 것이라, 정규화(delta≥0 만 진입)로 배제한다.
+                    // typeset 임시 엔진은 current_body_area 미설정(900px 폴백) — 게이트 1 은 종전대로 둔다.
                     let page_avail = self.current_body_area.get().3;
                     let multi_page_px = if page_avail > 0.0 {
                         page_avail * 1.0
@@ -5106,9 +5109,61 @@ impl LayoutEngine {
                         900.0
                     };
                     let total_frag_h: f64 = frags.iter().map(|(h, _, _)| *h).sum();
-                    if frags.len() > 1 && total_frag_h > multi_page_px {
-                        let om_top = hwpunit_to_px(nt.outer_margin_top as i32, self.dpi);
-                        let om_bot = hwpunit_to_px(nt.outer_margin_bottom as i32, self.dpi);
+                    let om_top = hwpunit_to_px(nt.outer_margin_top as i32, self.dpi);
+                    let om_bot = hwpunit_to_px(nt.outer_margin_bottom as i32, self.dpi);
+                    // 텍스트 없는 호스트 문단(line_count==0)만 — 텍스트+중첩 문단의 원자 높이는
+                    // line_based+nested+4 라 아래 atomic_h 산식이 맞지 않는다(table_giant_cell_overfill
+                    // 46→42 회귀: 정규화 총합 < 실제 렌더 높이 → 조각 오버플로 used 1108px).
+                    let rowbreak_outer = matches!(
+                        table.page_break,
+                        crate::model::table::TablePageBreak::RowBreak
+                    ) && !table.common.treat_as_char
+                        && line_count == 0;
+                    // 폴스루(원자 유닛) 높이: line_count==0 이면 sb + nested + sa, 아니면 nested.
+                    let atomic_h = self.calc_nested_table_height(nt, styles)
+                        + if line_count == 0 {
+                            spacing_before + spacing_after
+                        } else {
+                            0.0
+                        };
+                    let frag_total =
+                        total_frag_h + om_top + om_bot + spacing_before + spacing_after;
+                    let delta = atomic_h - frag_total;
+                    let multi_page = frags.len() > 1 && total_frag_h > multi_page_px;
+                    // 음수 delta(fragment 가 원자보다 큼 — 86712 r6: 603.8 vs 595.8, 마지막 문단 trailing
+                    // 줄간격 차이)는 콘텐츠 fragment 전체에 **비례 축소**로 흡수한다(2% 이내만). 한 유닛에
+                    // 몰아 빼면 컷 직전 줄이 0.3px 차로 못 들어가 한컴(문단 8 끝 컷)과 어긋난다.
+                    let content_sum: f64 = frags
+                        .iter()
+                        .filter(|(_, trailing, _)| !*trailing)
+                        .map(|(h, _, _)| *h)
+                        .sum();
+                    let shrink_factor = if delta < -0.5 && content_sum > 0.0 {
+                        (content_sum + delta) / content_sum
+                    } else {
+                        1.0
+                    };
+                    let absorbable = delta >= -0.5 || shrink_factor >= 0.98;
+                    let normalized_rowbreak = frags.len() > 1 && rowbreak_outer && absorbable;
+                    if std::env::var("RHWP_CUT_DBG").is_ok() {
+                        eprintln!(
+                            "CUT_DBG 1x1frag cell r={} c={} frags={} total={:.1} om={:.1}/{:.1} sb/sa={:.1}/{:.1} atomic={:.1} delta={:.1} rowbreak_outer={} line_count={}",
+                            cell.row, cell.col, frags.len(), total_frag_h, om_top, om_bot,
+                            spacing_before, spacing_after, atomic_h, delta, rowbreak_outer, line_count
+                        );
+                    }
+                    if multi_page || normalized_rowbreak {
+                        if !multi_page && delta > 0.5 {
+                            if let Some(last) = frags.last_mut() {
+                                last.0 += delta;
+                            }
+                        } else if !multi_page && delta < -0.5 {
+                            for (h, trailing, _) in frags.iter_mut() {
+                                if !*trailing {
+                                    *h *= shrink_factor;
+                                }
+                            }
+                        }
                         let n = frags.len();
                         for (fi, (h, trailing, content_h)) in frags.into_iter().enumerate() {
                             let mut uh = h;
@@ -6841,10 +6896,21 @@ impl LayoutEngine {
         // Shrinking the clip to the first non-trailing unit keeps the flow
         // advance but clips the nested table content above the cell on page 8.
         let visible: f64 = flow_visible;
-        let first_visible_content_height = visible_units
-            .iter()
-            .find_map(|(height, trailing)| (!*trailing).then_some(*height))
-            .unwrap_or(0.0);
+        // [2026-09-07] 1유닛 되감기(직전 조각 마지막 유닛을 이어지는 조각 상단에 재노출)는 텍스트+중첩 표
+        // 혼합 문단의 `nested_h + 4.0` 허용치 짝이다. 텍스트 없는 호스트 문단(중첩 표만 있는 셀)은 허용치가
+        // 없으므로 되감지 않는다 — 되감으면 직전 쪽 마지막 줄이 반복된다(86712 p27, 한컴은 반복 없음).
+        let host_has_text = cell
+            .paragraphs
+            .get(para_idx)
+            .is_some_and(|p| !p.text.trim().is_empty());
+        let first_visible_content_height = if host_has_text {
+            visible_units
+                .iter()
+                .find_map(|(height, trailing)| (!*trailing).then_some(*height))
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
         let offset_within_start = (offset - first_visible_content_height).max(0.0);
         let is_offset_continuation = offset_within_start > 0.5;
         let visible_height = if is_offset_continuation {
@@ -6967,6 +7033,14 @@ impl LayoutEngine {
             }
             let flow_visible: f64 = visible_units.iter().map(|(height, _)| *height).sum();
             if flow_visible <= 0.5 {
+                continue;
+            }
+            // [2026-09-07] mixed_nested_split_from_cut 과 짝 — 텍스트 없는 호스트 문단은 되감기 없음.
+            let host_has_text = cell
+                .paragraphs
+                .get(para_idx)
+                .is_some_and(|p| !p.text.trim().is_empty());
+            if !host_has_text {
                 continue;
             }
             let first_visible_content_height = visible_units
