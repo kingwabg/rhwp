@@ -803,7 +803,7 @@ impl DocumentCore {
         };
 
         // 표 문단의 para_shape_id: 기존 문서의 표 문단에서 사용하는 값 탐색
-        // 정상 파일에서 표 문단은 ps_id=1 사용 (기본 "본문" 스타일)
+        // 스타일 번호는 파일마다 다르다. blank2010의 1번은 왼쪽 여백 20px인 개요 스타일이다.
         let table_para_shape_id = {
             let mut found_ps = 0u16;
             'outer: for section in &self.document.sections {
@@ -816,11 +816,7 @@ impl DocumentCore {
                     }
                 }
             }
-            if found_ps == 0 && self.document.doc_info.para_shapes.len() > 1 {
-                1u16 // 기본 "본문" ParaShape
-            } else {
-                found_ps
-            }
+            found_ps
         };
 
         // raw_header_extra: [0..2] n_char_shapes, [2..4] n_range_tags, [4..6] n_line_segs, [6..10] instance_id
@@ -1239,5 +1235,27 @@ impl DocumentCore {
         para.controls.push(Control::Picture(Box::new(pic)));
 
         paragraphs.push(para);
+    }
+}
+
+#[cfg(test)]
+mod table_host_style_tests {
+    use crate::document_core::DocumentCore;
+
+    #[test]
+    fn blank_document_html_tables_do_not_inherit_outline_margin() {
+        let mut core = DocumentCore::new_empty();
+        core.create_blank_document_native().unwrap();
+        core.paste_html_native(0, 0, 0, "<table><tr><td>test</td></tr></table>")
+            .unwrap();
+        assert_eq!(core.document.sections[0].paragraphs[0].para_shape_id, 0);
+        // 0번 표 스타일도 유효한 선택이다. 다음 표가 1번으로 바뀌어서는 안 된다.
+        core.paste_html_native(0, 0, 0, "<table><tr><td>second</td></tr></table>")
+            .unwrap();
+        for para in &core.document.sections[0].paragraphs {
+            if para.controls.iter().any(|c| matches!(c, crate::model::control::Control::Table(_))) {
+                assert_eq!(para.para_shape_id, 0);
+            }
+        }
     }
 }
