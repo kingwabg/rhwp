@@ -15,6 +15,129 @@ fn is_caret_logical_inline_control(ctrl: &Control) -> bool {
         || matches!(ctrl, Control::Footnote(_) | Control::Endnote(_))
 }
 
+#[cfg(test)]
+mod body_selection_rect_tests {
+    use crate::document_core::DocumentCore;
+    use serde_json::Value;
+
+    fn document(paragraphs: &[&str]) -> DocumentCore {
+        let mut doc = DocumentCore::new_empty();
+        doc.create_blank_document_native().unwrap();
+        for (index, text) in paragraphs.iter().enumerate() {
+            if index > 0 {
+                doc.split_paragraph_native(0, index - 1, paragraphs[index - 1].chars().count())
+                    .unwrap();
+            }
+            if !text.is_empty() {
+                doc.insert_text_native(0, index, 0, text).unwrap();
+            }
+        }
+        doc
+    }
+
+    fn rects(
+        doc: &DocumentCore,
+        start: usize,
+        offset: usize,
+        end: usize,
+        end_offset: usize,
+    ) -> Vec<Value> {
+        serde_json::from_str(
+            &doc.get_selection_rects_native(0, start, offset, end, end_offset, None)
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn cursor(doc: &DocumentCore, para: usize, offset: usize) -> Value {
+        serde_json::from_str(&doc.get_cursor_rect_native(0, para, offset).unwrap()).unwrap()
+    }
+
+    fn number(value: &Value, key: &str) -> f64 {
+        value[key].as_f64().unwrap()
+    }
+
+    #[test]
+    fn short_paragraphs_and_empty_tail_follow_text_and_paragraph_marks() {
+        let doc = document(&["가나다 ABC", "둘째 줄 DEF", "", ""]);
+        let selected = rects(&doc, 0, 0, 3, 0);
+        assert_eq!(
+            selected.len(),
+            3,
+            "two text lines and one selected empty paragraph"
+        );
+        for (index, text) in ["가나다 ABC", "둘째 줄 DEF"].iter().enumerate() {
+            let end = cursor(&doc, index, text.chars().count());
+            let right = number(&selected[index], "x") + number(&selected[index], "width");
+            assert!((right - number(&end, "x") - 3.0).abs() < 1.0);
+        }
+        assert_eq!(number(&selected[2], "width"), 3.0);
+        assert!((number(&selected[2], "x") - number(&cursor(&doc, 2, 0), "x")).abs() < 1.0);
+        assert!(number(&selected[2], "y") < number(&cursor(&doc, 3, 0), "y"));
+    }
+
+    #[test]
+    fn selecting_only_a_blank_paragraph_is_visible_but_collapsed_selection_is_not() {
+        let doc = document(&["text", "", ""]);
+        let selected = rects(&doc, 1, 0, 2, 0);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(number(&selected[0], "width"), 3.0);
+        assert!(number(&selected[0], "height") > 0.0);
+        assert!(rects(&doc, 1, 0, 1, 0).is_empty());
+    }
+
+    #[test]
+    fn indentation_is_not_selected_as_text() {
+        let mut doc = document(&["가나다 ABC", ""]);
+        doc.apply_para_format_native(0, 0, r#"{"marginLeft":20,"indent":10}"#)
+            .unwrap();
+        let selected = rects(&doc, 0, 0, 1, 0);
+        assert_eq!(selected.len(), 1);
+        assert!((number(&selected[0], "x") - number(&cursor(&doc, 0, 0), "x")).abs() < 1.0);
+    }
+
+    #[test]
+    fn wrapped_last_line_stops_at_its_text_end() {
+        let text = "가나다 ABC ".repeat(25);
+        let doc = document(&[&text, "", ""]);
+        let selected = rects(&doc, 0, 0, 2, 0);
+        assert!(selected.len() > 2);
+        let last_text = selected
+            .iter()
+            .filter(|rect| number(rect, "width") > 3.0)
+            .last()
+            .unwrap();
+        let end = cursor(&doc, 0, text.chars().count());
+        assert!(
+            (number(last_text, "x") + number(last_text, "width") - number(&end, "x") - 3.0).abs()
+                < 1.0
+        );
+        assert_eq!(number(selected.last().unwrap(), "width"), 3.0);
+    }
+
+    #[test]
+    fn partial_selection_and_inline_table_keep_their_actual_extent() {
+        let doc = document(&["가나다 ABC", "second"]);
+        let selected = rects(&doc, 0, 2, 0, 5);
+        let left = cursor(&doc, 0, 2);
+        let right = cursor(&doc, 0, 5);
+        assert_eq!(selected.len(), 1);
+        assert!((number(&selected[0], "x") - number(&left, "x")).abs() < 1.0);
+        assert!(
+            (number(&selected[0], "width") - (number(&right, "x") - number(&left, "x"))).abs()
+                < 1.0
+        );
+
+        let mut table_doc = document(&[""]);
+        table_doc
+            .create_table_ex_native(0, 0, 0, 1, 1, true, None, None)
+            .unwrap();
+        let table = rects(&table_doc, 0, 0, 0, 1);
+        assert!(!table.is_empty(), "inline controls remain selectable");
+        assert!(number(&table[0], "width") > 100.0);
+    }
+}
+
 fn control_only_caret_utf16_to_char_idx(para: &Paragraph, caret_utf16: u32) -> usize {
     if caret_utf16 == 0 || !para.char_offsets.is_empty() {
         return 0;
@@ -2069,18 +2192,6 @@ impl DocumentCore {
             visit(node, sec, para, line_idx, page)
         }
 
-        /// [양쪽 흐름 2026-07-30] 그 줄 세그의 실제 x 범위(좌단, 우단).
-        /// 선택 rect 가 단 전체 폭을 칠하던 결함 수리에 쓴다 — 좌·우 두 조각으로 갈라진
-        /// 줄에서는 단 좌단~우단이 아니라 **자기 조각 안**만 칠해야 한다(부록4 갭 #2).
-        fn find_body_line_box(
-            node: &RenderNode,
-            sec: usize,
-            para: usize,
-            line_idx: usize,
-        ) -> Option<(f64, f64)> {
-            find_body_line_bbox(node, sec, para, line_idx).map(|(x, _, w, _)| (x, x + w))
-        }
-
         /// 줄 상자 전체 bbox (x, y, w, h) — 선택 밴드의 세로 규격 산출용.
         fn find_body_line_bbox(
             node: &RenderNode,
@@ -2214,29 +2325,10 @@ impl DocumentCore {
             }};
         }
 
-        // ── 단 영역 조회 헬퍼 ──
-        let find_column_area = |page: u32, rx: f64| -> (f64, f64) {
-            self.find_page(page)
-                .map(|(pc, _, _)| {
-                    let areas = &pc.layout.column_areas;
-                    areas
-                        .iter()
-                        .find(|ca| rx >= ca.x - 2.0 && rx <= ca.x + ca.width + 2.0)
-                        .or_else(|| {
-                            areas.iter().min_by(|a, b| {
-                                let da = (rx - (a.x + a.width / 2.0)).abs();
-                                let db = (rx - (b.x + b.width / 2.0)).abs();
-                                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-                            })
-                        })
-                        .map(|ca| (ca.x, ca.x + ca.width))
-                        .unwrap_or((0.0, 0.0))
-                })
-                .unwrap_or((0.0, 0.0))
-        };
-
         // ── 메인 루프 ──
         let mut rects: Vec<String> = Vec::new();
+        // [캔버스 한컴 포크] 선택된 문단 끝은 전폭 대신 좁은 줄바꿈 표시로 그린다.
+        const PARAGRAPH_MARK_WIDTH: f64 = 3.0;
 
         for para_idx in start_para_idx..=end_para_idx {
             let para = if let Some((ppi, ci, cei)) = cell_ctx {
@@ -2264,7 +2356,9 @@ impl DocumentCore {
             } else {
                 char_count
             };
-            if sel_start >= sel_end {
+            let paragraph_break_selected = cell_ctx.is_none() && para_idx < end_para_idx;
+            let empty_body_paragraph_selected = char_count == 0 && paragraph_break_selected;
+            if sel_start >= sel_end && !empty_body_paragraph_selected {
                 continue;
             }
 
@@ -2277,6 +2371,33 @@ impl DocumentCore {
                         }
                     }
                 }
+            }
+
+            // 빈 문단도 줄바꿈을 선택할 수 있다. 끝점 문단의 offset 0은 포함하지 않는다.
+            if empty_body_paragraph_selected {
+                if let Some(hit) = find_cursor!(para_idx, 0, CursorBias::Leading) {
+                    let extra = para
+                        .line_segs
+                        .first()
+                        .map(|ls| crate::renderer::hwpunit_to_px(ls.line_spacing as i32, self.dpi))
+                        .unwrap_or(0.0)
+                        .max(0.0);
+                    let (y, h) = tree_cache
+                        .iter()
+                        .find_map(|(pn, tree)| {
+                            if *pn != hit.page {
+                                return None;
+                            }
+                            find_body_line_bbox(&tree.root, section_idx, para_idx, 0)
+                        })
+                        .map(|(_, y, _, h)| (y, h + extra))
+                        .unwrap_or((hit.y, hit.h + extra));
+                    rects.push(format!(
+                        "{{\"pageIndex\":{},\"x\":{:.1},\"y\":{:.1},\"width\":{:.1},\"height\":{:.1}}}",
+                        hit.page, hit.x, y, PARAGRAPH_MARK_WIDTH, h
+                    ));
+                }
+                continue;
             }
 
             for line_idx in 0..line_count {
@@ -2314,44 +2435,6 @@ impl DocumentCore {
                     });
 
                 if let (Some(lh), Some(rh)) = (left_hit, right_hit) {
-                    let partial_start = range_start > line_char_start;
-
-                    let selection_continues = cell_ctx.is_none()
-                        && ((range_end < sel_end) ||
-                        (para_idx < end_para_idx && range_end == sel_end) ||
-                        // 같은 문단 내 강제 줄바꿈: 줄 끝까지 선택되고 다음 줄 시작이 sel_end이면 확장
-                        (range_end == sel_end && range_end >= line_char_end && line_idx + 1 < line_count));
-
-                    // [양쪽 흐름 2026-07-30] 어울림 표 옆에서 한 줄이 좌·우 두 조각으로
-                    // 갈라진 경우(= 같은 vertical_pos 를 공유하는 세그 쌍), 선택 rect 를
-                    // 단 좌단~우단이 아니라 **자기 조각 경계**로 제한한다. 종전엔 전폭을
-                    // 칠해 하이라이트가 표를 덮었다(부록4 갭 #2). 갈라지지 않은 줄은
-                    // 종전 그대로(단 영역) — 들여쓰기 포함 하이라이트 동작 보존.
-                    let is_split_line = cell_ctx.is_none() && {
-                        let segs = &para.line_segs;
-                        segs.get(line_idx).map_or(false, |cur| {
-                            (line_idx > 0
-                                && segs
-                                    .get(line_idx - 1)
-                                    .map_or(false, |p| p.vertical_pos == cur.vertical_pos))
-                                || segs
-                                    .get(line_idx + 1)
-                                    .map_or(false, |n| n.vertical_pos == cur.vertical_pos)
-                        })
-                    };
-                    let (area_left, area_right) = if cell_ctx.is_none() {
-                        let seg_box = if is_split_line {
-                            tree_cache.iter().find_map(|(_, tree)| {
-                                find_body_line_box(&tree.root, section_idx, para_idx, line_idx)
-                            })
-                        } else {
-                            None
-                        };
-                        seg_box.unwrap_or_else(|| find_column_area(rh.page, rh.x))
-                    } else {
-                        (0.0, 0.0)
-                    };
-
                     // 선택 밴드 세로 규격 — 한컴 실측(2026-08-10): 밴드는 **줄간격을 포함한
                     // 줄 전체 높이**를 덮는다(12pt/160% 기준 잉크의 1.66배). 종전엔 캐럿
                     // 규격(글자 상자, 1.06배)을 그대로 써서 밴드가 글자에만 딱 붙었고,
@@ -2398,20 +2481,16 @@ impl DocumentCore {
                     let (band_y, band_h) = band.unwrap_or((lh.y, lh.h));
 
                     // y/h는 항상 left_hit 기준 (right_hit가 다음 줄에 있을 수 있음)
-                    let (page_idx, rect_x, rect_y, rect_h) = if !partial_start && cell_ctx.is_none()
-                    {
-                        (lh.page, area_left, band_y, band_h)
+                    // [캔버스 한컴 포크] 줄별 실제 글자 범위만 선택한다. 들여쓰기와
+                    // 짧은 줄 뒤 여백을 칠하지 않고, 선택된 문단 끝에만 줄바꿈 폭을 더한다.
+                    let (page_idx, rect_x, rect_y, rect_h) =
+                        (lh.page, lh.x.min(rh.x), band_y, band_h);
+                    let marker = if paragraph_break_selected && line_idx + 1 == line_count {
+                        PARAGRAPH_MARK_WIDTH
                     } else {
-                        (lh.page, lh.x, band_y, band_h)
+                        0.0
                     };
-
-                    let width = if selection_continues {
-                        (area_right - rect_x).max(0.0)
-                    } else if !partial_start && cell_ctx.is_none() {
-                        (rh.x - rect_x).max(0.0)
-                    } else {
-                        (rh.x - lh.x).abs()
-                    };
+                    let width = (rh.x - lh.x).abs() + marker;
 
                     if width > 0.01 {
                         rects.push(format!(
