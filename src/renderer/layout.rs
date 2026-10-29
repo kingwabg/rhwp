@@ -5204,6 +5204,42 @@ impl LayoutEngine {
             // 문단 시작 점프(위 skip_float_bands) **이후** 시점의 목록이어야
             // 문단 단위·줄 단위 소비가 같은 밴드를 본다. 항목 종료 후 비워
             // 각주/머리말 등 다른 흐름의 paragraph_layout 으로 새지 않게 한다.
+            // 표가 앵커 줄 아래로 이동한 빈 어울림 호스트의 줄 전진량을 보존한다.
+            if let Some(PageItem::Table {
+                para_index: prev_pi,
+                control_index,
+            }) = item_ordinal
+                .checked_sub(1)
+                .and_then(|i| col_content.items.get(i))
+            {
+                if matches!(item, PageItem::FullParagraph { para_index } | PageItem::PartialParagraph { para_index, .. } if para_index > prev_pi)
+                {
+                    if let Some((p, Control::Table(t), comp, start)) =
+                        paragraphs.get(*prev_pi).and_then(|p| {
+                            Some((
+                                p,
+                                p.controls.get(*control_index)?,
+                                composed.get(*prev_pi)?,
+                                para_start_y.get(prev_pi)?,
+                            ))
+                        })
+                    {
+                        if !para_has_visible_text(p)
+                            && super::float_placement::is_para_square_family_float(&t.common)
+                        {
+                            if let Some(line) = comp.lines.first() {
+                                let advance =
+                                    hwpunit_to_px(line.line_height + line.line_spacing, self.dpi);
+                                if hwpunit_to_px(signed_hwpunit(t.common.vertical_offset), self.dpi)
+                                    > advance
+                                {
+                                    y_offset = y_offset.max(*start + advance);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             *self.current_flow_bands.borrow_mut() = visible_float_exclusions.clone();
             let (mut new_y, was_tac) = self.layout_column_item(
                 tree,
@@ -6712,15 +6748,9 @@ impl LayoutEngine {
                     // (=lane_top=흐름y+voff)를 따라가 캐럿이 표 좌상단에 붙고, 흐름 자리
                     // 클릭이 뒤 문단으로 갔다. voff==0 은 종전대로 표와 같은 줄.
                     // [어울림 2026-07-30 채록] 배치를 어울림(Square)으로 바꿔도 한컴은
-                    // 조판부호·앵커 줄을 흐름 위치에 그대로 둔다(부록2 O7). 단 옆 흐름
-                    // 계약이 흐름을 table_y_before 로 유지하는 건 **부분폭** square 뿐이라
-                    // (아래 y_offset 분기와 같은 판정) 전폭은 종전대로 둔다.
-                    let square_side_flow =
-                        super::float_placement::is_para_square_family_float(&t.common) && {
-                            let w_px = hwpunit_to_px(t.common.width as i32, self.dpi);
-                            col_area.width - w_px >= crate::renderer::composer::MIN_SIDE_PX
-                        };
-                    let marker_y = if (is_para_topbottom_float(&t.common) || square_side_flow)
+                    // 조판부호·앵커 줄을 흐름 위치에 그대로 둔다(부록2 O7).
+                    let marker_y = if (is_para_topbottom_float(&t.common)
+                        || super::float_placement::is_para_square_family_float(&t.common))
                         && signed_hwpunit(t.common.vertical_offset) > 0
                     {
                         table_y_before
@@ -6785,6 +6815,7 @@ impl LayoutEngine {
                         // 어긋나 [34,40) 구간에서 '좁힌 줄이 표 아래' 모순이 났다.
                         let w_px = hwpunit_to_px(t.common.width as i32, self.dpi);
                         col_area.width - w_px >= crate::renderer::composer::MIN_SIDE_PX
+                            || signed_hwpunit(t.common.vertical_offset) > 0
                     }
                 {
                     // 옆 흐름 계약: 본문 흐름은 표 앞에서 계속되고(다음 문단이 표 옆에
