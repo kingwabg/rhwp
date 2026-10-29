@@ -9,3 +9,5 @@ mod table_ops;
 pub use table_ops::paragraph_has_narrow_trace;
 mod text_editing;
 mod track;
+
+mod page_reorder;

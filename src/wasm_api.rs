@@ -5204,6 +5204,55 @@ impl HwpDocument {
             .map_err(|e| e.into())
     }
 
+    /// [캔버스 한컴 포크] 원본 문단·표가 이어진 쪽 묶음 경계.
+    #[wasm_bindgen(js_name = getPageMoveRanges)]
+    pub fn get_page_move_ranges(&self) -> Result<String, JsValue> {
+        self.core
+            .get_page_move_ranges_native()
+            .map_err(|e| e.into())
+    }
+
+    /// 원본 문단 객체를 쪽 묶음 단위로 이동한다. before는 이동 전 삽입 슬롯이다.
+    #[wasm_bindgen(js_name = movePageRange)]
+    pub fn move_page_range(
+        &mut self,
+        source_page: u32,
+        before_page: u32,
+    ) -> Result<String, JsValue> {
+        self.core
+            .move_page_range_native(source_page as usize, before_page as usize)
+            .map_err(|e| e.into())
+    }
+
+    #[wasm_bindgen(js_name = movePages)]
+    pub fn move_pages(&mut self, pages_json: &str, before_page: u32) -> Result<String, JsValue> {
+        self.core
+            .move_pages_native(pages_json, before_page as usize)
+            .map_err(|e| e.into())
+    }
+
+    #[wasm_bindgen(js_name = duplicatePages)]
+    pub fn duplicate_pages(&mut self, pages_json: &str) -> Result<String, JsValue> {
+        self.core
+            .duplicate_pages_native(pages_json)
+            .map_err(|e| e.into())
+    }
+
+    #[wasm_bindgen(js_name = deletePages)]
+    pub fn delete_pages(&mut self, pages_json: &str) -> Result<String, JsValue> {
+        self.core
+            .delete_pages_native(pages_json)
+            .map_err(|e| e.into())
+    }
+
+    /// [캔버스 한컴 포크] 선택한 쪽 묶음 각각의 뒤에 빈 쪽을 한 장씩 삽입한다.
+    #[wasm_bindgen(js_name = insertBlankPages)]
+    pub fn insert_blank_pages(&mut self, pages_json: &str) -> Result<String, JsValue> {
+        self.core
+            .insert_blank_pages_native(pages_json)
+            .map_err(|e| e.into())
+    }
+
     /// 위치에 해당하는 글로벌 쪽 번호 반환
     #[wasm_bindgen(js_name = getPageOfPosition)]
     pub fn get_page_of_position(&self, section_idx: u32, para_idx: u32) -> Result<String, JsValue> {
